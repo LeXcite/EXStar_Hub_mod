@@ -1,0 +1,7 @@
+# normalize line endings in the repository
+* text=auto
+
+# binaries never get EOL conversion
+*.exe binary
+*.dll binary
+*.png binary

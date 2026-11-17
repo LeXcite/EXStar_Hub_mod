@@ -1,0 +1,29 @@
+# build output
+build/
+
+# private reverse-engineering notes (local folder, never published)
+mutumbo/
+
+# release executables: binaries ship via GitHub Releases; the repo keeps
+# only the install guide from release\
+release/*.exe
+
+# session reports and user screenshots (personal content, keep local)
+MORNING_REPORT.md
+Screenshot_*.png
+Artboard 1.jpg
+
+# compiler/linker artifacts
+*.obj
+*.exp
+*.lib
+*.pdb
+
+# IDE
+.vs/
+.vscode/
+*.user
+
+# OS
+Thumbs.db
+Desktop.ini
