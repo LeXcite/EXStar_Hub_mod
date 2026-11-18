@@ -1,219 +1,219 @@
 # Roadmap
 
-Постоянный документ плана работ. Порядок: карточка фичи → статус
-`planned → implementing → tested → shipped`. После закрытия фичи карточка
-сворачивается в одну строку в «Done» (подробности — в README модуля).
-Знания для портирования: приватная внешняя RE-база (не публикуется,
-в git не входит).
+Standing work-plan document. Lifecycle: feature card → status
+`planned → implementing → tested → shipped`. After a feature is closed, its card
+collapses into one line under "Done" (details live in the module's README).
+Porting knowledge: private external RE-base (not published,
+not included in git).
 
-## Правила (напоминание, всегда в силе)
+## Rules (reminder, always in force)
 
-- Ничего не пушить на GitHub без проверки вживую и явного «давай в гит».
-- Только инъекция: winmm-прокси → host → модули; файлы вендора на диске
-  не патчим; откат = удалить добавленные файлы; DllMain всегда TRUE;
-  SEH вокруг чужих указателей; никаких захардкоженных адресов/RVA —
-  только паттерны/имена; модуль при незачёте якоря молчит, не падает.
-- Изменения walker'ов QML — только через `tools\dim_dryrun.c` (офлайн
-  прогон по DLL до запуска приложения).
-- Дедлайн обновлений вендора: сначала офлайн-валидация якорей
-  (`zrc_lab`/`dim_dryrun` по файлам обновления), потом установка.
-- деплой в Program Files только через `Start-Process -Verb RunAs`.
+- Never push to GitHub without live verification and an explicit "put it in git".
+- Injection only: winmm proxy → host → modules; vendor files on disk
+  are never patched; rollback = delete the added files; DllMain always TRUE;
+  SEH around foreign pointers; no hardcoded addresses/RVAs —
+  patterns/names only; a module stays silent when an anchor fails, it does not crash.
+- Changes to QML walkers — only through `tools\dim_dryrun.c` (offline
+  run over the DLL before launching the application).
+- Vendor-update deadline procedure: first offline anchor validation
+  (`zrc_lab`/`dim_dryrun` over the update files), then install.
+- Deploy into Program Files only via `Start-Process -Verb RunAs`.
 
-## Шипнуто
+## Shipped
 
-| Модуль | Версия | Что умеет |
+| Module | Version | What it does |
 |---|---|---|
-| popup_dim | 1.2.7 | серая шторка → матовое стекло, приглушение вуалей |
-| marker_quality | 1.0.2 | цвет маркера по качеству наблюдения (latch-зелёный) |
-| marker_inframe | 1.1.0 | in-frame маркер растёт вместо красной вспышки |
-| ExStarModManager | 1.3.0 | менеджер: включение модулей, установка/обновление payload |
+| popup_dim | 1.2.7 | gray veil → frosted glass, dims the veils |
+| marker_quality | 1.0.2 | marker color by observation quality (latch-green) |
+| marker_inframe | 1.1.0 | in-frame marker grows instead of a red flash |
+| ExStarModManager | 1.3.0 | manager: enabling modules, installing/updating payload |
 
-## В работе — партия «порт заимствованных возможностей» (решение от 2026-11-14)
+## In progress — batch "porting borrowed features" (decision of 2026-11-14)
 
-Источник знаний: приватная внешняя RE-база (`STATE.md`, `ИССЛЕДОВАНИЕ.md`,
-`patches-history.md` — его патчи версии-связаны и умерли в обновлении —
-переносим логику, не байты). Порядок работ: 1 → 2 → 3 → 4 → 5.
+Knowledge source: private external RE-base (`STATE.md`, a research
+journal, `patches-history.md` — his patches are version-locked and died
+in the update —
+we port the logic, not the bytes). Work order: 1 → 2 → 3 → 4 → 5.
 
-### 1. wallpaper — свой фон приложения (модуль + кнопка в менеджере)
+### 1. wallpaper — custom application background (module + button in the manager)
 
-**Цель.** Пользователь в менеджере жмёт «Фон приложения», кидает любой
-jpg/png — приложение получает свой фон вместо штатного. «Сброс» — заводской.
+**Goal.** The user clicks "App background" in the manager, drops in any
+jpg/png — the application gets its own background instead of the stock one. "Reset" — factory default.
 
-**Известно (проверено 2026-11-14 на 3.1.x):** картинка лежит несжатой в
-`.rdata` AppUi.dll, `FF D8 FF` @файловое 0x643F95, размер 837 517 Б,
-1920×1080 baseline JPEG 24bpp. Имя ресурса `MainBackground.jpg`
-(plain-строки в DLL нет — ссылка внутри сжатого qrc).
+**Known (verified 2026-11-14 on 2.x (file stamp 3.1.x)):** the image sits uncompressed in
+`.rdata` of AppUi.dll, `FF D8 FF` @file offset 0x643F95, size 837,517 B,
+1920×1080 baseline JPEG 24bpp. Resource name `MainBackground.jpg`
+(the plain string is absent from the DLL — the reference lives inside the compressed qrc).
 
-**Механизм.** Менеджер: выбор файла → конверт в 1920×1080 JPEG → авто-
-подбор качества под бюджет 837 517 Б → запись `modules\wallpaper.jpg`
-(+ `.meta` с исходным разрешением). Модуль (расширение popup_dim или
-отдельный `wallpaper`): по `LdrRegisterDllNotification` на AppUi.dll
-найти SOI…EOI-блок тем же способом, что и dry-run-харнесс, и подменить
-байты в памяти под VirtualProtect; если пользовательского файла нет —
-ничего не делаем. Бюджет: новая картинка ≤ оригинала (гарантируется
-конвертером менеджера).
+**Mechanism.** Manager: pick a file → convert to 1920×1080 JPEG → auto-
+tune quality to fit the 837,517 B budget → write `modules\wallpaper.jpg`
+(+ `.meta` with the original resolution). Module (a popup_dim extension or a
+separate `wallpaper`): on `LdrRegisterDllNotification` for AppUi.dll
+find the SOI…EOI block the same way the dry-run harness does and substitute
+the bytes in memory under VirtualProtect; if there is no user file —
+we do nothing. Budget: the new image ≤ the original (guaranteed by
+the manager's converter).
 
-**Верификация.** dry-run-режим (печать смещения/размера без запуска) →
-живой запуск со скриншотом → «Сброс» возвращает заводской вид.
+**Verification.** dry-run mode (prints offset/size without launching) →
+live run with a screenshot → "Reset" restores the factory look.
 
-Статус: ✅ готово и проверено вживую (2026-11-14): модуль `wallpaper`
-v1.0.0 (`modules/wallpaper/`, README-артефакт написан), dry-run
-`tools\wp_dryrun.c` → `MATCH known-good`; живой запуск: `slot +6572949
-x 837517 B <- 55996 B image (ok)` + скриншот с градиентом; удаление
-файла → модуль отказывается, штатный фон возвращается; в sibling-
-процессах простаивает (whitelist + гейт `exe = hub`). Менеджер 1.3.1:
-карточка «Wallpaper» с кнопками «Выбрать файл…»/«Сброс» (GDI+ конверт,
-качество 95→26 под бюджет). `.meta` отменено — не требуется. Осталось:
-прогон GUI-менеджера человеком (установка/выбор файла одним кликом).
+Status: ✅ done and verified live (2026-11-14): module `wallpaper`
+v1.0.0 (`modules/wallpaper/`, README artifact written), dry-run
+`tools\wp_dryrun.c` → `MATCH known-good`; live run: `slot +6572949
+x 837517 B <- 55996 B image (ok)` + screenshot with the gradient; deleting
+the file → the module declines, the stock background comes back; idles
+in sibling processes (whitelist + gate `exe = hub`). Manager 1.3.1:
+"Wallpaper" card with "Choose file…"/"Reset" buttons (GDI+ conversion,
+quality 95→26 to fit the budget). `.meta` dropped — not needed. Remaining:
+a human run-through of the manager GUI (install/choose file in one click).
 
-### 2. fps — реальный FPS в ScanPage
+### 2. fps — real FPS in ScanPage
 
-**Цель.** Штатная цифра «FPS: 80-90» неправдива: это статистика конвейера
-схвата из C++-модели `real_time_info` (строка `FPS: %1` в AppCommon_E7.dll),
-а не частота кадров UI.
+**Goal.** The stock "FPS: 80-90" figure is not truthful: it is capture-pipeline
+statistics from the C++ model `real_time_info` (the string `FPS: %1` in AppCommon_E7.dll),
+not the UI frame rate.
 
-**Знание друга.** У него таймер `displayFps` переопределял штатную подпись,
-позже — хук `QString::number` с фиксированными RVA вызывающих мест; финал —
-одна строка `FPS: N` справа внизу (right 62, bottom 56). RVA-подход
-версионно-завязанный, не повторяем.
+**Friend's knowledge.** His `displayFps` timer overrode the stock label;
+later — a `QString::number` hook with fixed call-site RVAs; final form —
+a single line `FPS: N` at the bottom right (right 62, bottom 56). The RVA approach
+is version-locked, we do not repeat it.
 
-**Реализация.** `modules/fps` (v1.0.0): на map-time ScanPage_E7.dll
-распаковывается qrc-запись с якорем `/// ScanPage_E7`, после строки
-`id: root` вставляется `Text { id: exFpsLabel }` — счётчик кадров на
-`Connections { target: window; function onFrameSwapped() }` (window —
-контекстное свойство движка, подтверждено: `window.openMessageBox` в том
-же файле) + Timer 1 с. Re-deflate level 9 обязан уместиться в исходную
-длину потока (граница следующего потока не двигается), rawSize
-перезаписывается, результат контрольно распаковывается из образа и
-сравнивается побайтово; не совпало — побайтовая копия потока
-восстанавливается. Якоря только текстовые.
+**Implementation.** `modules/fps` (v1.0.0): at ScanPage_E7.dll map time,
+unpack the qrc record anchored on `/// ScanPage_E7`, insert `Text { id: exFpsLabel }`
+after the `id: root` line — a frame counter on
+`Connections { target: window; function onFrameSwapped() }` (window is an
+engine context property, confirmed: `window.openMessageBox` in the same file) + a 1 s Timer. Re-deflate level 9 must fit into the original
+stream length (the next stream's boundary does not move), rawSize
+is rewritten, the result is control-unpacked from the image and
+compared byte for byte; if it does not match — the byte copy of the stream
+is restored. Anchors are text-only.
 
-**Верификация.** Сухой прогон `tools\replace_lab.exe <dll> "/// ScanPage_E7"
-"id: root\r\n".bin <тот_же_текст+сниппет>.bin` (FITS: stock 22392, патч
-22610 ≤ 22753) совпал с живым логом байт в байт: `raw 137735->138526,
-packed 22753<-22610 (ok)` (3.1.x, 2026-11-14/17). Побочно: хостовый
-ini-парсер научился кавычкам (`color = "#8ecbff"`), иначе `#` резал
-значение как комментарий.
+**Verification.** Dry run `tools\replace_lab.exe <dll> "/// ScanPage_E7"
+"id: root\r\n".bin <same text + snippet>.bin` (FITS: stock 22392, patched
+22610 ≤ 22753) matched the live log byte for byte: `raw 137735->138526,
+packed 22753<-22610 (ok)` (2.x (file stamp 3.1.x), 2026-11-14/17). As a side effect: the host's
+ini parser learned to handle quotes (`color = "#8ecbff"`), otherwise `#` cut
+the value as a comment.
 
-Статус: ✅ проверено живьём (2026-11-17, пользователь: «fps вижу»).
-Машинерия qrc-правок вынесена в `include\exstar_qrc.h` (общая с
-laser50 [caption]). В гит — по «давай в гит».
+Status: ✅ verified live (2026-11-17, user: "I can see the fps").
+The qrc-editing machinery was extracted into `include\exstar_qrc.h` (shared with
+laser50 [caption]). Into git — upon "put it in git".
 
-### 3. laser50 — 25×25 линий лазера + подпись «50 lines» (объединено с п.4)
+### 3. laser50 — 25×25 laser lines + "50 lines" caption (merged with item 4)
 
-**Цель.** Раздвинуть диапазон линий: `(3,21,3,21)` → `(0,24,0,24)`;
-в облако попадают все 25+25 линий.
+**Goal.** Widen the line range: `(3,21,3,21)` → `(0,24,0,24)`;
+the cloud includes all 25+25 lines.
 
-**Знание друга.** `algorithmLzy.dll`, функция `set_match_plane_id_vulkan`;
-у него — статическая правка значений в данных вызывающего модуля, не
-проверено живьём, привязано к версии.
+**Friend's knowledge.** `algorithmLzy.dll`, function `set_match_plane_id_vulkan`;
+his was a static edit of values in the calling module's data, never
+verified live, tied to a version.
 
-**RE (3.1.x, algorithmLzy 2.1.908.63).** Экспорт
+**RE (2.x (file stamp 3.1.x), algorithmLzy 2.1.908.63).** The export
 `?set_match_plane_id_vulkan@Sn3DAlgorithm@@YA?AW4RetVal@1@PEAXAEBH111@Z`
-единственен (есть ещё `..._opencl`, никем не импортируется); тело — лог и
-хвостовой вызов `FUN_1804b24b0`, которая пишет четыре int в
-`ctx+0x25534/38/3C/40`. Диапазон задаёт **вызывающий**: единственный
-импортёр в каталоге — `SnAlgAppPlat.dll`, загружается динамически (ни
-один EXE его не линкует) — процесс-хост определим по логу модуля.
+is unique (there is also `..._opencl`, imported by nobody); the body — logging and a
+tail call to `FUN_1804b24b0`, which writes four ints to
+`ctx+0x25534/38/3C/40`. The range is set by **the caller**: the only
+importer in the directory — `SnAlgAppPlat.dll`, loaded dynamically (no
+EXE links it) — the process host is identified via the module's log.
 
-**Реализация.** `modules/laser50` (v1.1.0, объединена и подпись): детурн
-через `host->hook` на экспорте (ищем по ИМЕНИ экспорта через общий
-`include\exstar_export.h`, паттерны/RVA не нужны); при точном
-совпадении аргументов с `from_* = (3,21,3,21)` оригинал вызывается с
-указателями на нашу копию `to_* = (0,24,0,24)`; прочие вызовы
-(7-линейный режим) проходят прозрачно. strict + лог первых N вызовов =
-трасса верификации. `needsSiblings=TRUE`: модуль живёт в процессах
-пайплайна, менеджер держит sibling-белый список в синхроне; вторая
-половинка [caption] (см. п.4) живёт в UI-процессе.
+**Implementation.** `modules/laser50` (v1.1.0, caption merged in): a detour
+via `host->hook` on the export (found by export NAME through the shared
+`include\exstar_export.h`, no patterns/RVAs needed); on an exact
+match of the arguments with `from_* = (3,21,3,21)` the original is called with
+pointers to our copy `to_* = (0,24,0,24)`; other calls
+(7-line mode) pass through transparently. strict + a log of the first N calls =
+the verification trace. `needsSiblings=TRUE`: the module lives in the pipeline's
+processes, the manager keeps the sibling whitelist in sync; the second
+half [caption] (see item 4) lives in the UI process.
 
-**Верификация.** Офлайн: экспорт найден ровно один, flow значений
-подтверждён декомпиляцией (Ghidra). Живьём (2026-11-17, сканер): лог
-`laser50: call N: (3,21,3,21) -> remap` + пользователь подтвердил
-«есть 25х25 линий». Откат: `enabled=0`.
+**Verification.** Offline: the export found exactly once, the value flow
+confirmed by decompilation (Ghidra). Live (2026-11-17, scanner): log
+`laser50: call N: (3,21,3,21) -> remap` + the user confirmed
+"25×25 lines there". Rollback: `enabled=0`.
 
-Статус: ✅ проверено живьём (v1.1.0 = линии + подпись, 3.1.x, 2026-11-17).
-В гит — по «давай в гит».
+Status: ✅ verified live (v1.1.0 = lines + caption, 2.x (file stamp 3.1.x), 2026-11-17).
+Into git — upon "put it in git".
 
-### 4. captions — подписи режимов лазера → ОБЪЕДИНЕНО с п.3 (laser50 v1.1.0)
+### 4. captions — laser mode captions → MERGED with item 3 (laser50 v1.1.0)
 
-Отдельного модуля больше нет: подпись «50» бессмысленна без 25×25 и
-наоборот, поэтому возможность включена в `modules/laser50` как
-половинка [caption] (подвыключатель `captions = 1` в laser50.ini).
-Знание и уроки перенесены в `modules/laser50/README.md`:
+There is no separate module anymore: the "50" caption is meaningless without 25×25 and
+vice versa, so the feature was folded into `modules/laser50` as
+the [caption] half (sub-switch `captions = 1` in laser50.ini).
+The knowledge and lessons were moved into `modules/laser50/README.md`:
 
-- **RE (3.1.x).** qrc-запись `ScanSettingModelProviderLaser` в
+- **RE (2.x (file stamp 3.1.x)).** The qrc record `ScanSettingModelProviderLaser` in
   ScanPage_E7.dll (@file 0x98C90E): `qsTr("%1线").arg(
-  $scanSettingModelLaser.crossLaserLineShowNum)` (=39) и близнец
-  `parallelLaserLineShowNum` (=7); ханьцзы — переводимый ИСТОЧНИК
-  (каталог .qm даёт «%1 lines» в EN).
-- **Реализация.** Правится только аргумент: `.arg(...crossLaser...Num)`
-  → `.arg(50)`; ключ каталога цел → язык UI сохраняется. Контентный
-  гейт anchor×1 && pattern×cap_expected; re-deflate ≤ исходной длины
+  $scanSettingModelLaser.crossLaserLineShowNum)` (=39) and its twin
+  `parallelLaserLineShowNum` (=7); the Chinese characters are the translatable SOURCE
+  (the .qm catalog yields "%1 lines" in EN).
+- **Implementation.** Only the argument is edited: `.arg(...crossLaser...Num)`
+  → `.arg(50)`; the catalog key stays intact → the UI language is preserved. Content gate:
+  anchor×1 && pattern×cap_expected; re-deflate ≤ original length
   (9587 ≤ 9777).
-- **Урок v1.0.0 (не повторять).** Замена самого литерала `qsTr("%1线")`
-  ломает поиск по каталогу и льёт сырой текст во все локали
-  (англоязычный UI показал «38 линий»). Правило: не переформулировать
-  переводимый источник — менять только формируемое значение.
-- **Верификация.** Живьём (2026-11-17): `laser50: caption ... 1
-  caption(s) rewritten (ok)` + скриншот `50 lines` / `7 lines`.
+- **Lesson from v1.0.0 (do not repeat).** Replacing the `qsTr("%1线")` literal itself
+  breaks the catalog lookup and dumps raw text into all locales
+  (the English UI showed the Russian "lines" caption). Rule: do not reword the
+  translatable source — change only the value being formatted.
+- **Verification.** Live (2026-11-17): `laser50: caption ... 1
+  caption(s) rewritten (ok)` + screenshot `50 lines` / `7 lines`.
 
-Статус: ✅ проверено живьём внутри laser50 v1.1.0 (2026-11-17).
+Status: ✅ verified live inside laser50 v1.1.0 (2026-11-17).
 
-### 5. fitfill — Zoom to Fit во весь кадр
+### 5. fitfill — Zoom to Fit filling the whole frame
 
-**Цель.** Ctrl+D / «Zoom to Fit» заполняет кадр по ширине/высоте,
-повторное нажатие корректно переприспосабливает.
+**Goal.** Ctrl+D / "Zoom to Fit" fills the frame by width/height,
+a repeat press correctly re-fits.
 
-**Знание друга.** Цепочка QML → `Sn3DCanvasView::fitView` →
-`FitOperationAuto` — ложный след: константы 3.5/0.25 на пункт меню не
-влияли (проверено живьём). Его финальная правка — байт `01→00` в
-`librenderkit.extensions.digit.dll` (файловое смещение 0x171D68),
-семантику он не выяснил, смещение версионно-зависимо.
+**Friend's knowledge.** The chain QML → `Sn3DCanvasView::fitView` →
+`FitOperationAuto` — a false lead: the constants 3.5/0.25 had no effect on the
+menu item (verified live). His final edit — the byte `01→00` in
+`librenderkit.extensions.digit.dll` (file offset 0x171D68);
+he never determined its semantics, and the offset is version-dependent.
 
-**RE (3.1.x) — семантика найдена.** В текущем файле тот же байт на том
-же месте (паттерн `B2 01 48 8B C8 FF 15 96 FA 0C 00`, дельта file↔RVA
-0xC00, RVA 0x172967, внутри `Sn3DCanvasView::init` @0x172070):
-`mov r10b, 1` — аргумент вызова
-`CustomizeManipulator::setIsZoomOptimization(bool)`, экспортина
+**RE (2.x (file stamp 3.1.x)) — semantics found.** In the current file the same byte sits at the
+same place (pattern `B2 01 48 8B C8 FF 15 96 FA 0C 00`, file↔RVA delta
+0xC00, RVA 0x172967, inside `Sn3DCanvasView::init` @0x172070):
+`mov r10b, 1` — an argument of the call to
+`CustomizeManipulator::setIsZoomOptimization(bool)`, an export of
 `librenderkit.dll` (`?setIsZoomOptimization@CustomizeManipulator@@QEAAX_N@Z`,
-импорт разобран из таблицы импортов). Сеттер = `this[0x138] = flag`
-(Ghidra). То есть вендор включает «оптимизацию зума» (зафиксированная
-дистанция камеры) при создании вью — выключенная, fit вписывает модель
-полностью (что друг и получал своим байтом).
+the import disassembled from the import table). The setter = `this[0x138] = flag`
+(Ghidra). So the vendor turns on "zoom optimization" (a fixed camera
+distance) when creating the view — when disabled, fit fits the model
+entirely (which is exactly what the friend got with his byte).
 
-**Реализация.** `modules/fitfill` (v1.0.0): детурн `host->hook` на
-экспортируемом сеттере (поиск по имени экспорта, RVA не нужны),
-форвардит `force` из ini (default 0 = режим выключен), лог первых N
-вызовов = трасса. Покрывает все вызовы (не одно место), версионно
-стабилен по имени. `needsSiblings=TRUE` (3D-вью рендерятся и в
-сibling-процессах).
+**Implementation.** `modules/fitfill` (v1.0.0): a detour via `host->hook` on
+the exported setter (found by export name, no RVAs needed),
+forwards `force` from the ini (default 0 = mode off), a log of the first N
+calls = the trace. Covers all call sites (not a single one), version-stable
+by name. `needsSiblings=TRUE` (3D views are also rendered in
+sibling processes).
 
-**Риск.** Режим оптимизации — дефолт вендора; глобальное выключение
-может изменить ощущение интерактивного зума (у друга в финальной
-редакции lived, жалоб нет). Откат `force = 1` / `enabled = 0`.
+**Risk.** The optimization mode is the vendor default; globally turning it
+off may change how interactive zooming feels (it lived in the friend's final
+edit, no complaints). Rollback `force = 1` / `enabled = 0`.
 
-**Верификация.** Живьём (2026-11-17): `fitfill: hooked ... forcing value 0`
-+ `setIsZoomOptimization(1) -> forwarding 0` в логе; пользователь
-подтвердил: Ctrl+D вписывает модель в кадр.
+**Verification.** Live (2026-11-17): `fitfill: hooked ... forcing value 0`
++ `setIsZoomOptimization(1) -> forwarding 0` in the log; the user
+confirmed: Ctrl+D fits the model into the frame.
 
-Статус: ✅ проверено живьём (v1.0.0, 2026-11-17). В гит — по «давай в
-гит».
+Status: ✅ verified live (v1.0.0, 2026-11-17). Into git — upon "put it in
+git".
 
-## Отклонено
+## Rejected
 
-- **6. Английская раскладка на экране входа** (PrestartCheck.dll) —
-  пользователю не нужен (решение 2026-11-14).
-- Контур при досканировании (нестабильная цепочка setFrameMatrix, друг
-  сам откатывался) — не берём без явной потребности.
-- Обход проверки разрешения при импорте, форс isEnabled Mesh Editing
-  (ломает левую панель), косметика редакции/терминологии.
-- Железная часть TX2 (Wi-Fi/IP/MAC/кнопки/веб-портал) — вне рамок
-  фреймворка, остаётся знанием в приватной базе.
+- **6. English keyboard layout on the pre-start screen** (PrestartCheck.dll) —
+  the user does not need it (decision 2026-11-14).
+- Contour during supplemental scanning (the unstable setFrameMatrix chain, the friend
+  himself rolled it back) — not taken without an explicit need.
+- Bypassing the resolution check on import, forcing Mesh Editing's isEnabled
+  (breaks the left panel), edition/terminology cosmetics.
+- The hardware part of the TX2 (Wi-Fi/IP/MAC/buttons/web portal) — out of the framework's
+  scope, remains knowledge in the private base.
 
-## Внешние обстоятельства
+## External circumstances
 
-- **Обновление вендора доступно, установка отложена** (решение
-  2026-11-14). Перед установкой: распаковать обновление, прогнать
-  `zrc_lab`/`dim_dryrun` по новым DLL, починить якоря офлайн.
-- Все якоря партии — pattern/name-based; крах при обновлении исключён
-  архитектурой, возможен только тихий пропуск патча.
+- **A vendor update is available, installation postponed** (decision
+  2026-11-14). Before installing: unpack the update, run
+  `zrc_lab`/`dim_dryrun` over the new DLLs, fix the anchors offline.
+- All batch anchors are pattern/name-based; breakage on update is ruled out
+  by the architecture, only a silent patch skip is possible.

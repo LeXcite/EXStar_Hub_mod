@@ -1,7 +1,7 @@
 /*
  * ui_probe.c - DIAGNOSTIC probe v4 (dev only; never embedded, never released).
  *
- * Goal: identify the full-screen grey "curtain" EXStar Hub 3.1.x paints
+ * Goal: identify the full-screen grey "curtain" EXStar Hub 2.x (file stamp 3.1.x) paints
  * behind modal popups (loading bars, the memory "Warning", errors) so a
  * future production module can lower just its visual alpha.
  *

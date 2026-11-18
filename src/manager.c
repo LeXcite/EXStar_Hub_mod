@@ -48,10 +48,16 @@
 
 #define APP_EXE_NAME     L"EXStar Hub.exe"
 #define APP_EXE_A        "EXStar Hub.exe"
-#define MANAGER_VERSION  L"1.3.7"   /* keep in sync with $version in build.ps1 */
+#define MANAGER_VERSION  L"1.3.8"   /* keep in sync with $version in build.ps1 */
 #define PROXY_MARKER     L"ExStarMod.winmm.dll"   /* OriginalFilename of our proxy */
 #define DEFAULT_APP_DIR  "C:\\Program Files\\Shining3d\\EXStar Hub"
-#define KNOWN_GOOD       L"3.1."                  /* tested vendor prefix */
+/* The vendor freezes the exe ProductVersion (the "file stamp", still
+ * 3.1.49 across the 2.0.0-45 -> 2.1.0-10 update) and releases under the
+ * product number kept in the uninstall registry key. Compatibility is
+ * decided by the file stamp (that is what the anchors bind to); the
+ * product number is what the user sees. */
+#define KNOWN_GOOD_STAMP   L"3.1."   /* tested file stamp prefix */
+#define KNOWN_GOOD_PRODUCT L"2."     /* tested product family    */
 
 #define MAX_MODS         8
 #define MAX_SLIDERS      6   /* slider rows per module card               */
@@ -68,13 +74,13 @@ typedef struct {
     const wchar_t *unit;     /* appended to the value ("µm", "mm", "×")  */
     float          iniMul;   /* ini value = display * iniMul (µm <- mm)  */
     float          step;     /* display quantization (0 = 0.1)           */
-    BOOL           noDefHint;/* do not show "(умолч. X)" next to values  */
+    BOOL           noDefHint;/* do not show "(default X)" next to values */
 } SliderDef;
 
 /* one-click bundle of ini values shown as a pill button; the whole
  * "quality" tuning is three coupled numbers, so they change together */
 typedef struct {
-    const wchar_t *label;     /* "точное"                                */
+    const wchar_t *label;     /* "Fine"                                  */
     const wchar_t *spreadText;/* "0.05 mm" (display only)                */
     int            spreadUm;  /* green_spread_um                         */
     int            frames;    /* green_frames                            */
@@ -96,21 +102,23 @@ typedef struct {
     BOOL           needsSiblings; /* module also runs in sibling processes
                                    * (scanservice.exe): keep the [host]
                                    * sibling_* whitelist in sync          */
-    BOOL           hasFileBtn;  /* card shows "выбрать файл / сброс":
+    BOOL           hasFileBtn;  /* card shows "Choose file…" / "Reset":
                                  * the module reads a user image from
                                  * modules\ (see the wallpaper module)   */
 } ModDef;
 
 /* ---- adjustable knobs -------------------------------------------------- */
 static const SliderDef g_slInframe[] = {
-    { "scale", L"увеличение", 1.0f, 2.0f, 1.6f, FALSE, L"×", 0.0f, 0.0f, TRUE },
+    { "scale", L"scale", 1.0f, 2.0f, 1.6f, FALSE, L"×", 0.0f, 0.0f, TRUE },
 };
 
 /* Popup Dim tuning: one percentage - how dark the background curtain
- * behind notifications/loading/errors stays after the patch */
+ * behind notifications/loading/errors stays after the patch.
+ * No default hint: every value 0..100 is a legitimate taste choice,
+ * the ini value is the truth. */
 static const SliderDef g_slDim[] = {
-    { "dim_alpha", L"затемнение", 0.0f, 100.0f, 0.0f, TRUE, L"%",
-      0.0f, 0.0f, FALSE },
+    { "dim_alpha", L"dim", 0.0f, 100.0f, 0.0f, TRUE, L"%",
+      0.0f, 0.0f, TRUE },
 };
 
 /* Marker Quality tuning: the three thresholds are coupled - a tighter
@@ -118,41 +126,41 @@ static const SliderDef g_slDim[] = {
  * genuinely different viewing directions (live calibration: good
  * markers 0.02..0.05 mm spread at 4..8 directions, poor ones 0.38+) */
 static const PresetDef g_prQuality[] = {
-    { L"грубое",      L"0.25 mm", 250, 10, 2 },
-    { L"среднее",     L"0.1 mm",  100, 20, 4 },
-    { L"точное",      L"0.05 mm",  50, 30, 5 },
-    { L"сверхточное", L"0.02 mm",  20, 45, 7 },
+    { L"Coarse",      L"0.25 mm", 250, 10, 2 },
+    { L"Medium",      L"0.1 mm",  100, 20, 4 },
+    { L"Fine",        L"0.05 mm",  50, 30, 5 },
+    { L"Ultra",       L"0.02 mm",  20, 45, 7 },
 };
 
 /* ---- module registry of this build (kept in sync with build.ps1) ---- */
 static const ModDef g_mods[MAX_MODS] = {
     { "marker_quality", L"Marker Quality", "1.0.2",
-      L"цвет маркера показывает качество отслеживания: красный - слабое, зелёный - надёжное",
+      L"marker color shows tracking quality: red - weak, green - reliable",
       L"MOD_MARKER_QUALITY", L"MOD_MARKER_QUALITY_INI",
       NULL, 0, g_prQuality, 4,
-      L"качество позиционирования маркеров", TRUE },
+      L"marker positioning quality", TRUE },
     { "marker_inframe", L"Marker In-Frame", "1.1.0",
-      L"маркер в зоне видимости увеличивается, а не краснеет",
+      L"in-view marker grows instead of turning red",
       L"MOD_MARKER_INFRAME", L"MOD_MARKER_INFRAME_INI",
       g_slInframe, 1, NULL, 0, NULL, FALSE },
     { "popup_dim", L"Popup Dim", "1.2.7",
-      L"фон под уведомлениями и загрузкой светлее, а не плотный серый",
+      L"lighter backdrop under popups and loading, not solid grey",
       L"MOD_POPUP_DIM", L"MOD_POPUP_DIM_INI",
       g_slDim, 1, NULL, 0, NULL, TRUE },
     { "wallpaper", L"Wallpaper", "1.0.0",
-      L"свой фон приложения вместо штатного",
+      L"custom app background instead of the stock one",
       L"MOD_WALLPAPER", L"MOD_WALLPAPER_INI",
       NULL, 0, NULL, 0, NULL, FALSE, TRUE },
     { "fps", L"Real FPS", "1.0.0",
-      L"живой счётчик настоящих кадров в секунду на странице сканирования",
+      L"live real FPS counter on the scan page",
       L"MOD_FPS", L"MOD_FPS_INI",
       NULL, 0, NULL, 0, NULL, FALSE },
     { "laser50", L"Laser 25×25", "1.1.0",
-      L"все 25+25 линий лазера (диапазон плоскостей (3,21) → (0,24)) и кнопка сразу показывает «50 lines»",
+      L"all 25+25 laser lines (plane range (3,21) → (0,24)); the button shows «50 lines» right away",
       L"MOD_LASER50", L"MOD_LASER50_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
     { "fitfill", L"Zoom to Fit Fill", "1.0.0",
-      L"«Zoom to Fit» (Ctrl+D) вписывает модель во весь кадр, а не в треть окна",
+      L"«Zoom to Fit» (Ctrl+D) fits the model into the whole frame, not a third of the window",
       L"MOD_FITFILL", L"MOD_FITFILL_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
 };
@@ -234,7 +242,7 @@ static void appVersion(const char *appDirA, wchar_t *out, int cap)
     UINT n = 0;
     DWORD sz;
 
-    wcscpy(out, L"?");
+    out[0] = 0;
     a2w(appDirA, dirW, MAX_PATH);
     swprintf(p, MAX_PATH, L"%ls\\%ls", dirW, APP_EXE_NAME);
     sz = GetFileVersionInfoSizeW(p, NULL);
@@ -251,6 +259,61 @@ static void appVersion(const char *appDirA, wchar_t *out, int cap)
     (void) name;
     if (data)
         HeapFree(GetProcessHeap(), 0, data);
+}
+
+/* Vendor product number (e.g. "2.1.0-10"): the uninstall key's
+ * DisplayVersion, DisplayName's trailing number as a fallback. Scans
+ * HKLM (64- and 32-bit views) and HKCU, matching by DisplayName so a
+ * renamed key still resolves. Empty out when nothing matches. */
+static void appProductVersion(wchar_t *out, int cap)
+{
+    static const HKEY roots[3]  = { HKEY_LOCAL_MACHINE, HKEY_LOCAL_MACHINE,
+                                    HKEY_CURRENT_USER };
+    static const DWORD flags[3] = { KEY_WOW64_64KEY, KEY_WOW64_32KEY, 0 };
+    wchar_t sub[256], name[128], ver[64], *sp;
+    DWORD i, idx, len;
+    HKEY hUninst, hSub;
+
+    out[0] = 0;
+    for (i = 0; i < 3 && !out[0]; i++) {
+        if (RegOpenKeyExW(roots[i],
+                L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+                0, KEY_READ | flags[i], &hUninst) != ERROR_SUCCESS)
+            continue;
+        for (idx = 0; !out[0]; idx++) {
+            len = ARRAYSIZE(sub);
+            if (RegEnumKeyExW(hUninst, idx, sub, &len,
+                              NULL, NULL, NULL, NULL) != ERROR_SUCCESS)
+                break;
+            if (RegOpenKeyExW(hUninst, sub, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
+                continue;
+            len = sizeof name;
+            if (RegQueryValueExW(hSub, L"DisplayName", NULL, NULL,
+                                 (BYTE *) name, &len) == ERROR_SUCCESS
+                && _wcsnicmp(name, L"EXStar", 6) == 0) {
+                len = sizeof ver;
+                if (RegQueryValueExW(hSub, L"DisplayVersion", NULL, NULL,
+                                     (BYTE *) ver, &len) != ERROR_SUCCESS
+                    || !ver[0]) {
+                    /* "EXStar Hub 2.1.0-10" -> last blank-separated word */
+                    ver[0] = 0;
+                    sp = name + lstrlenW(name);
+                    while (sp > name && sp[-1] != L' ')
+                        sp--;
+                    if (*sp >= L'0' && *sp <= L'9') {
+                        wcsncpy(ver, sp, ARRAYSIZE(ver) - 1);
+                        ver[ARRAYSIZE(ver) - 1] = 0;
+                    }
+                }
+                if (ver[0]) {
+                    wcsncpy(out, ver, (size_t) cap - 1);
+                    out[cap - 1] = 0;
+                }
+            }
+            RegCloseKey(hSub);
+        }
+        RegCloseKey(hUninst);
+    }
 }
 
 /* ---- process presence / kill ---- */
@@ -563,7 +626,7 @@ static BOOL ensureCore(State *st)
 
     snprintf(exePath, sizeof exePath, "%s\\" APP_EXE_A, g_appDir);
     if (!pathExistsA(exePath)) {
-        report(L"В выбранной папке нет %hs - укажите папку приложения.", APP_EXE_NAME);
+        report(L"The selected folder has no %ls - choose the application folder.", APP_EXE_NAME);
         return FALSE;
     }
 
@@ -572,15 +635,15 @@ static BOOL ensureCore(State *st)
 
     if (pathExistsA(winmm)) {
         if (!fileOriginalEq(winmm, PROXY_MARKER)) {
-            report(L"В каталоге приложения уже есть чужой winmm.dll "
-                   L"(не наш прокси). Установка прервана, чтобы ничего "
-                   L"не испортить.");
+            report(L"The app folder already has a foreign winmm.dll "
+                   L"(not our proxy). Install aborted to avoid "
+                   L"breaking anything.");
             return FALSE;
         }
     }
     if (pathExistsA(real) && fileOriginalEq(real, PROXY_MARKER)) {
-        report(L"Странность: winmm_real.dll помечен как наш прокси. "
-               L"Удалите файл вручную и повторите.");
+        report(L"Odd: winmm_real.dll is marked as our proxy. "
+               L"Delete the file manually and retry.");
         return FALSE;
     }
 
@@ -588,12 +651,12 @@ static BOOL ensureCore(State *st)
     GetSystemDirectoryA(sys, sizeof sys);
     strcat_s(sys, sizeof sys, "\\winmm.dll");
     if (!pathExistsA(sys)) {
-        report(L"Не найден системный winmm.dll.");
+        report(L"System winmm.dll not found.");
         return FALSE;
     }
 
     if (!resourceWrite(L"BOOT_WINMM", winmm)) {
-        report(L"Не удалось записать winmm.dll (прокси).");
+        report(L"Failed to write winmm.dll (proxy).");
         return FALSE;
     }
     stateAdd(st, "winmm.dll");
@@ -602,15 +665,15 @@ static BOOL ensureCore(State *st)
         char host[MAX_PATH];
         snprintf(host, sizeof host, "%s\\ExStarRec.dll", g_appDir);
         if (!resourceWrite(L"HOST", host)) {
-            report(L"Не удалось записать ExStarRec.dll (хост).");
+            report(L"Failed to write ExStarRec.dll (host).");
             return FALSE;
         }
         stateAdd(st, "ExStarRec.dll");
     }
 
     if (!CopyFileA(sys, real, FALSE)) {
-        report(L"Не удалось обновить winmm_real.dll (err=%lu). "
-               L"Возможно, приложение ещё работает.", GetLastError());
+        report(L"Failed to update winmm_real.dll (err=%lu). "
+               L"The application may still be running.", GetLastError());
         return FALSE;
     }
     stateAdd(st, "winmm_real.dll");
@@ -816,7 +879,7 @@ typedef struct {
                               + MAX_MODS * MAX_PRESETS + (m) * MAX_FILEBTNS + (b)])
 static ExCtrl g_ctrls[MAX_MODS * (MAX_SLIDERS + MAX_PRESETS + MAX_FILEBTNS + 1) + 2];
 
-static HWND g_fileBtn[MAX_MODS][MAX_FILEBTNS]; /* "выбрать файл"/"сброс"  */
+static HWND g_fileBtn[MAX_MODS][MAX_FILEBTNS]; /* "Choose file…"/"Reset"  */
 
 static HWND g_preset[MAX_MODS][MAX_PRESETS]; /* preset pill buttons       */
 static HWND g_pcap[MAX_MODS];                /* caption above the pill row*/
@@ -896,13 +959,13 @@ static void applySliderSetting(int idx, int s)
     rc = writeIniSetting(idx, d->key, val);
     sliderDisplayTextW(d, c->fval, TRUE, disp, 40);
     if (rc < 0)
-        status(L"%ls: %ls = %ls - будет сохранено при установке.",
+        status(L"%ls: %ls = %ls - will be stored on install.",
                g_mods[idx].title, d->label, disp);
     else if (rc > 0)
-        status(L"%ls: %ls = %ls - применится после перезапуска "
+        status(L"%ls: %ls = %ls - applies after restarting "
                L"EXStar Hub.", g_mods[idx].title, d->label, disp);
     else
-        status(L"%ls: не удалось сохранить %hs.",
+        status(L"%ls: failed to save %ls.",
                g_mods[idx].title, d->label);
 }
 
@@ -911,7 +974,7 @@ static void applySliderSetting(int idx, int s)
  * them into the marker_quality ini keys at once. */
 
 /* the pill whose spread is closest to the current ini value;
- * a missing key reads as the module default (100 um = "среднее") */
+ * a missing key reads as the module default (100 um = "Medium") */
 static int nearestPreset(int idx, const char *iniAbs)
 {
     const PresetDef *pr = g_mods[idx].presets;
@@ -957,20 +1020,20 @@ static void applyPreset(int idx, int p)
     r3 = writeIniSetting(idx, "green_supported", val);
 
     if (r1 == 0 || r2 == 0 || r3 == 0) {
-        status(L"%ls: не удалось сохранить пресет \"%ls\".",
+        status(L"%ls: failed to save preset \"%ls\".",
                g_mods[idx].title, pr->label);
         return;
     }
     g_presetSel[idx] = p;
     presetSelRefresh(idx);
     if (r1 < 0 || r2 < 0 || r3 < 0)
-        status(L"%ls: пресет \"%ls\" (%ls, %d кадров, %d ракурсов) - "
-               L"будет сохранён при установке.",
+        status(L"%ls: preset \"%ls\" (%ls, %d frames, %d views) - "
+               L"will be stored on install.",
                g_mods[idx].title, pr->label, pr->spreadText,
                pr->frames, pr->supported);
     else
-        status(L"%ls: пресет \"%ls\" (%ls, %d кадров, %d ракурсов) - "
-               L"применится после перезапуска EXStar Hub.",
+        status(L"%ls: preset \"%ls\" (%ls, %d frames, %d views) - "
+               L"applies after restarting EXStar Hub.",
                g_mods[idx].title, pr->label, pr->spreadText,
                pr->frames, pr->supported);
 }
@@ -1032,11 +1095,11 @@ static BOOL doInstall(UINT mask)
     BOOL any = FALSE;
 
     if (mask == 0) {
-        report(L"Не выбран ни один модуль.");
+        report(L"No module selected.");
         return FALSE;
     }
     if (appRunning()) {
-        note(L"Приложение запущено - закрываю его для установки.");
+        note(L"Application is running - closing it to install.");
         killApp();
     }
     stateLoad(&st, g_appDir);
@@ -1068,11 +1131,11 @@ static BOOL doInstall(UINT mask)
 
         if (mask & (1u << i)) {
             if (!resourceWrite(m->resDll, dllAbs)) {
-                report(L"Не удалось записать %hs.", dllRel);
+                report(L"Failed to write %hs.", dllRel);
                 return FALSE;
             }
             if (!pathExistsA(iniAbs) && !resourceWrite(m->resIni, iniAbs)) {
-                report(L"Не удалось записать %hs.", iniRel);
+                report(L"Failed to write %hs.", iniRel);
                 return FALSE;
             }
             stateAdd(&st, dllRel);
@@ -1112,8 +1175,8 @@ static BOOL doInstall(UINT mask)
                     iniSetKeyFile(iniAbs, "green_supported", val);
                 }
             }
-            note(L"Модуль установлен и включён: %ls %hs. "
-                   L"Перезапустите EXStar Hub.", m->title, m->version);
+            note(L"Module installed and enabled: %ls %hs. "
+                   L"Restart EXStar Hub.", m->title, m->version);
             any = TRUE;
         }
     }
@@ -1135,7 +1198,7 @@ static BOOL doInstall(UINT mask)
 
         iniRemoveSec(&ini, g_legacy[i]);
         if (had)
-            note(L"Удалён устаревший модуль: %hs.", g_legacy[i]);
+            note(L"Removed legacy module: %hs.", g_legacy[i]);
     }
 
     syncSiblings(&ini);
@@ -1144,7 +1207,7 @@ static BOOL doInstall(UINT mask)
     stateSave(&st, g_appDir);
 
     if (any)
-        note(L"Готово. Перезапустите EXStar Hub.");
+        note(L"Done. Restart EXStar Hub.");
     return any;
 }
 
@@ -1156,11 +1219,11 @@ static BOOL doRemove(UINT mask)
     int i;
 
     if (mask == 0) {
-        report(L"Не выбран ни один модуль.");
+        report(L"No module selected.");
         return FALSE;
     }
     if (appRunning()) {
-        note(L"Приложение запущено - закрываю его.");
+        note(L"Application is running - closing it.");
         killApp();
     }
     stateLoad(&st, g_appDir);
@@ -1182,8 +1245,8 @@ static BOOL doRemove(UINT mask)
          * settings, so re-enabling the module restores its config.
          * "restore stock" removes everything. */
         iniRemoveSec(&ini, m->id);
-        note(L"Модуль %ls выключен и удалён (файл настроек сохранён). "
-               L"Перезапустите EXStar Hub.", m->title);
+        note(L"Module %ls disabled and removed (settings file kept). "
+               L"Restart EXStar Hub.", m->title);
     }
     syncSiblings(&ini);
     iniSave(&ini, iniPath);
@@ -1199,7 +1262,7 @@ static BOOL doRestore(void)
     BOOL had = stateLoad(&st, g_appDir);
 
     if (appRunning()) {
-        note(L"Приложение запущено - закрываю его.");
+        note(L"Application is running - closing it.");
         killApp();
     }
 
@@ -1230,19 +1293,19 @@ static BOOL doRestore(void)
         char abs[MAX_PATH];
         iniPathFor(abs, sizeof abs, st.line[i]);
         if (DeleteFileA(abs))
-            note(L"Удалён файл: %hs", st.line[i]);
+            note(L"Deleted file: %hs", st.line[i]);
         else if (pathExistsA(abs))
-            report(L"НЕ УДАЛОСЬ удалить %hs (err=%lu)", st.line[i], GetLastError());
+            report(L"FAILED to delete %hs (err=%lu)", st.line[i], GetLastError());
     }
     {
         char dir[MAX_PATH];
         snprintf(dir, sizeof dir, "%s\\modules", g_appDir);
         if (RemoveDirectoryA(dir))
-            note(L"Удалена папка modules\\");
+            note(L"Deleted folder modules\\");
     }
     snprintf(statePath, sizeof statePath, "%s\\exstar_mods.state", g_appDir);
     DeleteFileA(statePath);
-    note(L"Программа возвращена в сток.");
+    note(L"Application restored to stock.");
     return TRUE;
 }
 
@@ -1541,7 +1604,7 @@ static void paintSlider(HDC dc, RECT *r, const ExCtrl *c, BOOL enabled)
     SetTextColor(dc, enabled ? C_TEXT2 : RGB(110, 110, 110));
     SetRect(&lr, 0, r->top, SL_LABEL, r->bottom);
     DrawTextW(dc, (c->sdef && c->sdef->label) ? c->sdef->label
-                                              : L"увеличение",
+                                              : L"scale",
               -1, &lr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
     b = CreateSolidBrush(fill);
@@ -1568,7 +1631,7 @@ static void paintSlider(HDC dc, RECT *r, const ExCtrl *c, BOOL enabled)
     }
 
     /* value + unit, plus the factory default when moved off it:
-     * "20", "0.30 mm (умолч. 0.10)" */
+     * "20", "0.30 mm (default 0.10)" */
     {
         wchar_t dv[24];
         float diff = c->fval - (c->sdef ? c->sdef->defV : c->fval);
@@ -1579,7 +1642,7 @@ static void paintSlider(HDC dc, RECT *r, const ExCtrl *c, BOOL enabled)
         if (c->sdef && !c->sdef->noDefHint
             && (diff < 0.0f ? -diff : diff) > eps) {
             sliderDisplayTextW(c->sdef, c->sdef->defV, FALSE, dv, 24);
-            wcsncat(vt, L" (умолч. ", 39);
+            wcsncat(vt, L" (default ", 39);
             wcsncat(vt, dv, 39);
             wcsncat(vt, L")", 39);
             vt[39] = 0;
@@ -1854,7 +1917,7 @@ static BOOL startJob(int action, UINT mask)
     Job *job;
 
     if (InterlockedCompareExchange(&g_busy, 1, 0) != 0) {
-        status(L"Подождите завершения текущей операции.");
+        status(L"Wait for the current operation to finish.");
         return FALSE;
     }
     readAppEdit();
@@ -1924,17 +1987,33 @@ static void refreshChecks(void)
     }
 
     {
-        wchar_t ver[64], text[160];
-        appVersion(g_appDir, ver, 64);
-        if (ver[0] && wcsncmp(ver, KNOWN_GOOD, (size_t) lstrlenW(KNOWN_GOOD)) == 0) {
-            swprintf(text, 160, L"Версия вашего приложения - %ls  (проверено на %ls.x)", ver, KNOWN_GOOD);
-            g_verTone = 0;
-        } else if (ver[0]) {
-            swprintf(text, 160, L"Версия вашего приложения - %ls  (НЕ тестировалось - возможна несовместимость)", ver);
-            g_verTone = 1;
-        } else {
-            swprintf(text, 160, L"EXStar Hub не найден в выбранной папке");
+        wchar_t prod[64], stamp[64], text[220];
+        BOOL okStamp = FALSE;
+
+        appVersion(g_appDir, stamp, 64);    /* file stamp, e.g. 3.1.49.x  */
+        appProductVersion(prod, 64);        /* product no., e.g. 2.1.0-10 */
+        if (stamp[0])
+            okStamp = wcsncmp(stamp, KNOWN_GOOD_STAMP,
+                              (size_t) lstrlenW(KNOWN_GOOD_STAMP)) == 0;
+        if (!stamp[0] && !prod[0]) {
+            swprintf(text, 220, L"EXStar Hub not found in the selected folder");
             g_verTone = 2;
+        } else if (okStamp) {
+            swprintf(text, 220,
+                     prod[0]
+                     ? L"Your application - %ls (file stamp %ls) - tested family"
+                     : L"Your application - file stamp %ls - tested family",
+                     prod, stamp);
+            g_verTone = 0;
+        } else {
+            swprintf(text, 220,
+                     prod[0]
+                     ? L"Your application - %ls (file stamp %ls) - NOT tested, "
+                       L"compatibility unknown"
+                     : L"Your application - file stamp %ls - NOT tested, "
+                       L"compatibility unknown",
+                     prod, stamp);
+            g_verTone = 1;
         }
         SetWindowTextW(g_ver, text);
     }
@@ -2089,7 +2168,7 @@ static void wallpaperReset(int idx)
     State st;
 
     if (g_busy) {
-        status(L"Подождите завершения текущей операции.");
+        status(L"Wait for the current operation to finish.");
         return;
     }
     readAppEdit();
@@ -2099,9 +2178,9 @@ static void wallpaperReset(int idx)
         stateLoad(&st, g_appDir);
         stateDrop(&st, rel);
         stateSave(&st, g_appDir);
-        note(L"Фон сброшен на штатный. Перезапустите EXStar Hub.");
+        note(L"Wallpaper reset to stock. Restart EXStar Hub.");
     } else {
-        status(L"Файл фона не найден - фон и так штатный.");
+        status(L"No wallpaper file - the background is already stock.");
     }
     refreshChecks();
 }
@@ -2117,25 +2196,25 @@ static void wallpaperPick(int idx)
     int rc;
 
     if (g_busy) {
-        status(L"Подождите завершения текущей операции.");
+        status(L"Wait for the current operation to finish.");
         return;
     }
     readAppEdit();
     if (!g_modOn[idx]) {
-        status(L"Сначала включите модификацию \"%ls\" - переключатель справа.",
+        status(L"Enable the mod \"%ls\" first - the switch on the right.",
                g_mods[idx].title);
         return;
     }
     ZeroMemory(&of, sizeof of);
     of.lStructSize = sizeof of;
     of.hwndOwner = g_mainHwnd;
-    of.lpstrFilter = L"Изображения\0*.jpg;*.jpeg;*.png;*.bmp\0"
-                     L"Все файлы\0*.*\0";
+    of.lpstrFilter = L"Images\0*.jpg;*.jpeg;*.png;*.bmp\0"
+                     L"All files\0*.*\0";
     of.lpstrFile = file;
     of.nMaxFile = (DWORD)(sizeof file / sizeof file[0]);
     of.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY
                | OFN_EXPLORER;
-    of.lpstrTitle = L"Фоновое изображение";
+    of.lpstrTitle = L"Background image";
     if (!GetOpenFileNameW(&of))
         return;
 
@@ -2152,16 +2231,16 @@ static void wallpaperPick(int idx)
         stateLoad(&st, g_appDir);
         stateAdd(&st, rel);
         stateSave(&st, g_appDir);
-        note(L"Фон обновлён - применится после перезапуска EXStar Hub. "
-             L"Замените файл и перезапустите, чтобы посмотреть другой.");
+        note(L"Wallpaper updated - applies after restarting EXStar Hub. "
+             L"Replace the file and restart to see another one.");
     } else if (rc == 1) {
-        status(L"Не удалось прочитать изображение - выберите другой файл "
+        status(L"Could not read the image - choose another file "
                L"(jpg/png/bmp).");
     } else if (rc == 2) {
-        status(L"Не удалось уместить изображение в бюджет - выберите "
-               L"файл попроще.");
+        status(L"Image does not fit the size budget - choose a "
+               L"simpler file.");
     } else {
-        status(L"Не удалось записать %hs - права доступа?", rel);
+        status(L"Failed to write %hs - access rights?", rel);
     }
     refreshChecks();
 }
@@ -2175,7 +2254,7 @@ static void browse(void)
     bi.hwndOwner = g_mainHwnd;
     bi.pidlRoot = NULL;
     bi.pszDisplayName = dirW;
-    bi.lpszTitle = L"Папка с EXStar Hub.exe";
+    bi.lpszTitle = L"Folder with EXStar Hub.exe";
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
     bi.lpfn = NULL;
     bi.lParam = 0;
@@ -2231,8 +2310,8 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
         ch = rc.bottom;
 
         mkStatic(&g_title,   L"EXStar Hub",        LMARG, U(12), U(400), U(30), g_fontT, hw);
-        mkStatic(&g_sub,     L"менеджер модов",    LMARG + U(2), U(46), U(400), U(16), g_fontS, hw);
-        mkStatic(&g_lblPath, L"ПАПКА ПРИЛОЖЕНИЯ",  LMARG + U(2), U(80), U(300), U(14), g_fontS, hw);
+        mkStatic(&g_sub,     L"Mod Manager",       LMARG + U(2), U(46), U(400), U(16), g_fontS, hw);
+        mkStatic(&g_lblPath, L"APP FOLDER",        LMARG + U(2), U(80), U(300), U(14), g_fontS, hw);
 
         SetRect(&g_rEd, LMARG, U(100), cw - LMARG - U(104), U(130));
         g_edApp = CreateWindowExW(0, L"EDIT", L"",
@@ -2246,13 +2325,13 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
             a2w(DEFAULT_APP_DIR, d, MAX_PATH);
             SetWindowTextW(g_edApp, d);
         }
-        g_btnBrowse = CreateWindowExW(0, L"ExSmCtrl", L"Обзор",
+        g_btnBrowse = CreateWindowExW(0, L"ExSmCtrl", L"Browse",
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                     cw - LMARG - U(92), U(100), U(92), U(30), hw,
                     (HMENU) IDC_BROWSE, g_hInst, &g_ctrls[g_modCount]);
 
         mkStatic(&g_ver, L"", LMARG + U(2), U(138), cw - 2 * LMARG - U(4), U(16), g_fontS, hw);
-        mkStatic(&g_hdr, L"МОДУЛИ", LMARG + U(2), U(168), U(300), U(16), g_fontS, hw);
+        mkStatic(&g_hdr, L"MODULES", LMARG + U(2), U(168), U(300), U(16), g_fontS, hw);
 
         y = U(192);
         for (i = 0; i < g_modCount; i++) {
@@ -2353,7 +2432,7 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
             }
             if (g_mods[i].hasFileBtn) {
                 static const wchar_t *wpNames[MAX_FILEBTNS] =
-                    { L"Выбрать файл…", L"Сброс" };
+                    { L"Choose file…", L"Reset" };
                 for (s2 = 0; s2 < MAX_FILEBTNS; s2++) {
                     ExCtrl *fc = CTL_FILEBTN(i, s2);
 
@@ -2372,7 +2451,7 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
             y += cardH + U(8);
         }
 
-        g_btnRestore = CreateWindowExW(0, L"ExSmCtrl", L"Вернуть программу в сток",
+        g_btnRestore = CreateWindowExW(0, L"ExSmCtrl", L"Restore stock",
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                     LMARG, y + U(10), U(250), U(34), hw,
                     (HMENU) IDC_RESTORE, g_hInst, &g_ctrls[g_modCount + 1]);
@@ -2462,9 +2541,9 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
             g_modOn[idx] = on;
             InvalidateRect(g_check[idx], NULL, TRUE);
             if (on)
-                status(L"Устанавливаю и включаю: %ls...", g_mods[idx].title);
+                status(L"Installing and enabling: %ls...", g_mods[idx].title);
             else
-                status(L"Выключаю и удаляю: %ls...", g_mods[idx].title);
+                status(L"Disabling and removing: %ls...", g_mods[idx].title);
             if (!startJob(on ? 0 : 1, 1u << idx)) {
                 g_modOn[idx] = !on;        /* job refused: flip back */
                 InvalidateRect(g_check[idx], NULL, TRUE);
@@ -2495,11 +2574,11 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
         switch (id) {
         case IDC_RESTORE:
             if (MessageBoxW(hw,
-                    L"Удалить ВСЕ файлы, установленные менеджером "
+                    L"Delete ALL files installed by the manager "
                     L"(winmm.dll, winmm_real.dll, ExStarRec.dll, modules.ini, "
-                    L"modules\\), вернув EXStar Hub в исходное состояние?",
-                    L"Подтверждение", MB_OKCANCEL | MB_ICONWARNING) == IDOK) {
-                status(L"Возвращаю программу в сток...");
+                    L"modules\\), returning EXStar Hub to its original state?",
+                    L"Confirm", MB_OKCANCEL | MB_ICONWARNING) == IDOK) {
+                status(L"Restoring the app to stock...");
                 startJob(2, 0);
             } else {
                 refreshChecks();
@@ -2516,7 +2595,7 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
         uiEnable(TRUE);
         refreshChecks();
         if (!wp)
-            status(L"Операция не выполнена - подробности в диалоге.");
+            status(L"Operation not completed - see the dialog for details.");
         return 0;
     case WM_APP + 2: {          /* progress line from a worker thread */
         wchar_t *t = (wchar_t *) lp;

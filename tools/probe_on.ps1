@@ -1,6 +1,11 @@
 # probe_on.ps1 - deploy the marker_probe diagnostic module (run ELEVATED)
 # Copies marker_probe.dll into the app modules dir, enables it in modules.ini
 # and turns host logging on. Nothing else about the install changes.
+# WARNING: marker_probe competes with marker_quality for the same anchors
+# (color slot in the renderer + setMarkerPoints export). Whichever module
+# loads first wins; marker_quality then logs "candidates=0"/"hook failed"
+# and its recolor/enlargement stay dead. Disable marker_quality (or remove
+# the probe with probe_off.ps1) as soon as the diagnostic run is done.
 $ErrorActionPreference = 'Stop'
 $app  = 'C:\Program Files\Shining3d\EXStar Hub'
 $root = Split-Path -Parent $PSScriptRoot

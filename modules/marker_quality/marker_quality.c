@@ -1,6 +1,6 @@
 /*
  * marker_quality.c - paint tracking markers red / yellow / green according
- * to how well the scanner has observed them, EXStar Hub 3.1.49.
+ * to how well the scanner has observed them, EXStar Hub 2.x (file stamp 3.1.49).
  *
  * Architecture (two sides inside ONE module, mirroring the proven
  * production pipeline; the module loads into every app process, each side

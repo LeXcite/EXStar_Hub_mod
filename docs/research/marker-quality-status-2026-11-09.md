@@ -33,20 +33,20 @@ Follow-ups the same day:
   card height and window height now derive from the slider count;
 - usability iterations on the user's request: units shown with every
   value ("100 µm", "1.6×"), factory default annotated when moved off
-  ("0.29 mm (умолч. 0.10)"), spread switched to millimetres (the ini
+  ("0.29 mm (default 0.10)"), spread switched to millimetres (the ini
   still stores µm via `iniMul`); finally the five quality sliders were
-  replaced by four coupled preset pills «качество позиционирования
-  маркеров» (грубое 0.25 mm/10/2, среднее 0.1 mm/20/4, точное
-  0.05 mm/30/5, сверхточное 0.02 mm/45/7) - one click writes all three
+  replaced by four coupled preset pills "marker positioning quality"
+  (coarse 0.25 mm/10/2, medium 0.1 mm/20/4, fine 0.05 mm/30/5,
+  ultra-fine 0.02 mm/45/7) - one click writes all three
   green_* keys, selection is read back as the pill whose spread is
   nearest to the ini value (verified by an injected click test).
-- tried a "▶ Запустить" button on the version row that would start
+- tried a "▶ Launch" button on the version row that would start
   EXStar Hub with the normal non-elevated token (manager itself is
   requireAdministrator; explorer.exe hand-off silently no-ops and
   explorer-token duplication is blocked on this UAC setup - CPAU 1314 /
   CPWT 5; a self-deregistering one-shot Task Scheduler task with
   RunLevel Limited does yield a MEDIUM-IL child, verified with an HKLM
-  write probe). The user vetoed the feature ("запуска не происходит")
+  write probe). The user vetoed the feature ("it doesn't launch")
   and it was removed again before publishing; the manager ships as
   1.2.1 without a launch button.
 - field note: around this time the hub began self-exiting ~1 s after

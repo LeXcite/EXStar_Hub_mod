@@ -1,0 +1,79 @@
+EXStar Hub mods (Mod Manager)
+=============================
+
+Download the single file ExStarModManager_<version>.exe from Releases:
+https://github.com/LeXcite/EXStar_Hub_mod/releases
+(one file, no install, x64; it asks for admin rights once, everything
+else is done by the built-in Windows UAC prompt).
+
+The application version shown in the manager is the vendor product
+number (e.g. 2.1.0-10) from the uninstall registry key; the file stamp
+of EXStar Hub.exe is frozen by the vendor, so the manager shows both.
+
+Mods (each has its own switch):
+
+  Marker Quality   - marker color reflects tracking quality:
+                     red = weak, yellow = decent, green = reliable
+  Marker In-Frame  - a marker inside the view grows in size instead of
+                     flashing red (composes with Marker Quality)
+  Popup Dim        - the heavy grey veil behind popups becomes light
+                     and translucent, the busy-overlay background
+                     becomes frosted glass
+  Wallpaper        - your own picture as the application background
+  Real FPS         - live FPS: N readout at the bottom right of the
+                     scan page (real presented frames, not the vendor
+                     constant)
+  Laser 25+25      - all 25+25 laser lines reach the cloud, the button
+                     reads <50 lines> (the stock 7-line mode is kept)
+  Zoom to Fit Fill - <Zoom to Fit> (Ctrl+D) frames the model into the
+                     whole viewport, not just its center
+
+Install
+-------
+1. Close EXStar Hub.
+2. Run ExStarModManager_<version>.exe (admin rights are required -
+   normal Windows elevation).
+3. Check the green line shows the app folder correctly
+   (default C:\Program Files\Shining3d\EXStar Hub, override with
+   <Browse>).
+4. Flip ON the switches of the modules you want. Done.
+5. Start EXStar Hub.
+
+If the window is too big or too small for the screen, restart the
+manager with:  ExStarModManager_<version>.exe --zoom 1.5   (1.0 .. 4.0).
+The window auto-scales at every start; --zoom forces the factor.
+
+Tunables (per module card, apply after restart)
+-----------------------------------------------
+- Marker In-Frame: <scale> slider - how much an in-frame marker grows.
+- Popup Dim: <dim> slider - how opaque the veil behind popups stays
+  (0 = fully transparent).
+- Marker Quality: preset row <Coarse / Medium / Fine / Ultra> -
+  how precisely markers must be observed to turn green.
+- Wallpaper: <Choose file...> - any jpg/png/bmp, converted to a
+  1920x1080 JPEG fitted to the vendor slot; <Reset> - back to the
+  stock background.
+
+Every change is applied on the next start of EXStar Hub and lives only
+in process memory. The mod never modifies vendor files - the vendor
+update will simply overwrite them, and the mods keep working; deleting
+a few files (or the *Restore stock* button) reverts everything.
+
+Uninstall
+---------
+Press <Restore stock> (or delete by hand): winmm.dll (the proxy),
+winmm_real.dll, ExStarRec.dll, modules.ini and the modules\ folder in
+the app directory. What the manager placed is recorded in
+exstar_mods.state; the *Restore stock* button removes exactly that.
+A single module can also be turned off: its switch to OFF + restart.
+
+Command line (same as the GUI, no UI)
+-------------------------------------
+  ExStarModManager_<version>.exe --list
+  ExStarModManager_<version>.exe --install --modules id1,id2 [--app "C:\...\EXStar Hub"]
+  ExStarModManager_<version>.exe --remove  --modules id1,id2
+  ExStarModManager_<version>.exe --restore
+Module ids: marker_quality, marker_inframe, popup_dim, wallpaper,
+fps, laser50, fitfill.
+
+Repository: https://github.com/LeXcite/EXStar_Hub_mod

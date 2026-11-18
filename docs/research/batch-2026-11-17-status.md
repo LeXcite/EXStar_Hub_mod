@@ -1,117 +1,118 @@
-# Статус-журнал партии 2026-11-17 — fps / laser50 (+captions) / fitfill
+# Batch status journal 2026-11-17 — fps / laser50 (+captions) / fitfill
 
-Хроника одного захода: деплои, поимка бага подписи, объединение модулей,
-финальная ревизия кода. Протоколы RE — в `scanpage-qml-resources.md`,
-`laser-plane-ids.md`, `zoom-fit-optimization.md`; продуктовые карточки —
-README модулей. Всё выпущенное здесь проверено живьём на 3.1.x тем же
-вечером; в гит — по «давай в гит».
+Chronicle of a single sitting: deploys, catching the caption bug, merging the
+modules, final code revision. RE protocols — in `scanpage-qml-resources.md`,
+`laser-plane-ids.md`, `zoom-fit-optimization.md`; product cards —
+the modules' READMEs. Everything released here was verified live on
+2.x (file stamp 3.1.x) that same evening; into git — upon "put it in git".
 
 ---
 
-## 1. Деплой-реципиент (повторяемая часть)
+## 1. Deploy recipe (the repeatable part)
 
-Правки в `C:\Program Files\Shining3d\EXStar Hub\modules\` требуют elevation:
+Edits in `C:\Program Files\Shining3d\EXStar Hub\modules\` require elevation:
 
-1. убить `EXStar Hub.exe`, `scanservice.exe`, `scanhub.exe` (иначе DLL занята);
-2. записать runner-скрипт в temp (UTF-8 BOM), `Start-Process powershell
-   -Verb RunAs -Wait` внутри — копирование DLL/ini, маркер-файл `OK`/`ERROR`
-   в temp для проверки результатом;
-3. **первая UAC-попытка может молча не состояться** (маркер-файл не появился
-   — было дважды) → просто повторить;
-4. удалить `%LOCALAPPDATA%\ExStarHubMods\mod.log`, стартнуть приложение,
-   читать лог через ~50 с.
+1. kill `EXStar Hub.exe`, `scanservice.exe`, `scanhub.exe` (otherwise the DLL is locked);
+2. write a runner script to temp (UTF-8 BOM), `Start-Process powershell
+   -Verb RunAs -Wait` — inside it: copying the DLL/ini, a marker file `OK`/`ERROR`
+   to temp for checking the result;
+3. **the first UAC attempt may silently fail** (the marker file did not appear
+   — happened twice) → simply retry;
+4. delete `%LOCALAPPDATA%\ExStarHubMods\mod.log`, start the application,
+   read the log after ~50 s.
 
-`tools\new3_deploy.ps1` — тот же рецептор с зачисткой остатков выведенного
-standalone-модуля `captions` (dll/ini/секция ini/белый список).
+`tools\new3_deploy.ps1` — the same recipe plus cleanup of leftovers from the
+retired standalone module `captions` (dll/ini/ini section/whitelist).
 
-## 2. Лазер: линии (laser50 v1.0.0)
+## 2. Laser: lines (laser50 v1.0.0)
 
-- hook по имени экспорта `?set_match_plane_id_vulkan@...` (algorithmLzy.dll) —
-  в двух sibling-процессах (`Sn3dprocessManager.exe`, плюс второй UI-процесс);
-- трасса `call N: (3,21,3,21) -> remap` (×4 за сессию скана) + пользователь:
-  **«есть 25х25»** — цель достигнута, 7-линейный режим не затронут.
+- hook by export name `?set_match_plane_id_vulkan@...` (algorithmLzy.dll) —
+  in two sibling processes (`Sn3dprocessManager.exe`, plus a second UI process);
+- trace `call N: (3,21,3,21) -> remap` (×4 per scan session) + user:
+  **"25×25 lines there"** — goal reached, the 7-line mode untouched.
 
-## 3. Подписи: баг v1.0.0 и его расследование
+## 3. Captions: the v1.0.0 bug and its investigation
 
-Standalone-модуль `captions` v1.0.0 переписывал строку кнопки как
-`qsTr("%1线").arg(модель)` → `qsTr("%1 линий").arg(...)` с дописыванием
-«38». На англоязычном UI пользователя появилась кириллица («38 линий»).
+The standalone module `captions` v1.0.0 rewrote the button string by
+replacing the translatable source `qsTr("%1线")` itself with the Russian
+plural "lines" caption while hard-appending "38". On the user's English
+UI, that raw Russian caption appeared verbatim.
 
-Разбор (по дампу qrc-записи `ScanSettingModelProviderLaser` и скриншоту):
+Breakdown (from a dump of the qrc record `ScanSettingModelProviderLaser` and a screenshot):
 
-1. вендорский источник китайский (`%1线`), EN-`.qm`-каталог переводит его в
-   `%1 lines` — **ключ поиска по каталогу = текст источника**. Замена
-   источника убила попадание в каталог: наружу пошёл сырой replacement;
-2. число шло из модели (`crossLaserLineShowNum` = 39), суффикс цели «50» всё
-   равно не давал.
+1. the vendor source is Chinese (`%1线`), the EN `.qm` catalog translates it into
+   `%1 lines` — **the catalog lookup key = the source text**. Replacing
+   the source killed the catalog hit: the raw replacement leaked out;
+2. the number came from the model (`crossLaserLineShowNum` = 39), the target suffix "50"
+   never worked anyway.
 
-Фикс v1.1.0: трогать **только аргумент** — `.arg($scanSettingModelLaser.
-crossLaserLineShowNum)` → `.arg(50)`. Ключ цел, язык сохраняется, «7 lines»
-не затронут. Live: `packed 9777<-9587, 1 caption(s) rewritten (ok)` =
-dry-run `replace_lab` байт в байт; скриншот пользователя: «50 lines /
-7 lines». Правило зафиксировано в README и `scanpage-qml-resources.md` §5.
+Fix v1.1.0: touch **only the argument** — `.arg($scanSettingModelLaser.
+crossLaserLineShowNum)` → `.arg(50)`. The key stays intact, the language is preserved, "7 lines"
+untouched. Live: `packed 9777<-9587, 1 caption(s) rewritten (ok)` =
+dry-run `replace_lab` byte for byte; user's screenshot: "50 lines /
+7 lines". The rule is recorded in the README and `scanpage-qml-resources.md` §5.
 
-## 4. Объединение captions → laser50 v1.1.0 (решение)
+## 4. Merging captions → laser50 v1.1.0 (decision)
 
-Подпись «50» без реальных 50 линий — обещание; линии с надписью «39» —
-обман. Отдельный переключатель допускал именно эти промежуточные состояния,
-поэтому это одна возможность: модуль `laser50`, подвыключатель
-`captions = 1`. Половинки процессно независимы ([lines] кормится
-`algorithmLzy.dll`, [caption] — `ScanPage_E7.dll`; в чужом процессе
-молчат; caption перестаёт опрашивать цель через 2 мин, чтобы скан-воркеры
-не шумели). Standalone-модуль удалён полностью: файлы, карточка менеджера,
-секция ini, белый список, упоминания в доках (в ROADMAP п.4 — осознанная
-запись «объединено» с уроками).
+The "50" caption without a real 50 lines is a promise; lines labeled "39" —
+a lie. A separate switch allowed exactly those intermediate states,
+so this is one feature: module `laser50`, sub-switch
+`captions = 1`. The halves are process-independent ([lines] is fed by
+`algorithmLzy.dll`, [caption] by `ScanPage_E7.dll`; in a foreign process
+they stay silent; caption stops querying the target after 2 min so that scan
+workers don't spam. The standalone module was removed completely: files, manager card,
+ini section, whitelist, mentions in the docs (ROADMAP item 4 is a deliberate
+"merged" entry with the lessons).
 
-## 5. Остальные фичи партии — живой вердикт пользователя
+## 5. The rest of the batch's features — the user's live verdict
 
-| фича | подтверждение |
+| feature | confirmation |
 |---|---|
-| fps v1.0.0 (qrc-вставка `exFpsLabel`) | лог `raw 137735->138526, packed 22753<-22610 (ok)` = dry-run; «**fps вижу**» |
-| fitfill v1.0.0 (форс `setIsZoomOptimization` = 0) | `hooked ... forcing 0` + форварды ×5; «**зум то фит — работает**» |
-| wallpaper, popup_dim, marker_* | live-verified ранее (14.11 и раньше), в этой партии не тронуты |
+| fps v1.0.0 (qrc insert `exFpsLabel`) | log `raw 137735->138526, packed 22753<-22610 (ok)` = dry-run; "**I can see the fps**" |
+| fitfill v1.0.0 (forcing `setIsZoomOptimization` = 0) | `hooked ... forcing 0` + forwards ×5; "**Zoom to Fit works**" |
+| wallpaper, popup_dim, marker_* | live-verified earlier (14.11 and before), untouched in this batch |
 
-Побочный фикс партии: хостовый ini-парсер теперь понимает кавычки —
-`color = "#8ecbff"` доходит целиком (`#` режет комментарий только вне
-`"..."`). Без этого fps-модуль получал пустой цвет.
+Side fix of the batch: the host's ini parser now understands quotes —
+`color = "#8ecbff"` arrives in full (`#` cuts a comment only outside
+`"..."`). Without it the fps module got an empty color.
 
-## 6. Финальная ревизия кода (тот же день)
+## 6. Final code revision (same day)
 
-Правило: **никаких правок, способных сломать live-verified поведение, ради
-стиля**; проверка — совпадение свежего лога с прежним байт в байт.
+Rule: **no edits that could break live-verified behavior for the sake of
+style**; the check is the fresh log matching the previous one byte for byte.
 
-- вынесено в общие header-only хелперы: вся qrc-машинерия
-  (`include\exstar_qrc.h`: zlib framing, единственный безопасный путь
-  записи, скан секций, map-уведомление — было продублировано в fps и
-  laser50, ~220 строк минус) и поиск уникального экспорта по имени
-  (`include\exstar_export.h`; использовали laser50 и fitfill). Форматы
-  строк лога сохранены дословно — их цитируют README/артефакты;
-- `popup_dim` намеренно НЕ рефакторен (свой equal-length-вариант, стабильная
-  v1.2.7 — работающий код не под стилевые правки);
-- `tools\fps_lab.c` удалён: `replace_lab` воспроизвёл его предсказание для
-  fps байт в байт (stock 22392 → patched 22610 ≤ 22753) — один dry-run
-  harness на все qrc-правки;
-- удалены промежуточные релизы менеджера 1.3.3–1.3.6 и stale
-  `build\captions.dll`; позже в тот же день принято решение вынести все
-  EXE из git в GitHub Releases (см. §7) — в `release/` до актуального
+- extracted into shared header-only helpers: all the qrc machinery
+  (`include\exstar_qrc.h`: zlib framing, the single safe write path,
+  section scan, map notification — it had been duplicated in fps and
+  laser50, ~220 lines removed) and unique export lookup by name
+  (`include\exstar_export.h`; used by laser50 and fitfill). Log line
+  formats preserved verbatim — the READMEs/artifacts quote them;
+- `popup_dim` deliberately NOT refactored (its own equal-length variant, stable
+  v1.2.7 — working code is not up for style edits);
+- `tools\fps_lab.c` deleted: `replace_lab` reproduced its prediction for
+  fps byte for byte (stock 22392 → patched 22610 ≤ 22753) — one dry-run
+  harness for all qrc edits;
+- removed intermediate manager releases 1.3.3–1.3.6 and the stale
+  `build\captions.dll`; later the same day the decision was made to move all
+  EXEs out of git into GitHub Releases (see §7) — `release/` keeps only up to the current
   1.3.7;
-- `examples\template.c` доведён до SDK (не хватало `EX_EXPORT` и `DllMain` —
-  стартер не собирался бы в рабочий модуль);
-- статусы приведены к фактам: fps/fitfill/laser50 → ✅ live-verified;
-  `.gitignore` +`Artboard 1.jpg`; убраны дубль заголовка ROADMAP и
-  неиспользуемый счётчик `g_remaps`.
+- `examples\template.c` brought up to the SDK (it was missing `EX_EXPORT` and `DllMain` —
+  the starter wouldn't build into a working module);
+- statuses aligned with the facts: fps/fitfill/laser50 → ✅ live-verified;
+  `.gitignore` +`Artboard 1.jpg`; removed the duplicate ROADMAP heading and
+  the unused counter `g_remaps`.
 
-Контрольный прогон после рефакторинга (приложение на новых DLL): `fps ...
+Control run after the refactoring (application on the new DLLs): `fps ...
 22753<-22610 (ok)`, `caption ... 9777<-9587 ... (ok)`, `laser50: hooked ...
-strict=1`, `fitfill: ... forwarding 0` ×5 — идентично дореvisionному.
+strict=1`, `fitfill: ... forwarding 0` ×5 — identical to the pre-revision one.
 
-## 7. Итог и границы выпуска
+## 7. Result and release boundaries
 
-Готово к коммиту: модули fps/laser50/fitfill, `include\*.h`, `src\host.c`
-(+кавычки ini), `src\manager.c` (1.3.7, 7 карточек), `build.ps1`, доки,
-`tools\` (replace_lab, new3_deploy, zrc_lab), `.gitignore`. Не публикуется:
-приватная внешняя RE-база (gitignore), скриншоты/`Artboard 1.jpg`.
-EXE в репозиторий больше не коммитятся вообще (в т.ч. исторические —
-untrack): бинарники публикуются только как ассеты GitHub Releases,
-в `release\` в git остаётся один «КАК УСТАНОВИТЬ.txt» с указанием
-ссылки на Releases.
+Ready to commit: modules fps/laser50/fitfill, `include\*.h`, `src\host.c`
+(+ ini quotes), `src\manager.c` (1.3.7, 7 cards), `build.ps1`, docs,
+`tools\` (replace_lab, new3_deploy, zrc_lab), `.gitignore`. Not published:
+the private external RE-base (gitignored), screenshots/`Artboard 1.jpg`.
+EXEs are no longer committed to the repository at all (including historical ones —
+untracked): binaries are published only as GitHub Releases assets,
+`release\` in git keeps only one `HOWTO-INSTALL.txt` pointing to the Releases
+link.

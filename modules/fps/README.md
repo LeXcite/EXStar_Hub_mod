@@ -31,7 +31,7 @@ restart restores stock behaviour.
 |---|---|
 | Module id | `fps` |
 | Version | 1.0.0 |
-| Status | ✅ live-verified on 3.1.x (2026-11-17): log `(ok)` repeatedly and the user confirmed the `FPS: N` readout on the scan page ("fps вижу"); label hidden at 0 fps by design (idle UI presents no frames) |
+| Status | ✅ live-verified on 2.x (file stamp 3.1.x) through 2.1.0-10 (file stamp 3.1.49) (2026-11-17): log `(ok)` repeatedly and the user confirmed the `FPS: N` readout on the scan page; label hidden at 0 fps by design (idle UI presents no frames) |
 | Mechanism | `LdrRegisterDllNotification` + worker fallback (5 min polling); one anchor pass on the inflated text; level-9 re-deflate must fit the original compressed length; `VirtualProtect` over header+stream; verify-by-reinflate from the image with byte-exact backup/restore; SEH around every foreign dereference; `InterlockedCompareExchange` guard between loader-thread and worker; silent refusal on any mismatch |
 | Requires | zlib1.dll in the process (the app always loads it); no GL hooks; `QML_DISABLE_DISK_CACHE=1` is set by the module at init |
 
@@ -57,8 +57,8 @@ counter at 0 and the label stays hidden - degraded, never broken.
 Idle UI presents no frames at all (scene-graph renders on demand), so
 `frameSwapped` stops and the label hides itself; it appears exactly when
 something is animating (scanning, rotating the view). That is the same
-final behaviour the friend converged on (right 62 / bottom 56, no
-"(экран)" suffix).
+final behaviour the external helper converged on (right 62 / bottom 56,
+no "(screen)" suffix).
 
 ## Configuration
 
@@ -85,7 +85,7 @@ verbose = 1                      log patch details to mod.log
 The Mod Manager card *Real FPS* has no controls on purpose (UI-only
 module, like the stock "FPS" panel it supplements).
 
-## Verification log (3.1.x)
+## Verification log (file stamp 3.1.x)
 
 ```
 fps v1.0.0 armed in pid=11380: target ScanPage_E7.dll, margins 62/56, font 16 #8ecbff

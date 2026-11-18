@@ -18,13 +18,18 @@ verification and failure modes - readable cold, no external context needed.
 
 | Module | Description | Status |
 |---|---|---|
-| [marker_inframe](modules/marker_inframe/README.md) | in-frame marker grows in size instead of flashing the red "detected in current scan frame" color; the marker keeps its color, so it composes with Marker Quality | ✅ tested on 3.1.49 |
-| [marker_quality](modules/marker_quality/README.md) | tracking markers are painted by observation quality: dark red (seen) → yellow (decent) → green (fully tracked, latched) | ✅ tested on 3.1.49 |
-| [popup_dim](modules/popup_dim/README.md) | grey veils behind popups become light translucent overlays; the solid grey background of busy overlays (project loading / processing / exiting) becomes frosted glass over the live page - redirected at its single shared source | ✅ live-verified on 3.1.x (v1.2.7, 2026-11-14) |
-| [wallpaper](modules/wallpaper/README.md) | custom application background: the vendor's embedded JPEG in AppUi.dll is replaced in process memory with `modules\wallpaper.jpg` (placed and converted by the Mod Manager); stock wallpaper returns on *Сброс* | ✅ live-verified on 3.1.x (v1.0.0, 2026-11-14) |
-| [fps](modules/fps/README.md) | live `FPS: N` readout at the bottom right of the scan page: the **real** UI frame rate (frameSwapped counter) inserted into the compressed scan page QML at DLL map time - the vendor "FPS: 80-90" is a constant capture-pipeline statistic, not rendered frames | ✅ live-verified on 3.1.x (v1.0.0, 2026-11-17) |
-| [laser50](modules/laser50/README.md) | the complete 50-line feature, one switch: detours the exported `set_match_plane_id_vulkan` (by name) to widen the plane-id tuple `(3,21,3,21)` → `(0,24,0,24)` so all 25+25 lines reach the cloud, **and** rewrites only the label's argument (`.arg(50)`, translated qsTr source kept) so the Light Source Mode button reads `50 lines`; `7 lines` stays stock | ✅ live-verified on 3.1.x (v1.1.0, 2026-11-17: 25×25 lines in a real scan + `50 lines` button, EN UI intact) |
-| [fitfill](modules/fitfill/README.md) | Ctrl+D / *Zoom to Fit* frames the model into the viewport: forces the manipulator's `setIsZoomOptimization` export off (the same switch the friend's version-bound byte patch cleared - semantics now RE'd: pinned camera distance mode) | ✅ live-verified on 3.1.x (v1.0.0, 2026-11-17) |
+| [marker_inframe](modules/marker_inframe/README.md) | in-frame marker grows in size instead of flashing the red "detected in current scan frame" color; the marker keeps its color, so it composes with Marker Quality | ✅ tested on 2.x (file stamp 3.1.49) |
+| [marker_quality](modules/marker_quality/README.md) | tracking markers are painted by observation quality: dark red (seen) → yellow (decent) → green (fully tracked, latched) | ✅ tested on 2.x (file stamp 3.1.49) |
+| [popup_dim](modules/popup_dim/README.md) | grey veils behind popups become light translucent overlays; the solid grey background of busy overlays (project loading / processing / exiting) becomes frosted glass over the live page - redirected at its single shared source | ✅ live-verified on 2.x (file stamp 3.1.x) through 2.1.0-10 (v1.2.8, 2026-11-18) |
+| [wallpaper](modules/wallpaper/README.md) | custom application background: the vendor's embedded JPEG in AppUi.dll is replaced in process memory with `modules\wallpaper.jpg` (placed and converted by the Mod Manager); stock wallpaper returns on *Reset* | ✅ live-verified on 2.x (file stamp 3.1.x, v1.0.0) |
+| [fps](modules/fps/README.md) | live `FPS: N` readout at the bottom right of the scan page: the **real** UI frame rate (frameSwapped counter) inserted into the compressed scan page QML at DLL map time - the vendor "FPS: 80-90" is a constant capture-pipeline statistic, not rendered frames | ✅ live-verified on 2.x (file stamp 3.1.x, v1.0.0) |
+| [laser50](modules/laser50/README.md) | the complete 50-line feature, one switch: detours the exported `set_match_plane_id_vulkan` (by name) to widen the plane-id tuple `(3,21,3,21)` → `(0,24,0,24)` so all 25+25 lines reach the cloud, **and** rewrites only the label's argument (`.arg(50)`, translated qsTr source kept) so the Light Source Mode button reads `50 lines`; `7 lines` stays stock | ✅ live-verified on 2.x (file stamp 3.1.x, v1.1.0: 25×25 lines in a real scan + `50 lines` button, EN UI intact) |
+| [fitfill](modules/fitfill/README.md) | Ctrl+D / *Zoom to Fit* frames the model into the viewport: forces the manipulator's `setIsZoomOptimization` export off (the same switch the friend's version-bound byte patch cleared - semantics now RE'd: pinned camera distance mode) | ✅ live-verified on 2.x (file stamp 3.1.x, v1.0.0) |
+
+All seven modules were re-verified live against the vendor update
+**2.1.0-10 (file stamp 3.1.49)** on 2026-11-18 with zero code changes -
+migration evidence:
+[update-2.1.0-10-migration.md](docs/research/update-2.1.0-10-migration.md).
 
 ## Mod Manager
 
@@ -37,19 +42,19 @@ host and all modules are embedded as resources):
   density are detected at startup; force it with `--zoom 1.5`).
   Modules with tunable behavior show inline controls that write the
   matching ini keys and apply after an EXStar Hub restart:
-  *Marker In-Frame*: an *увеличение* slider (in-frame scale). *Marker
-  Quality*: a "качество позиционирования маркеров" preset row - one click
-  sets the three coupled green thresholds together (грубое 0.25 mm /
-  среднее 0.1 mm / точное 0.05 mm / сверхточное 0.02 mm spread, with
+  *Marker In-Frame*: a *scale* slider (in-frame scale). *Marker
+  Quality*: a "marker positioning quality" preset row - one click
+  sets the three coupled green thresholds together (Coarse 0.25 mm /
+  Medium 0.1 mm / Fine 0.05 mm / Ultra 0.02 mm spread, with
   matching frames and viewing directions); the active preset is read
-  back from the ini. *Popup Dim*: a *затемнение* slider (how opaque the
-  overlay behind popups stays). *Wallpaper*: a *Выбрать файл…* button
+  back from the ini. *Popup Dim*: a *dim* slider (how opaque the
+  overlay behind popups stays). *Wallpaper*: a *Choose file…* button
   (any jpg/png/bmp is converted to a 1920x1080 JPEG fitted into the
   vendor's wallpaper slot and placed as `modules\wallpaper.jpg`) and a
-  *Сброс* button (back to the stock wallpaper). Values are stored in
+  *Reset* button (back to the stock wallpaper). Values are stored in
   the module's ini;
   switch states are read back from disk, so the window always shows what
-  is actually installed. *Вернуть программу в сток* removes everything.
+  is actually installed. *Restore stock* removes everything.
 * **CLI**:
 
 ```text
@@ -80,7 +85,7 @@ per-module config, GL entry-point resolution, MinHook-backed detour
 install. Details: [docs/architecture.md](docs/architecture.md).
 
 Reverse-engineering protocols behind the features
-([docs/research/](docs/research/), рус.):
+([docs/research/](docs/research/)):
 
 * [marker-pipeline.md](docs/research/marker-pipeline.md) — the red-marker
   signal and why `glUniform4fv` hooking beats patching (marker_quality);
@@ -93,14 +98,19 @@ Reverse-engineering protocols behind the features
   zoom-optimization mode behind "Zoom to Fit" (fitfill);
 * [batch-2026-11-17-status.md](docs/research/batch-2026-11-17-status.md) —
   dated journal of the fps/laser50/fitfill batch (deploys, the caption
-  v1.0.0 catalog bug and its fix, module merge, code revision).
+  v1.0.0 catalog bug and its fix, module merge, code revision);
+* [update-2.1.0-10-migration.md](docs/research/update-2.1.0-10-migration.md)
+  — offline-validation + byte-parity methodology for vendor updates, and
+  the 2.1.0-10 migration record (zero code changes, one deploy-hygiene
+  lesson).
 
 What is shipped and what is planned next (the borrowed-capabilities port
-batch): [docs/ROADMAP.md](docs/ROADMAP.md) (рус.).
+batch): [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Requirements
 
-* Windows x64, EXStar Hub 3.1.x (see the compatibility table below);
+* Windows x64, EXStar Hub 2.x (file stamp 3.1.x - see the compatibility
+  table below);
 * build: Visual Studio 2022 Build Tools, "Desktop development with C++".
 
 ## Build
@@ -173,10 +183,17 @@ All changes apply at application start.
 
 ## Compatibility
 
-| EXStar Hub | Tested | Notes |
-|---|---|---|
-| 3.1.49 | ✅ | Windows 11 x64, NVIDIA driver |
-| other 3.1.x | ? | re-check research anchors before deploying |
+The vendor keeps two version numbers: the **product number** from the
+uninstall registry key (`DisplayVersion`, shown by the Mod Manager) and
+the **file stamp** - the `ProductVersion` of `EXStar Hub.exe`, which the
+vendor does not bump per release. The anchors bind to binaries, so the
+file stamp is what compatibility actually follows.
+
+| EXStar Hub (product) | file stamp | Tested | Notes |
+|---|---|---|---|
+| 2.1.0-10 | 3.1.49 | ✅ | Windows 11 x64, NVIDIA driver; full re-verification 2026-11-18 |
+| 2.0.0-45 | 3.1.49 | ✅ | the original research target (same stamp family) |
+| other 2.x / other stamps | - | ? | re-check research anchors before deploying |
 
 ## Writing a module
 

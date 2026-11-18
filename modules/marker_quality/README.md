@@ -19,7 +19,7 @@
 | Color contract | red must stay dark (`R = 128/255 < 0.55`) so marker_inframe's "vendor red" detector (R ≥ 0.55, G ≤ 0.38, B ≤ 0.38) never fires on it; in-frame tag = quality color with green byte +1/255, exact float4 tuples exported via `ex_mod_inframe_snapshot()` |
 | Key source file | `modules/marker_quality/marker_quality.c` |
 | Verify at runtime | `verbose = 1` + `[host] log = 1` → calibration reports (`report_ms`) and publish cadence in `%LOCALAPPDATA%\ExStarHubMods\mod.log` |
-| Version | 1.0.2 (current), tested on 3.1.49 |
+| Version | 1.0.2 (current), tested on 2.x (file stamp 3.1.49) |
 
 During a scan every tracking marker is painted by how well the scanner
 has observed it:
@@ -35,7 +35,7 @@ Markers the scanner has never seen keep the vendor color.
 | | |
 |---|---|
 | Module id | `marker_quality` |
-| Status | tested on EXStar Hub 3.1.49 (Windows 11 x64) |
+| Status | tested on EXStar Hub 2.x (file stamp 3.1.49), incl. 2.1.0-10 (Windows 11 x64) |
 | Mechanism | scan side: a detour of `HandlePrjFile::putFrameDataIntoFile` (by export name) in `scanservice.exe` observes every frame, accumulates per-marker coverage (Welford RMS + ≥20° direction slots) and publishes a snapshot file into `C:\Users\Public\Shining3d\EXStar Hub\`; render side: in the hub the vendor's per-frame marker color callback (signature-scanned pointer, never patched on disk) is wrapped — after the vendor paints, visible markers get the quality color through the per-child osg uniform `frontInnerColor`. |
 | Session scope | the snapshot file is deleted at session start and holds no state across sessions |
 
@@ -72,8 +72,8 @@ share_inframe    = 1     ; invisible in-frame tag for marker_inframe
 ```
 
 Restart EXStar Hub after editing. The Mod Manager GUI exposes a
-"marker positioning quality" preset row (грубое/среднее/точное/
-сверхточное) - one click writes green_spread_um, green_frames and
+"marker positioning quality" preset row (Coarse/Medium/Fine/
+Ultra) - one click writes green_spread_um, green_frames and
 green_supported together; the yellow thresholds stay ini-only.
 
 ## Multi-process note

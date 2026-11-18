@@ -77,7 +77,7 @@ $managerMods = @(
     @{ id = 'fitfill';        ini = 'modules\fitfill\fitfill.ini' }
 )
 
-$version = '1.3.7'   # product version; release exe is copied as ExStarModManager_<version>.exe
+$version = '1.3.8'   # product version; release exe is copied as ExStarModManager_<version>.exe
 
 function New-VersionRes($path, $desc, $origName) {
     $vq = ($version -split '\.').Trim()
@@ -92,6 +92,7 @@ BEGIN
     BLOCK "040904b0" {
       VALUE "CompanyName",    "EXStar Hub Mods"
       VALUE "FileDescription", "$desc"
+      VALUE "FileVersion",     "$version"
       VALUE "LegalCopyright",  "MIT License"
       VALUE "OriginalFilename","$origName"
       VALUE "ProductName",     "EXStar Hub Mods"
@@ -165,7 +166,7 @@ $steps.Add("cl $compile /TP /Fobuild\obj\ src\manager.c" +
            " $uac" +
            ' /MANIFESTINPUT:src\manager.exe.manifest' +
            ' user32.lib gdi32.lib shell32.lib ole32.lib comdlg32.lib comctl32.lib version.lib' +
-           ' dwmapi.lib')
+           ' advapi32.lib dwmapi.lib')
 
 # --------------------------------------------------------------- build --
 $bat = Join-Path $env:TEMP 'exstar_mods_build.bat'

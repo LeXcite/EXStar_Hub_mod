@@ -59,9 +59,24 @@ int main(int argc, char **argv)
         fprintf(stderr, "zlib entry points missing\n");
         return 2;
     }
-    /* production defaults: dim_alpha = 0, soft_blur = 1 */
-    g_pct = 0;
-    strcpy_s(g_opStr, sizeof g_opStr, "0.0");
+    /* production defaults: dim_alpha = 0, soft_blur = 1
+     * (override the curtain fade with a 3rd argument: 0..100) */
+    g_pct = (argc > 3) ? atoi(argv[3]) : 0;
+    if (g_pct < 0)
+        g_pct = 0;
+    if (g_pct > 100)
+        g_pct = 100;
+    if (g_pct <= 0)
+        strcpy_s(g_opStr, sizeof g_opStr, "0.0");
+    else if (g_pct >= 100)
+        strcpy_s(g_opStr, sizeof g_opStr, "1.0");
+    else {
+        int nn = g_pct > 99 ? 99 : g_pct;
+        g_opStr[0] = '.';
+        g_opStr[1] = (char)('0' + nn / 10);
+        g_opStr[2] = (char)('0' + nn % 10);
+        g_opStr[3] = 0;
+    }
     g_softBlur = 1;
     g_verbose  = 1;
 

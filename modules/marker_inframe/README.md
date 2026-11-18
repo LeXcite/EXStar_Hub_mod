@@ -16,7 +16,7 @@
 | Critical rule | **never scale `radius` at upload time** - OSG only re-uploads changed values, `radius` is shared by all markers: scale at upload leaks into every later marker draw. Scale per-draw-call and restore immediately |
 | Key source file | `modules/marker_inframe/marker_inframe.c` |
 | Verify at runtime | `probe = 1` in `modules\marker_inframe.ini` + `[host] log = 1` → marker events in `%LOCALAPPDATA%\ExStarHubMods\mod.log` |
-| Version | 1.1.0 (current), tested on 3.1.49 |
+| Version | 1.1.0 (current), tested on 2.x (file stamp 3.1.49) |
 
 EXStar Hub paints a marker disc **red** whenever the marker is detected
 in the current scanner frame. This module removes that color signal: an
@@ -29,7 +29,7 @@ frame is just a bigger green marker.
 | | |
 |---|---|
 | Module id | `marker_inframe` |
-| Status | tested on EXStar Hub 3.1.49 (Windows 11 x64) |
+| Status | tested on EXStar Hub 2.x (file stamp 3.1.49), incl. 2.1.0-10 (Windows 11 x64) |
 | Mechanism | detours of the driver `glUniform4fv`/`glUniform4f` thunks (red suppression, in-frame latch) and `glDrawArrays`/`glDrawElements` (per-draw radius scoping) for the marker program only |
 | Research | [docs/research/marker-pipeline.md](../../docs/research/marker-pipeline.md) |
 

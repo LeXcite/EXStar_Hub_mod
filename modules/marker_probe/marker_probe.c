@@ -1,8 +1,11 @@
 /*
  * marker_probe.c - DIAGNOSTIC probe for the future marker_quality module.
  * Development tool: not embedded into the manager, not released.
+ * NOTE: it detours the same anchors as marker_quality (color slot,
+ * setMarkerPoints) - never leave it in the modules dir next to an enabled
+ * marker_quality: whichever loads first wins and the other one degrades.
  *
- * Goals (live answers for EXStar Hub 3.1.49, no RVAs anywhere):
+ * Goals (live answers for EXStar Hub 2.x (file stamp 3.1.49), no RVAs anywhere):
  *   1. Frame pipeline: does HandlePrjFile::putFrameDataIntoFile receive
  *      frameData.curMarker / rt / frameCount; are marker records 0xB0 with
  *      int32 id at +0x50 and float3 local position at +0; does

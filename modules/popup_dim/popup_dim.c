@@ -1,7 +1,7 @@
 ﻿/*
  * popup_dim.c - soften the full-screen grey curtain the vendor paints
  * behind modal popups (notifications, loading bars, errors) of
- * EXStar Hub 3.1.x.
+ * EXStar Hub 2.x (file stamp 3.1.x).
  *
  * Where the curtain comes from (verified by live-patching a running hub):
  *   The whole UI is QML (Qt Quick). Modal popups dim the window through
@@ -32,9 +32,10 @@
  *   2) Applies a table of literal byte patches (context anchored,
  *      CRLF aware) that turn the opaque blurred backdrop into a
  *      transparent one and soften the blur radius/loops. The
- *      `dim_alpha` percentage drives the overlay opacity (quantized to
- *      0.1 steps, which is what the QML literals offer) for the modal
- *      overlays; the blur softening itself is on/off (`soft_blur`).
+ *      `dim_alpha` percentage drives the overlay opacity (1% steps via
+ *      a fixed 3-byte ".NN" literal form - QML parses leading-dot
+ *      floats) for the modal overlays; the blur softening itself is
+ *      on/off (`soft_blur`).
  *   3) Keeps the v1 pass: rewrite the ARGB alpha of pure-black
  *      `Overlay.modal: ... color: "#aa000000"` literals to dim_alpha.
  *   4) Compressed QML: AppUi/ScanPage_E7/pluginSn3DNavigation keep much
@@ -82,6 +83,21 @@
  *      the real content.  Radius/loops are still softened; dialog blocks
  *      (opacity present / `$`-qualified source) are left untouched.
  *      The application's own zlib1.dll does the (de)compression.
+ *      1.2.8 follows the vendor's 2.1.0-10 rewrite of that curtain: it
+ *      now sits inside `Item { opacity: $appUiController.isFirmwareUpdting
+ *      ? 0.6 : 1.0  RecursiveBlur { source: backgroundImg ... } }` - a
+ *      BINDING the old literal edits could not reach (the curtain stayed
+ *      stock-solid at every dim_alpha, and its static-image blur made
+ *      the busy/firmware overlay look like a copy of the app wallpaper).
+ *      The source redirect still fires (the blur block itself carries no
+ *      `opacity:`), and for redirected blocks 1.2.8 now (a) KEEPS the
+ *      vendor's radius/loops - softened to 0.1/1 a RecursiveBlur renders
+ *      a sharp frozen copy, which is what looked like "no blur at all";
+ *      the untouched 7.5/10 blur is exactly the frosted look of the
+ *      dialog backdrops - and (b) scales BOTH literals of the vendor's
+ *      own ternary opacity binding digit-preserving ("? 0.6 : 1.0" ->
+ *      "? 0.4 : 0.6" at 60%, "? 0.0 : 0.0" at 0%), so dim_alpha finally
+ *      drives the busy curtains too.
  *
  *   The QML disk cache (qmlcache) replays pre-compiled sources and would
  *   hide every byte patch, so the module exports QML_DISABLE_DISK_CACHE=1
@@ -96,7 +112,7 @@
  *
  * Configuration (modules\popup_dim.ini):
  *   dim_alpha = 0       curtain opacity for modal overlays, percent
- *                       (0..100; QML granularity is 10 percent steps)
+ *                       (0..100; 1 percent steps since 1.2.8)
  *   soft_blur = 1       also reduce blur radius/loops (0/1, def 1)
  *   modules   = ...     DLLs to scan (def the three vendor UI DLLs)
  *   verbose   = 0|1     log patch details to mod.log (def 1)
@@ -112,7 +128,7 @@
 
 #define MAX_TARGETS   8
 #define MAX_PATTERNS 16
-#define MOD_VERSION   "1.2.7"
+#define MOD_VERSION   "1.2.8"
 
 static const ExModuleInfo g_info = {
     EX_ABI_VERSION,
@@ -860,13 +876,68 @@ static int swapSourceToMainbody(unsigned char *b, size_t len)
     return 1;
 }
 
+/* 2.1.0-10 wraps the busy/firmware curtain in
+ *   `opacity: $appUiController.isFirmwareUpdting ? 0.6 : 1.0`
+ * a binding no literal edit can touch. Both operands are single-decimal
+ * ("d.d"); scale them by dim_alpha digit-preserving (3 -> 3 bytes) so
+ * the slider fades the whole curtain: "? 0.6 : 1.0" -> "? 0.0 : 0.0"
+ * at 0%, untouched at 100%. Searched in the short window before the
+ * already-redirected blur block. Returns 1 when the binding was found
+ * (scaled, or kept verbatim at 100%). */
+static int scaleTernaryOpacity(unsigned char *t, size_t b)
+{
+    size_t s0, s, q;
+
+    if (b < 20)
+        return 0;
+    s0 = b > 320 ? b - 320 : 0;
+    for (s = b - 9; s > s0; s--) {
+        unsigned char *x, *y;
+        if (memcmp(t + s, "opacity: $", 10) != 0)
+            continue;
+        q = s + 10;
+        while (q < b && q - s < 160 && t[q] != '?')
+            q++;
+        if (q >= b || q - s >= 160)
+            continue;
+        x = t + q + 1;
+        while (x < t + b && (*x == ' ' || *x == '\t'))
+            x++;
+        if (t + b - x < 4 || x[0] < '0' || x[0] > '9' ||
+            x[1] != '.' || x[2] < '0' || x[2] > '9')
+            continue;
+        y = x + 3;
+        while (y < t + b && (*y == ' ' || *y == ':' || *y == '\t'))
+            y++;
+        if (t + b - y < 3 || y[0] < '0' || y[0] > '9' ||
+            y[1] != '.' || y[2] < '0' || y[2] > '9')
+            continue;
+        if (g_pct < 100) {
+            int v1 = (x[0] - '0') * 10 + (x[2] - '0');
+            int v2 = (y[0] - '0') * 10 + (y[2] - '0');
+            v1 = (v1 * g_pct + 50) / 100;
+            v2 = (v2 * g_pct + 50) / 100;
+            if (v1 > 10) v1 = 10;
+            if (v2 > 10) v2 = 10;
+            x[0] = (unsigned char)('0' + v1 / 10);
+            x[2] = (unsigned char)('0' + v1 % 10);
+            y[0] = (unsigned char)('0' + v2 / 10);
+            y[2] = (unsigned char)('0' + v2 % 10);
+        }
+        return 1;
+    }
+    return 0;
+}
+
 /* Walk every `RecursiveBlur { ... }` block; if the block references
  * backgroundImg (curtain over a window screenshot) dim it.  Blocks that
- * blur the plain (unqualified) `backgroundImg` and carry no `opacity:`
- * are the solid busy-overlay curtains: their source is redirected to
- * the live page instead (1.2.7), everything else only gets dimmed.
- * Returns the number of dimmed/redirected blocks.
- * Length of the text never changes. */
+ * blur the plain (unqualified) `backgroundImg` are the solid busy-overlay
+ * curtains: their source is redirected to the live page (1.2.7) and,
+ * since 1.2.8, the block KEEPS the vendor's radius/loops (that is the
+ * frosted look) while dim_alpha fades it through the vendor's own
+ * ternary `opacity:` binding on the parent Item.  Everything else only
+ * gets dimmed as before.  Returns the number of dimmed/redirected
+ * blocks; the length of the text never changes. */
 static int dimBlurBlocks(unsigned char *t, size_t n)
 {
     static const unsigned char kRb[] = "RecursiveBlur";
@@ -898,14 +969,20 @@ static int dimBlurBlocks(unsigned char *t, size_t n)
 
         if (findBytes(t + b, e - b, kBg, sizeof kBg - 1) >= 0 &&
             !lineCommented(t, b)) {
-            if (findBytes(t + b, e - b, kOp, sizeof kOp - 1) < 0) {
-                if (g_verbose)
-                    printf("  [dbg] curtain@%zu noopacity swap=%d\n",
-                           b, swapSourceToMainbody(t + b, e - b));
+            int sw = 0;
+            if (findBytes(t + b, e - b, kOp, sizeof kOp - 1) < 0)
+                sw = swapSourceToMainbody(t + b, e - b);
+            if (sw) {
+                int bs = scaleTernaryOpacity(t, b);
+                if (g_verbose && g_host)
+                    g_host->log("popup_dim: curtain @%lu -> $mainbody, "
+                                "opacity binding %s", (unsigned long)b,
+                                bs ? "scaled" : "absent");
+            } else {
+                dimProp(t + b, e - b, "radius:",  1);
+                dimProp(t + b, e - b, "loops:",   2);
+                dimProp(t + b, e - b, "opacity:", 0);
             }
-            dimProp(t + b, e - b, "radius:",  1);
-            dimProp(t + b, e - b, "loops:",   2);
-            dimProp(t + b, e - b, "opacity:", 0);
             dimmed++;
         }
         i = e;
@@ -1307,7 +1384,7 @@ EX_EXPORT int ex_init(const ExHost *host)
     char list[512];
     unsigned tid;
     HANDLE th;
-    int a, d;
+    int a;
 
     g_host = host;
 
@@ -1320,14 +1397,20 @@ EX_EXPORT int ex_init(const ExHost *host)
     a = (g_pct * 255 + 50) / 100;
     g_aHi = g_hexd[a >> 4];
     g_aLo = g_hexd[a & 15];
-    /* QML opacity with 0.1 granularity: 0..95 -> 0.0..1.0 step .1,
-     * 100 keeps full stock opacity */
-    d = (g_pct + 5) / 10;
-    if (d >= 10)
+    /* QML opacity for the fixed 3-byte literal slots, 1 percent
+     * resolution: 1..99 -> ".01"..".99" (QML parses the leading-dot
+     * form), 0 -> "0.0", 100 -> "1.0". A leftover tail after a replaced
+     * "0.5" (e.g. "0.5786" -> ".03786") still parses as a float. */
+    if (g_pct <= 0)
+        strcpy_s(g_opStr, sizeof g_opStr, "0.0");
+    else if (g_pct >= 100)
         strcpy_s(g_opStr, sizeof g_opStr, "1.0");
     else {
-        g_opStr[0] = (char)('0' + d);
-        strcpy_s(g_opStr + 1, sizeof g_opStr - 1, ".0");
+        int nn = g_pct > 99 ? 99 : g_pct;
+        g_opStr[0] = '.';
+        g_opStr[1] = (char)('0' + nn / 10);
+        g_opStr[2] = (char)('0' + nn % 10);
+        g_opStr[3] = 0;
     }
     g_softBlur = host->cfg_int(host, "soft_blur", 1);
     g_verbose  = host->cfg_int(host, "verbose", 1);

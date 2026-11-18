@@ -13,7 +13,7 @@
 | | |
 |---|---|
 | Feature | one switch, two coupled effects: (a) all **25+25 laser lines** reach the point cloud instead of the central 19+19 = 38; (b) the Light Source Mode button reads **`50 lines`** (in the UI language) instead of the vendor nominal `39` |
-| Root cause - lines | the pipeline matches laser "plane ids" inside a window: the scan platform calls the exported `Sn3DAlgorithm::set_match_plane_id_vulkan(ctx, &startId, &endId, &startIdR, &endIdR)` with `(3, 21, 3, 21)`; the export only logs and tail-calls an internal store (`FUN_1804b24b0` in 3.1.x: four `mov` writing the ints to `ctx+0x25534/38/3C/40`), so the window is fixed by the **values the caller passes**, not by any config file |
+| Root cause - lines | the pipeline matches laser "plane ids" inside a window: the scan platform calls the exported `Sn3DAlgorithm::set_match_plane_id_vulkan(ctx, &startId, &endId, &startIdR, &endIdR)` with `(3, 21, 3, 21)`; the export only logs and tail-calls an internal store (`FUN_1804b24b0` on file stamp 3.1.x: four `mov` writing the ints to `ctx+0x25534/38/3C/40`), so the window is fixed by the **values the caller passes**, not by any config file |
 | Root cause - caption | the laser settings QML (`ScanSettingModelProviderLaser`, a compressed qrc record inside `ScanPage_E7.dll`) labels the mode with `text: qsTr("%1线").arg($scanSettingModelLaser.crossLaserLineShowNum)` - the hanzi source string **is** translated (vendor `.qm` catalogs: `"%1线"` → `"%1 lines"` in English), the number comes from the C++ model property (= 39, nominal for the (3,21) window); the twin button uses `parallelLaserLineShowNum` (= 7) |
 | Fix - lines | a detour (`host->hook`, MinHook) at the export entry, found by **export name** in `algorithmLzy.dll`; when the four referenced ints equal the configured `from_*` tuple `(3,21,3,21)` the original is called with pointers to our `to_*` copy `(0,24,0,24)` instead; any other call (e.g. the 7-line mode) passes through untouched |
 | Fix - caption | map-time text rewrite of that qrc record (the fps module's zlib machinery), replacing **only the formatted number**: `.arg($scanSettingModelLaser.crossLaserLineShowNum)` → `.arg(50)`. The translated `qsTr` source stays byte-identical, so catalogs keep working in every locale; `7 lines` is not matched and stays stock |
@@ -26,7 +26,7 @@
 |---|---|
 | Module id | `laser50` |
 | Version | 1.1.0 (merged: was `laser50` 1.0.0 + a separate `captions` module) |
-| Status | ✅ live-verified on 3.1.x (2026-11-17): real scan shows 25×25 lines (user-confirmed); log `caption ... 1 caption(s) rewritten (ok)` byte-exact with the dry-run; screenshot shows `50 lines` / `7 lines` in the English UI |
+| Status | ✅ live-verified on 2.x (file stamp 3.1.x, 2026-11-17): real scan shows 25×25 lines (user-confirmed); log `caption ... 1 caption(s) rewritten (ok)` byte-exact with the dry-run; screenshot shows `50 lines` / `7 lines` in the English UI |
 | Mechanism | worker thread + `LdrRegisterDllNotification`; two independent halves, each idle unless its carrier DLL appears in this process - [lines]: poll `algorithmLzy.dll`, walk exports for the unique `needle`, `host->hook`, SEH-guarded argument read, strict tuple match, counters + first-N-calls logging; [caption]: patch `ScanPage_E7.dll` **inside the map notification** (before DllMain/Qt parses the QML), record predicate `count(anchor)==1 && count(pattern)==cap_expected`, replace-all, level-9 re-deflate into the original compressed length, rawSize update, verify-by-reinflate + byte-exact restore, `QML_DISABLE_DISK_CACHE=1` |
 | Requires | runs everywhere: `[host] sibling_modules` kept in sync by the Mod Manager (`needsSiblings = TRUE` - the pipeline lives in scan processes, the caption in the UI process); the app's `zlib1.dll` for the caption half (absent → that half self-disables); no file changes, no offsets |
 
@@ -50,7 +50,7 @@ Three candidate layers existed:
    needs the instance pointer and races every fresh `set_...` call;
 3. **the exported setter** - a named, version-stable contract
    (`?set_match_plane_id_vulkan@Sn3DAlgorithm@@YA?AW4RetVal@1@PEAXAEBH111@Z`,
-   3.1.x exports table), one call site per scan session, trivially
+   file stamp 3.1.x exports table), one call site per scan session, trivially
    pass-through-safe for other modes. Chosen.
 
 Export lookup is by substring `set_match_plane_id_vulkan@` (the `@`
@@ -65,7 +65,7 @@ mismatch once - the app keeps its stock behaviour, the ini is exposed
 ## Why the caption changes the argument, not the string
 
 The vendor retranslated these strings once already (the friend's
-2.0.0-45 build had literal `qsTr("50线")`/`qsTr("7线")`; 3.1.x has the
+2.0.0-45 build had literal `qsTr("50线")`/`qsTr("7线")`; our build (file stamp 3.1.x) has the
 dynamic `qsTr("%1线").arg(model)` form - discovered by dumping the qrc
 record at file offset `0x98C90E`, ≈ the friend's `H=0x98C906`). Content
 gating (`anchor`×1 **and** `pattern`×`cap_expected`) makes any further
@@ -76,7 +76,8 @@ replaced the literal `qsTr("%1线")` itself. Wrong twice: (1) the hanzi
 source **is** translated - the EN catalog maps `%1线` → `%1 lines`, so
 the English UI was never showing hanzi; changing the source changes the
 *lookup key*, the catalog misses and the raw replacement leaks into
-every locale - the EN user saw `38 линий`; (2) the number comes from
+every locale - the EN user saw the untranslated Russian "lines"
+caption; (2) the number comes from
 the model, so a suffix swap could not produce "50" anyway. Rule:
 **never reword a translated source string; change only the value it is
 formatted with.** `.arg(50)` keeps the catalog key intact and reads
@@ -124,7 +125,7 @@ verbose = 1
 (`cap_*` values are UTF-8 bytes read verbatim; `#`/`;` inside a value
 must be wrapped in `"..."` - the host parser honours quotes.)
 
-## Verification log (3.1.x, 2026-11-17)
+## Verification log (file stamp 3.1.x, 2026-11-17)
 
 ```
 laser50 v1.1.0 armed in pid=...: algorithmLzy.dll "set_match_plane_id_vulkan@", strict=1, (3,21,3,21) -> (0,24,0,24), captions=1

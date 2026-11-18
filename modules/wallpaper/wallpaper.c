@@ -9,7 +9,7 @@
  *   (modules\wallpaper.jpg, converted to fit the slot budget), this
  *   module overwrites the embedded JPEG in the mapped image - the moment
  *   AppUi.dll is loaded, before Qt ever decodes it. Nothing on disk
- *   changes: deleting modules\wallpaper.jpg (Manager: "Сброс") restores
+ *   changes: deleting modules\wallpaper.jpg (Manager: "Reset") restores
  *   the stock wallpaper, the DLL file itself is never modified.
  *
  * Mechanism (same shape as popup_dim):

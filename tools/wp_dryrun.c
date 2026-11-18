@@ -92,7 +92,7 @@ int main(int argc, char **argv)
     }
     printf("best: SOI @0x%zX  size %u  candidates %d\n", bestOff,
            bestSize, nCand);
-    /* known-good on EXStar Hub 3.1.x AppUi.dll (2026-11-14) */
+    /* known-good on EXStar Hub 2.x (file stamp 3.1.x) AppUi.dll (2026-11-14) */
     if (bestOff == 0x643F95 && bestSize == 837517)
         printf("MATCH known-good (0x643F95 / 837517)\n");
     free(b);

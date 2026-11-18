@@ -32,10 +32,10 @@ behaviour.
 | | |
 |---|---|
 | Module id | `popup_dim` |
-| Version | 1.2.7 |
-| Status | ✅ live-verified on 3.1.x (2026-11-14): no grey slab behind «Project loading....»/«Processing....»/«Exiting...» (frosted glass over the real page), modal dialogs keep their frosted glass, home page visible behind popups; every rewritten compressed stream re-inflates from the patched memory (`verified=N restored=0` in mod.log) |
+| Version | 1.2.8 |
+| Status | ✅ live-verified on 2.x (file stamp 3.1.x, 2026-11-14) and re-verified on 2.1.0-10 with v1.2.8 (2026-11-18): no grey slab behind «Project loading....»/«Processing....»/«Exiting...» (frosted glass over the real page), modal dialogs keep their frosted glass, home page visible behind popups, `dim_alpha` sweeps smoothly 0..100 (1% steps); every rewritten compressed stream re-inflates from the patched memory (`verified=N restored=0` in mod.log) |
 | Mechanism | load-image notification + literal byte-patches + a compressed-qrc pass (inflate → edit → re-deflate, rollback-verified) in the mapped (read-only) images of the vendor UI DLLs, plus `QML_DISABLE_DISK_CACHE=1` so the patched QML is recompiled |
-| Requires | Qt Quick Controls 2 popups of the stock 3.1.x UI; no GL hooks |
+| Requires | Qt Quick Controls 2 popups of the stock UI (file stamp 3.1.x); no GL hooks |
 
 ## Configuration
 
@@ -55,10 +55,12 @@ modules   = AppUi.dll,CompositeComponents.dll,Sn3DCloudDisk.dll
 verbose   = 1     # log every patch hit to mod.log (needs [host] log = 1)
 ```
 
-`dim_alpha` can also be set from the Mod Manager GUI (*затемнение*
-slider); it applies after an EXStar Hub restart. The QML overlay literals
-only offer 0.1 steps, so the value is rounded to the nearest tenth
-(`0` see-through, `100` stock-like solid).
+`dim_alpha` can also be set from the Mod Manager GUI (*dim*
+slider); it applies after an EXStar Hub restart. Since 1.2.8 the value
+is applied with 1 percent resolution (fixed 3-byte QML literals are
+written in the leading-dot form `.NN`; 0 = see-through, 100 = fully
+solid). Busy curtains fade through the vendor's own opacity binding,
+so every value between 0 and 100 is reachable.
 
 ## The two overlay families
 
@@ -153,6 +155,29 @@ Applies to exactly two blocks in AppUi.dll (`ProgressBar_E7` and the
 firmware-update veil); all 24 `$backgroundImg`+`opacity` dialog blocks stay
 byte-identical (dry-run counters).
 
+### 1.2.8: the vendor moved the curtain's opacity (2.1.0-10)
+
+In product 2.1.0-10 the shared curtain Item gained a *binding* around the
+blur block:
+
+```
+opacity: $appUiController.isFirmwareUpdting ? 0.6 : 1.0
+RecursiveBlur { source: backgroundImg; radius: 7.5; loops: 10 }
+```
+
+Two things broke silently: `dim_alpha` could not reach a binding (every
+setting from 1 to 100 looked identical), and the softened blur
+(`radius: 0.1`, `loops: 1`) made the redirected curtain a *sharp frozen
+copy* of the live page - perceived as "no blur at all, an opaque slab".
+1.2.8 fixes both: a redirected block now **keeps the vendor's
+radius/loops** (that is exactly the dialog-style frost the kept
+`$mainbody` dialogs render), and the module scales **both literals of
+the vendor's ternary binding** digit-preserving
+(`? 0.6 : 1.0` → `? 0.4 : 0.6` at 60%, `? 0.0 : 0.0` at 0%, untouched at
+100%). The redirect condition itself is unchanged - the binding sits on
+the parent Item, outside the blur block, so the "block carries no
+`opacity:`" classifier still matches.
+
 ## Editing rules that must not be broken
 
 * **Never touch `radius`/`samples`/`deviation` of a `GaussianBlur`.**
@@ -161,7 +186,10 @@ byte-identical (dry-run counters).
   made the background "more grey than before". For GaussianBlur curtains
   only the veil alpha (`"#AA000000"` digits) may change.
 * `RecursiveBlur` is safe to soften (`radius: 7.5 → 0.1`, `loops: N → 1`)
-  - it re-renders from the source every frame.
+  - it re-renders from the source every frame. But softened it renders a
+  *sharp frozen copy*, and a **redirected curtain must keep the vendor's
+  radius/loops** - the softened variant is what users read as "no blur"
+  (1.2.8).
 * Every edit is length-preserving, and the re-deflated stream must fit the
   original compressed slot or the whole stream is skipped (never partially
   written).
@@ -173,7 +201,7 @@ byte-identical (dry-run counters).
 The whole UI is QML; the sources are embedded in the Qt resource blobs of
 the vendor DLLs - partly as plain text, partly **zlib-compressed** per
 file (`[u32 BE rawSize][zlib stream]` records). Verified inventory on the
-3.1.x build (block counts = what the walkers match, dry-run and live
+file stamp 3.1.x build (block counts = what the walkers match, dry-run and live
 agree):
 
 | DLL | where | what | handled by |

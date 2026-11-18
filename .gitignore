@@ -1,8 +1,12 @@
 # build output
 build/
 
-# private reverse-engineering notes (local folder, never published)
-mutumbo/
+# local working artifacts (baselines, release-notes drafts, history backups)
+artifacts/
+
+# private reverse-engineering notes (local folder, never published;
+# real folder name lives in .git/info/exclude, not in this tracked file)
+.private-notes/
 
 # release executables: binaries ship via GitHub Releases; the repo keeps
 # only the install guide from release\

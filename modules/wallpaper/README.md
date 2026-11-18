@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | Feature | user picture as the application background instead of the stock one |
-| Root cause (how stock works) | the vendor embeds the wallpaper as an **uncompressed JPEG** in a mapped read-only section of `AppUi.dll` (1920x1080 24bpp, 837 517 B, file offset `0x643F95` on 3.1.x); QML shows it as `ApplicationWindow.background: Image { source: "qrc:/images/MainBackground.jpg" }` - it is a static resource, never a screenshot |
+| Root cause (how stock works) | the vendor embeds the wallpaper as an **uncompressed JPEG** in a mapped read-only section of `AppUi.dll` (1920x1080 24bpp, 837 517 B, file offset `0x643F95` on file stamp 3.1.x); QML shows it as `ApplicationWindow.background: Image { source: "qrc:/images/MainBackground.jpg" }` - it is a static resource, never a screenshot |
 | Fix | at DLL-map time, find the JPEG **structurally** (largest `FF D8 FF`..first-`FF D9` extent >= `min_slot` in readable non-writable sections) and overwrite it in the mapped image with `modules\wallpaper.jpg`; Qt decodes the replacement on first paint |
 | Key source file | `modules/wallpaper/wallpaper.c` (`jpegSlotSize`, `patchImage`, `loadImage`) |
 | Offline check | `tools\wp_dryrun.c` - same scan on the DLL file; must print `SOI @0x643F95 slot=837517  MATCH known-good` |
@@ -22,13 +22,13 @@ module replaces those bytes **in process memory** the moment the DLL is
 mapped (before its DllMain, long before Qt decodes the image), so the
 custom picture is up from the first frame. Nothing on disk changes: the
 DLL file is never written; deleting `modules\wallpaper.jpg` (the Mod
-Manager's *Сброс* button) restores the stock wallpaper on next start.
+Manager's *Reset* button) restores the stock wallpaper on next start.
 
 | | |
 |---|---|
 | Module id | `wallpaper` |
 | Version | 1.0.0 |
-| Status | ✅ live-verified on 3.1.x (2026-11-14): gradient test image (55 996 B) replaces the stock background window-wide, log shows slot found at exactly 837 517 B; deleting the file -> module declines cleanly, stock wallpaper back; correctly idle in sibling processes (`scanservice.exe`) via the host sibling whitelist and the `exe = hub` gate. End-to-end through the Mod Manager GUI with a user photo (Artboard 1.jpg): *Выбрать файл…* converts + installs, *Сброс* restores stock |
+| Status | ✅ live-verified on 2.x (file stamp 3.1.x, 2026-11-14), re-verified on 2.1.0-10 (file stamp 3.1.49): gradient test image (55 996 B) replaces the stock background window-wide, log shows slot found at exactly 837 517 B; deleting the file -> module declines cleanly, stock wallpaper back; correctly idle in sibling processes (`scanservice.exe`) via the host sibling whitelist and the `exe = hub` gate. End-to-end through the Mod Manager GUI with a user photo: *Choose file…* converts + installs, *Reset* restores stock |
 | Mechanism | `LdrRegisterDllNotification` (patches AppUi.dll at map time) + worker thread for the already-mapped case and as a 5-min polling fallback; one `VirtualProtect` over the slot; SEH around every dereference; silent refusal on any mismatch |
 | Requires | a JPEG at `<app>\modules\wallpaper.jpg` (the Mod Manager converts any jpg/png/bmp to 1920x1080 JPEG fitted under the slot budget); no GL hooks |
 
@@ -72,14 +72,14 @@ verbose  = 1             log slot/patch details to mod.log
 ```
 
 The user picture itself is **not** configured here: the Mod Manager card
-*Фон приложения* has two buttons - *Выбрать файл…* (opens a file picker,
+*Wallpaper* has two buttons - *Choose file…* (opens a file picker,
 converts the chosen jpg/png/bmp to 1920x1080 JPEG via GDI+, aspect
 preserved and centered on black, and writes `modules\wallpaper.jpg`) and
-*Сброс* (deletes it, stock wallpaper returns). Changes apply on the next
+*Reset* (deletes it, stock wallpaper returns). Changes apply on the next
 EXStar Hub restart; a new version of the app re-finds the slot by
 structure, so an update can only cause a silent skip, never a crash.
 
-## Verification log (2026-11-14, 3.1.x)
+## Verification log (2026-11-14, file stamp 3.1.x)
 
 ```
 wallpaper v1.0.0 armed in pid=31740: 55996 B image, target AppUi.dll
