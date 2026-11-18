@@ -25,11 +25,15 @@ verification and failure modes - readable cold, no external context needed.
 | [fps](modules/fps/README.md) | live `FPS: N` readout at the bottom right of the scan page: the **real** UI frame rate (frameSwapped counter) inserted into the compressed scan page QML at DLL map time - the vendor "FPS: 80-90" is a constant capture-pipeline statistic, not rendered frames | ✅ live-verified on 2.x (file stamp 3.1.x, v1.0.0) |
 | [laser50](modules/laser50/README.md) | the complete 50-line feature, one switch: detours the exported `set_match_plane_id_vulkan` (by name) to widen the plane-id tuple `(3,21,3,21)` → `(0,24,0,24)` so all 25+25 lines reach the cloud, **and** rewrites only the label's argument (`.arg(50)`, translated qsTr source kept) so the Light Source Mode button reads `50 lines`; `7 lines` stays stock | ✅ live-verified on 2.x (file stamp 3.1.x, v1.1.0: 25×25 lines in a real scan + `50 lines` button, EN UI intact) |
 | [fitfill](modules/fitfill/README.md) | Ctrl+D / *Zoom to Fit* frames the model into the viewport: forces the manipulator's `setIsZoomOptimization` export off (the same switch the friend's version-bound byte patch cleared - semantics now RE'd: pinned camera distance mode) | ✅ live-verified on 2.x (file stamp 3.1.x, v1.0.0) |
+| [gpu_gate](modules/gpu_gate/README.md) | run EXStar Hub on integrated GPUs (e.g. a Radeon 780M): the vendor startup gate refuses every non-discrete GPU with a "requires NVIDIA RTX 3060" dialog before the pipeline - pure Vulkan behind it - ever runs; one in-memory byte (`jne`→`ja`) found by a unique instruction pattern lets INTEGRATED/OTHER devices reach the vendor's *own* AMD/NVIDIA checks (which pass them), while VIRTUAL/CPU stay refused; behavior-neutral on machines that already pass | ✅ live-verified on 2.1.0-10 (v1.0.0, 2026-11-19 NVIDIA self-test; the relaxed AMD branch field-verified on 2.0.0-45 on a Radeon 780M) |
 
-All seven modules were re-verified live against the vendor update
-**2.1.0-10 (file stamp 3.1.49)** on 2026-11-18 with zero code changes -
-migration evidence:
+All seven modules above (except gpu_gate) were re-verified live against the
+vendor update **2.1.0-10 (file stamp 3.1.49)** on 2026-11-18 with zero code
+changes - migration evidence:
 [update-2.1.0-10-migration.md](docs/research/update-2.1.0-10-migration.md).
+**gpu_gate** joined the set with manager 1.3.9 (2026-11-19); its full
+startup-gate research:
+[gpu-gate-amd-support.md](docs/research/gpu-gate-amd-support.md).
 
 ## Mod Manager
 
@@ -191,8 +195,8 @@ file stamp is what compatibility actually follows.
 
 | EXStar Hub (product) | file stamp | Tested | Notes |
 |---|---|---|---|
-| 2.1.0-10 | 3.1.49 | ✅ | Windows 11 x64, NVIDIA driver; full re-verification 2026-11-18 |
-| 2.0.0-45 | 3.1.49 | ✅ | the original research target (same stamp family) |
+| 2.1.0-10 | 3.1.49 | ✅ | Windows 11 x64, NVIDIA driver; full re-verification 2026-11-18; gpu_gate self-test 2026-11-19 |
+| 2.0.0-45 | 3.1.49 | ✅ | the original research target (same stamp family); the gpu_gate relaxed AMD branch was field-verified here on a Radeon 780M |
 | other 2.x / other stamps | - | ? | re-check research anchors before deploying |
 
 ## Writing a module

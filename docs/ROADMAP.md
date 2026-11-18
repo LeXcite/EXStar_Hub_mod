@@ -23,12 +23,21 @@ not included in git).
 
 | Module | Version | What it does |
 |---|---|---|
-| popup_dim | 1.2.7 | gray veil → frosted glass, dims the veils |
+| popup_dim | 1.2.8 | gray veil → frosted glass, dims the veils |
 | marker_quality | 1.0.2 | marker color by observation quality (latch-green) |
 | marker_inframe | 1.1.0 | in-frame marker grows instead of a red flash |
-| ExStarModManager | 1.3.0 | manager: enabling modules, installing/updating payload |
+| wallpaper | 1.0.0 | custom app background (in-memory image swap) |
+| fps | 1.0.0 | real scan-page UI frame rate readout |
+| laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
+| fitfill | 1.0.0 | Zoom to Fit frames the whole model (zoom-optimization off) |
+| gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
+| ExStarModManager | 1.3.9 | manager: enabling modules, installing/updating payload |
 
-## In progress — batch "porting borrowed features" (decision of 2026-11-14)
+## Batch "porting borrowed features" (2026-11-14) — CLOSED
+
+All five cards shipped 2026-11-17 and re-verified live on vendor update
+2.1.0-10 on 2026-11-18 (manager 1.3.8/1.3.9). Cards kept below as the
+historical record.
 
 Knowledge source: private external RE-base (`STATE.md`, a research
 journal, `patches-history.md` — his patches are version-locked and died
@@ -198,6 +207,28 @@ confirmed: Ctrl+D fits the model into the frame.
 
 Status: ✅ verified live (v1.0.0, 2026-11-17). Into git — upon "put it in
 git".
+
+## Batch "GPU independence" (2026-11-18)
+
+### 7. gpu_gate — integrated GPUs pass the startup check
+
+Status: ✅ shipped 2026-11-19 (module `gpu_gate` v1.0.0, manager 1.3.9).
+Mechanism, pattern anchor and safety matrix: `modules/gpu_gate/README.md`;
+full startup-gate research: `docs/research/gpu-gate-amd-support.md`.
+Verification: unique pattern hit + gate relaxed in both loading processes
+on 2.1.0-10 (NVIDIA self-test 2026-11-19, vendor flow byte-identical:
+`init_speckle gpu test result: 1` / hub `errorCode 1`); the relaxed AMD
+branch is field-verified on 2.0.0-45 on a Radeon 780M. Final hardware
+validation on the iGPU-only box (planned Radeon 780M PC) is scheduled for
+that hardware - logs to check: `gate relaxed`, `gpu test result: 1`,
+`[AMDJPEG] ... initialized` vs nvJPEG fallback.
+
+Rejected inside this batch:
+- Intel iGPU / Qualcomm Adreno unlock: would require forcing the vendor's
+  second-stage "neither AMD nor NVIDIA" error into a fabricated success;
+  scan quality on such devices unknown - refused without demand + research.
+- VIRTUAL_GPU / CPU Vulkan unlock: same fabricated-success category; the
+  speckle pipeline on a CPU Vulkan device is untested and pointlessly slow.
 
 ## Rejected
 
