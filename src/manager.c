@@ -48,7 +48,7 @@
 
 #define APP_EXE_NAME     L"EXStar Hub.exe"
 #define APP_EXE_A        "EXStar Hub.exe"
-#define MANAGER_VERSION  L"1.3.8"   /* keep in sync with $version in build.ps1 */
+#define MANAGER_VERSION  L"1.3.9"   /* keep in sync with $version in build.ps1 */
 #define PROXY_MARKER     L"ExStarMod.winmm.dll"   /* OriginalFilename of our proxy */
 #define DEFAULT_APP_DIR  "C:\\Program Files\\Shining3d\\EXStar Hub"
 /* The vendor freezes the exe ProductVersion (the "file stamp", still
@@ -143,7 +143,7 @@ static const ModDef g_mods[MAX_MODS] = {
       L"in-view marker grows instead of turning red",
       L"MOD_MARKER_INFRAME", L"MOD_MARKER_INFRAME_INI",
       g_slInframe, 1, NULL, 0, NULL, FALSE },
-    { "popup_dim", L"Popup Dim", "1.2.7",
+    { "popup_dim", L"Popup Dim", "1.2.8",
       L"lighter backdrop under popups and loading, not solid grey",
       L"MOD_POPUP_DIM", L"MOD_POPUP_DIM_INI",
       g_slDim, 1, NULL, 0, NULL, TRUE },
@@ -163,8 +163,12 @@ static const ModDef g_mods[MAX_MODS] = {
       L"«Zoom to Fit» (Ctrl+D) fits the model into the whole frame, not a third of the window",
       L"MOD_FITFILL", L"MOD_FITFILL_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
+    { "gpu_gate", L"GPU Gate", "1.0.0",
+      L"integrated GPUs (e.g. Radeon 780M) pass the startup GPU check - one memory byte, files untouched",
+      L"MOD_GPU_GATE", L"MOD_GPU_GATE_INI",
+      NULL, 0, NULL, 0, NULL, TRUE },
 };
-static const int g_modCount = 7;
+static const int g_modCount = 8;
 
 /* modules shipped by older manager builds and no longer bundled; their
  * files and modules.ini sections are removed on the next install so a
