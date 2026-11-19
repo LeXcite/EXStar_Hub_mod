@@ -33,9 +33,9 @@ not included in git).
 | wallpaper | 1.0.0 | custom app background (in-memory image swap) |
 | fps | 1.0.0 | real scan-page UI frame rate readout |
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
-| fitfill | 1.0.0 | Zoom to Fit frames the whole model (zoom-optimization off) |
+| fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
-| ExStarModManager | 1.3.9 | manager: enabling modules, installing/updating payload |
+| ExStarModManager | 1.3.10 | manager: enabling modules, installing/updating payload, resizable window |
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
 
@@ -283,8 +283,8 @@ Status: research complete, **no code**. Key facts (details in
 
 | Item | Since | Status |
 |---|---|---|
-| fitfill has no effect on 2.1.0-10 | vendor update 2.1.0-10 | diagnosed 2026-11-19: the flag it forces is dead code on the new fit pipeline (analysis: [zoom-fit-optimization.md §6](research/zoom-fit-optimization.md)). Module stays enabled (harmless no-op). TODO: decompile the 2.1.0-10 fit chain (`Sn3DCanvasView::fitView` / `UpdateCameraOperation` / `FitOperationAuto`) and find the new distance clamp - the old `3.5` constants are the first landmarks. |
-| manager window was fixed-size | before 1.4.0 | fixed in manager 1.4.0: `WS_OVERLAPPEDWINDOW` (resizable, minimize, maximize), `WM_SIZE` re-layout of width-dependent controls, `WM_GETMINMAXINFO` floor. Needs user visual confirmation. |
+| fitfill has no effect on 2.1.0-10 | vendor update 2.1.0-10 | diagnosed 2026-11-19: the flag it forces is dead code on the new fit pipeline (analysis: [zoom-fit-optimization.md §6](research/zoom-fit-optimization.md)); replacement anchor found the same day - the `setEnableScanScale(false)` call site in `sn3d.digit.scenecontrol.dll` ([§7](research/zoom-fit-optimization.md)), implemented in fitfill 1.1.0 (import-name-anchored in-memory byte patch). TODO: live confirmation on the hub (log line `scan scale forced to 1 at sn3d.digit.scenecontrol.dll+0x...` + Ctrl+D re-fills the frame). |
+| manager window was fixed-size | before 1.3.10 | fixed in manager 1.3.10: `WS_OVERLAPPEDWINDOW` (resizable, minimize, maximize), `WM_SIZE` re-layout of width-dependent controls, `WM_GETMINMAXINFO` floor. Needs user visual confirmation. |
 
 ## Rejected
 

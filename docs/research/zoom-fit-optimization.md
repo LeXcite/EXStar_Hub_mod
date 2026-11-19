@@ -118,3 +118,41 @@ in librenderkit + extensions.digit) and find the new distance clamp -
 the old `3.5` constants from section 2 are the first landmarks. Until a
 replacement anchor is found, `fitfill` stays enabled (harmless) but
 should be listed as **not effective on 2.1.0-10**.
+
+## 7. Replacement anchor found (2026-11-19): the scan-scale call site
+
+The community patchset for 2.1.0-10 (shared with us as a byte-diff
+manifest against the stock files) contains no fit-pipeline surgery at
+all: against the digit extension it carries only the same dead-flag byte
+from section 6. The actual new fix is two bytes in
+**`sn3d.digit.scenecontrol.dll`, file offset `0xC3C65`, `33 D2` ->
+`B2 01`**, verified against our live 2.1.0-10 files (the manifest's
+target hash matches the stock file byte-for-byte).
+
+Disassembly of the site (all calls resolved through the import table):
+
+```
+call  ?instance@RenderKitExtDigitSingleton@...   ; rax = singleton
+mov   rcx, rax
+xor   edx, edx            <- patched to: mov dl, 1
+call  ?setEnableScanScale@RenderKitExtDigitSingleton@ExtDigit@RenderKit@Sn3D@@QEAAX_N@Z
+```
+
+So on 2.1.0-10 the app configures the digit render singleton with
+**scan scale = false**, and the community build forces it back to
+`true`. That is the real 2.1.0-10 switch for the fitted-view symptom -
+the flag of section 3 was the switch of the *previous* pipeline only.
+(The full 11-byte context `48 8B C8 33 D2 FF 15 D3 B8 0C 00` occurs
+exactly once in the file.)
+
+Implementation, `fitfill` v1.1.0 mechanism B: the module resolves the
+IAT slot of `setEnableScanScale` inside `sn3d.digit.scenecontrol.dll`
+from the import table by NAME, scans the read-only sections for the
+unique `mov rcx,rax; <bool-setup>; call [that slot]` shape and rewrites
+the two setup bytes (`xor edx,edx` -> `mov dl,1`) in memory only, under
+SEH, with refuse-on-ambiguity. Restart = stock. Live verification
+pending on the hub: expected log line
+`fitfill: scan scale forced to 1 at sn3d.digit.scenecontrol.dll+0x...`,
+then Ctrl+D fills the frame again. Side-effect watch: scan scale is a
+vendor feature; watch interactive zoom and the live scan view (same
+class of accepted risk as section 5).
