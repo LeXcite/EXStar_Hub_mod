@@ -48,7 +48,7 @@
 
 #define APP_EXE_NAME     L"EXStar Hub.exe"
 #define APP_EXE_A        "EXStar Hub.exe"
-#define MANAGER_VERSION  L"1.3.9"   /* keep in sync with $version in build.ps1 */
+#define MANAGER_VERSION  L"1.4.0"   /* keep in sync with $version in build.ps1 */
 #define PROXY_MARKER     L"ExStarMod.winmm.dll"   /* OriginalFilename of our proxy */
 #define DEFAULT_APP_DIR  "C:\\Program Files\\Shining3d\\EXStar Hub"
 /* The vendor freezes the exe ProductVersion (the "file stamp", still
@@ -1391,6 +1391,8 @@ static BOOL g_modOn[MAX_MODS];    /* toggle position we applied (mirrors disk) *
 static HFONT g_font, g_fontB, g_fontT, g_fontS, g_fontL;
 static HBRUSH g_brBg, g_brCard, g_brLog;
 static RECT g_cardR[MAX_MODS], g_rEd, g_rLog;
+static int  g_rowY[MAX_MODS];    /* top of every module card (fixed grid)  */
+static int  g_logTop;            /* top of the log box (fixed vertically)  */
 static int g_verTone;             /* 0 ok, 1 untested, 2 not found */
 
 static void status(const wchar_t *fmt, ...)
@@ -2290,6 +2292,38 @@ static void readAppEdit(void)
     }
 }
 
+/* width-dependent repositioning; rows keep a fixed vertical grid: the
+ * window may be resized, maximized or restored (WM_SIZE), controls that
+ * stretch with the client width are re-anchored here                     */
+static void layoutMain(HWND hw, int cw, int ch)
+{
+    int i, y, w;
+
+    if (!g_edApp || !g_status || g_modCount <= 0)
+        return;
+
+    SetRect(&g_rEd, LMARG, U(100), cw - LMARG - U(104), U(130));
+    MoveWindow(g_edApp, LMARG + U(10), U(105),
+               cw - 2 * LMARG - U(104) - U(20), U(20), TRUE);
+    MoveWindow(g_btnBrowse, cw - LMARG - U(92), U(100), U(92), U(30), TRUE);
+    MoveWindow(g_ver, LMARG + U(2), U(138),
+               cw - 2 * LMARG - U(4), U(16), TRUE);
+    for (i = 0; i < g_modCount; i++) {
+        y = g_rowY[i];
+        SetRect(&g_cardR[i], LMARG, y, cw - LMARG,
+                y + cardHeightOf(&g_mods[i]));
+        w = cw - 2 * LMARG - U(90);
+        MoveWindow(g_name[i], LMARG + U(16), y + U(10), w, U(17), TRUE);
+        MoveWindow(g_desc[i], LMARG + U(16), y + U(31), w, U(15), TRUE);
+        MoveWindow(g_check[i], cw - LMARG - U(16) - U(46), y + U(17),
+                   U(46), U(24), TRUE);
+    }
+    SetRect(&g_rLog, LMARG, g_logTop, cw - LMARG, ch - U(16));
+    MoveWindow(g_status, LMARG + U(10), g_logTop + U(8),
+               cw - 2 * LMARG - U(20),
+               ch - U(16) - g_logTop - U(16), TRUE);
+}
+
 static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -2352,6 +2386,7 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
             int s2, p2;
             int cardH = cardHeightOf(&g_mods[i]);
 
+            g_rowY[i] = y;
             SetRect(&g_cardR[i], LMARG, y, cw - LMARG, y + cardH);
             swprintf(buf, 256, L"%ls  %hs", g_mods[i].title, g_mods[i].version);
             nm = mkStatic(&g_name[i], buf, LMARG + U(16), y + U(10),
@@ -2461,6 +2496,7 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
                     (HMENU) IDC_RESTORE, g_hInst, &g_ctrls[g_modCount + 1]);
 
         SetRect(&g_rLog, LMARG, y + U(60), cw - LMARG, ch - U(16));
+        g_logTop = y + U(60);
         g_status = CreateWindowExW(0, L"EDIT", L"",
                     WS_CHILD | WS_VISIBLE
                     | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
@@ -2473,6 +2509,27 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
         refreshChecks();
         return 0;
     }
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO *mm = (MINMAXINFO *) lp;
+        RECT wr, cr;
+        int ncW = 0, ncH = 0;
+        if (GetWindowRect(hw, &wr) && GetClientRect(hw, &cr)) {
+            ncW = (wr.right - wr.left) - (cr.right - cr.left);
+            ncH = (wr.bottom - wr.top) - (cr.bottom - cr.top);
+        }
+        mm->ptMinTrackSize.x = U(600) + ncW;
+        mm->ptMinTrackSize.y = (g_logTop ? g_logTop : U(500))
+                               + U(120) + ncH;
+        return 0;
+    }
+    case WM_SIZE:
+        if (wp != SIZE_MINIMIZED) {
+            RECT rc;
+            GetClientRect(hw, &rc);
+            layoutMain(hw, rc.right, rc.bottom);
+            InvalidateRect(hw, NULL, TRUE);
+        }
+        return 0;
     case WM_ERASEBKGND: {
         HDC dc = (HDC) wp;
         RECT rc;
@@ -2784,7 +2841,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmdLine, int show)
             h += cardHeightOf(&g_mods[i]) - U(58);
         hw = CreateWindowExW(0, L"ExStarModManagerWnd",
                              L"EXStar Hub Mod Manager " MANAGER_VERSION,
-                             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+                             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                              CW_USEDEFAULT, CW_USEDEFAULT, U(656), h,
                              NULL, NULL, hInst, NULL);
     }

@@ -87,3 +87,34 @@ The optimization mode is the vendor default; disabling it globally may change ho
 interactive zoom feels. In the friend's final build this lived, no complaints; the log
 shows every force. Rollback: `force = 1` (the vendor value) or
 `enabled = 0`, nothing on disk.
+
+## 6. Regression on 2.1.0-10 (found 2026-11-19) - the flag is dead code there
+
+User reports (manager 1.3.8/1.3.9 era): Ctrl+D no longer fills the
+viewport. Module logs prove the module itself still works: `hooked ...
+forcing value 0` in the UI process and `setIsZoomOptimization(1) ->
+forwarding 0` on every view creation. Binary analysis of the current
+2.1.0-10 build (file stamp 3.1.49):
+
+- the `init` call site is byte-identical to the one documented above
+  (extensions.digit RVA `0x17296C`, same `B2 01 48 8B C8 FF 15 96 FA
+  0C 00`, same IAT slot `0x242408`) - the vendor still turns the mode on;
+- both exports still exist, the field is still `this+0x138`;
+- but the **read side is gone**: across all 896 app binaries the name
+  `getIsZoomOptimization` occurs only in librenderkit.dll's own export
+  table (zero importers); zero `E8` call sites target the getter inside
+  librenderkit; the only `movzx byte [reg+0x138]` read in librenderkit
+  is the getter body itself; no direct byte writes to `+0x138` exist
+  outside the setter.
+
+Conclusion: on 2.1.0-10 the flag is written but read by nobody - the
+vendor redesigned the "Zoom to Fit" distance pipeline and dropped the
+zoom-optimization gate. Forcing it off is a correct no-op; the ~35 %
+symptom is back because something else now pins the camera distance.
+
+Next step (open): decompile the 2.1.0-10 fit chain
+(`Sn3DCanvasView::fitView` / `UpdateCameraOperation` / `FitOperationAuto`
+in librenderkit + extensions.digit) and find the new distance clamp -
+the old `3.5` constants from section 2 are the first landmarks. Until a
+replacement anchor is found, `fitfill` stays enabled (harmless) but
+should be listed as **not effective on 2.1.0-10**.

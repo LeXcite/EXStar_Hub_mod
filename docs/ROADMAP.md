@@ -230,6 +230,58 @@ Rejected inside this batch:
 - VIRTUAL_GPU / CPU Vulkan unlock: same fabricated-success category; the
   speckle pipeline on a CPU Vulkan device is untested and pointlessly slow.
 
+## Batch "scanner hub" (2026-11-19) — STARTING
+
+A new **Scanner tab in the Mod Manager** for everything that talks to the
+device itself (fan, home-network, live status, logs). Full research, the
+vendor command surface, the feature matrix and a live-verification
+checklist: [scanner-hub-module.md](research/scanner-hub-module.md).
+
+### 8. Fan control — quiet the scanner
+
+Status: research complete (vendor telemetry path + device-side control
+surface understood), **no code**. Pending from the collaborator: the
+pseudo-PID recipe (anchors in `app_tx2`, the ARM64 blob, hook points,
+Kp/Ki/Kd defaults, thresholds) — we will not guess into a running
+process.
+
+Agreed shape: a status card (duty / RPM / CPU+projector temperature,
+`FANBLOCKED` alert) plus an **in-memory** patch of the running `app_tx2`
+- version gate by device-binary hash before applying, refuse while a scan
+is active, reboot = rollback, zero writes to the device filesystem.
+Read-only or coarse-duty variants first, since both are already available
+through the vendor telemetry channel (`RWFanActualSpeed`, `threshold`,
+`RWFanSpeed`) with no patching at all.
+
+### 9. Home-network (STA) assistant + dashboard + log collector
+
+Status: research complete, **no code**. Key facts (details in
+[scanner-hub-module.md](research/scanner-hub-module.md)):
+
+- the scanner's AP→STA capability is vendor firmware (key daemon +
+  vendor AP daemon + vendor `WAPControl`/`APReboot`/`SelectWIFIChannel`/
+  `SEGIP1..4` commands); a collaborator only added the missing
+  PC-side entry points;
+- **the stock hub does NOT see a STA scanner**: `TX2Plugin` dials a
+  hardcoded `192.168.42.3` and its Wi-Fi UI makes the *PC* join the
+  *scanner's* hotspot. The vendor's own model keeps the scanner address
+  constant (`SEGIP`), i.e. STA is meant for networks where that address
+  can be assigned — which is why a router with a wider mask makes it work
+  with nothing patched anywhere.
+- Dashboard is mostly a display problem: the hub already receives
+  `temp`/`batteryPower`/`bCharge`/disk info plus `ZCPUTEMP`/`ZGIRDERTEMP`/
+  `ZBATTERYCUR`/`ZBATTERYVTG`/`WIFIQUALITY` on the PC.
+- Next input needed: netstat capture of hub→scanner ports during a Wi-Fi
+  session (only for the PC-bridge option), and one live device pass over
+  the verification checklist.
+
+## Open regressions
+
+| Item | Since | Status |
+|---|---|---|
+| fitfill has no effect on 2.1.0-10 | vendor update 2.1.0-10 | diagnosed 2026-11-19: the flag it forces is dead code on the new fit pipeline (analysis: [zoom-fit-optimization.md §6](research/zoom-fit-optimization.md)). Module stays enabled (harmless no-op). TODO: decompile the 2.1.0-10 fit chain (`Sn3DCanvasView::fitView` / `UpdateCameraOperation` / `FitOperationAuto`) and find the new distance clamp - the old `3.5` constants are the first landmarks. |
+| manager window was fixed-size | before 1.4.0 | fixed in manager 1.4.0: `WS_OVERLAPPEDWINDOW` (resizable, minimize, maximize), `WM_SIZE` re-layout of width-dependent controls, `WM_GETMINMAXINFO` floor. Needs user visual confirmation. |
+
 ## Rejected
 
 - **6. English keyboard layout on the pre-start screen** (PrestartCheck.dll) —
