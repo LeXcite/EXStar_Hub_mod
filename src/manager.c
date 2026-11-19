@@ -1391,8 +1391,13 @@ static BOOL g_modOn[MAX_MODS];    /* toggle position we applied (mirrors disk) *
 static HFONT g_font, g_fontB, g_fontT, g_fontS, g_fontL;
 static HBRUSH g_brBg, g_brCard, g_brLog;
 static RECT g_cardR[MAX_MODS], g_rEd, g_rLog;
-static int  g_rowY[MAX_MODS];    /* top of every module card (fixed grid)  */
-static int  g_logTop;            /* top of the log box (fixed vertically)  */
+static int  g_rowYrel[MAX_MODS]; /* top of every card, in area coordinates */
+static int  g_logTop;            /* top of the log box (recomputed)        */
+static HWND g_modArea;           /* scrollable child hosting the card rows */
+static int  g_scroll, g_scrollMax, g_contentH;
+#define AREA_TOP  U(186)         /* area top within the main client        */
+#define AREA_MIN_H  U(60)        /* smallest visible card strip            */
+#define FOOT_H      (U(60) + U(110) + U(16)) /* restore + log block        */
 static int g_verTone;             /* 0 ok, 1 untested, 2 not found */
 
 static void status(const wchar_t *fmt, ...)
@@ -1775,6 +1780,10 @@ static LRESULT CALLBACK ctrlProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_SETCURSOR:
         SetCursor(LoadCursor(NULL, IDC_HAND));
         return TRUE;
+    case WM_MOUSEWHEEL:
+        if (GetParent(h) == g_modArea)
+            return SendMessageW(g_modArea, msg, wp, lp);
+        return DefWindowProcW(h, msg, wp, lp);
     case WM_MOUSEMOVE:
         if (c && c->kind == CKIND_SLIDER && GetCapture() == h) {
             sliderSetFromX(h, c, (short) LOWORD(lp));
@@ -1863,9 +1872,173 @@ static LRESULT CALLBACK rowSub(HWND h, UINT msg, WPARAM wp, LPARAM lp,
                          MAKEWPARAM((WORD) GetDlgCtrlID(sw), BN_CLICKED),
                          (LPARAM) sw);
         return 0;
+    case WM_MOUSEWHEEL:
+        if (GetParent(h) == g_modArea)
+            return SendMessageW(g_modArea, msg, wp, lp);
+        break;
     }
     return DefSubclassProc(h, msg, wp, lp);
 }
+
+/* ------------------------------------------------------------------ */
+/* modules scroll area                                                  */
+/*                                                                      */
+/* the card rows are children of this one child window; it shows a      */
+/* vertical scrollbar only when the cards no longer fit the window.     */
+/* WM_COMMAND and WM_CTLCOLOR* notifications of the cards are forwarded */
+/* back to the main window, which owns their handlers.                  */
+/* ------------------------------------------------------------------ */
+
+static void areaLayoutRows(HWND a, int w)
+{
+    int i;
+
+    for (i = 0; i < g_modCount; i++) {
+        const ModDef *m = &g_mods[i];
+        int y  = g_rowYrel[i] - g_scroll;   /* current on-screen top      */
+        int wd = w - 2 * LMARG - U(90);
+        int s2;
+
+        SetRect(&g_cardR[i], LMARG, g_rowYrel[i], w - LMARG,
+                g_rowYrel[i] + cardHeightOf(m));
+        MoveWindow(g_name[i], LMARG + U(16), y + U(10), wd, U(17), TRUE);
+        MoveWindow(g_desc[i], LMARG + U(16), y + U(31), wd, U(15), TRUE);
+        MoveWindow(g_check[i], w - LMARG - U(16) - U(46), y + U(17),
+                   U(46), U(24), TRUE);
+        for (s2 = 0; s2 < m->nSliders; s2++)
+            if (g_slider[i][s2])
+                MoveWindow(g_slider[i][s2], LMARG + U(16),
+                           y + U(52) + s2 * U(30), U(470), U(24), TRUE);
+        for (s2 = 0; s2 < m->nPresets; s2++)
+            if (g_preset[i][s2])
+                MoveWindow(g_preset[i][s2],
+                           LMARG + U(16) + s2 * (U(110) + U(8)),
+                           y + U(50), U(110), U(46), TRUE);
+        if (g_pcap[i])
+            MoveWindow(g_pcap[i], LMARG + U(16), y + U(99),
+                       U(360), U(15), TRUE);
+        if (m->hasFileBtn)
+            for (s2 = 0; s2 < MAX_FILEBTNS; s2++)
+                if (g_fileBtn[i][s2])
+                    MoveWindow(g_fileBtn[i][s2],
+                               LMARG + U(16) + s2 * (U(170) + U(8)),
+                               y + U(50), U(170), U(26), TRUE);
+    }
+    InvalidateRect(a, NULL, TRUE);
+}
+
+/* scrollbar range/visibility vs. the current area height */
+static void areaUpdateScroll(HWND a)
+{
+    RECT rc;
+    SCROLLINFO si;
+    BOOL need;
+
+    GetClientRect(a, &rc);
+    need = g_contentH > rc.bottom;
+    ShowScrollBar(a, SB_VERT, need);
+    g_scrollMax = need ? g_contentH - rc.bottom : 0;
+    if (g_scroll > g_scrollMax)
+        g_scroll = g_scrollMax;
+    if (g_scroll < 0)
+        g_scroll = 0;
+
+    memset(&si, 0, sizeof si);
+    si.cbSize = sizeof si;
+    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
+    si.nMin   = 0;
+    si.nMax   = g_contentH;   /* pixel range: pos maps 1:1                */
+    si.nPage  = rc.bottom;
+    si.nPos   = g_scroll;
+    SetScrollInfo(a, SB_VERT, &si, TRUE);
+}
+
+static void areaScrollTo(HWND a, int v)
+{
+    RECT rc;
+    SCROLLINFO si;
+
+    if (v > g_scrollMax)
+        v = g_scrollMax;
+    if (v < 0)
+        v = 0;
+    if (v == g_scroll)
+        return;
+    g_scroll = v;
+    memset(&si, 0, sizeof si);
+    si.cbSize = sizeof si;
+    si.fMask  = SIF_POS;
+    si.nPos   = v;
+    SetScrollInfo(a, SB_VERT, &si, TRUE);
+    GetClientRect(a, &rc);
+    areaLayoutRows(a, rc.right);
+}
+
+static LRESULT CALLBACK areaProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_ERASEBKGND: {
+        HDC dc = (HDC) wp;
+        RECT rc, cr;
+        int i;
+
+        GetClientRect(h, &rc);
+        FillRect(dc, &rc, g_brBg);
+        for (i = 0; i < g_modCount; i++) {
+            cr = g_cardR[i];
+            OffsetRect(&cr, 0, -g_scroll);
+            if (cr.bottom > 0 && cr.top < rc.bottom)
+                rr(dc, &cr, U(10), g_brCard, C_CARDLN);
+        }
+        return TRUE;
+    }
+    case WM_SIZE: {
+        RECT rc;
+
+        areaUpdateScroll(h);
+        GetClientRect(h, &rc);
+        areaLayoutRows(h, rc.right);
+        return 0;
+    }
+    case WM_VSCROLL: {
+        RECT rc;
+        SCROLLINFO si;
+        int v = g_scroll;
+
+        GetClientRect(h, &rc);
+        switch (LOWORD(wp)) {
+        case SB_LINEUP:     v -= U(48); break;
+        case SB_LINEDOWN:   v += U(48); break;
+        case SB_PAGEUP:     v -= rc.bottom; break;
+        case SB_PAGEDOWN:   v += rc.bottom; break;
+        case SB_TOP:        v = 0; break;
+        case SB_BOTTOM:     v = g_scrollMax; break;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION:
+            memset(&si, 0, sizeof si);
+            si.cbSize = sizeof si;
+            si.fMask  = SIF_TRACKPOS;
+            if (GetScrollInfo(h, SB_VERT, &si))
+                v = si.nTrackPos;
+            break;
+        }
+        areaScrollTo(h, v);
+        return 0;
+    }
+    case WM_MOUSEWHEEL:
+        areaScrollTo(h, g_scroll
+                     - GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA * U(96));
+        return 0;
+    case WM_COMMAND:
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+        if (g_mainHwnd)
+            return SendMessageW(g_mainHwnd, msg, wp, lp);
+        break;
+    }
+    return DefWindowProcW(h, msg, wp, lp);
+}
+
 
 /* ------------------------------------------------------------------ */
 /* worker jobs                                                          */
@@ -2292,13 +2465,11 @@ static void readAppEdit(void)
     }
 }
 
-/* width-dependent repositioning; rows keep a fixed vertical grid: the
- * window may be resized, maximized or restored (WM_SIZE), controls that
- * stretch with the client width are re-anchored here                     */
+/* width-dependent repositioning; the module cards live in the scroll
+ * area (relaid out by its own WM_SIZE), while the header, the restore
+ * button and the journal are re-anchored here                             */
 static void layoutMain(HWND hw, int cw, int ch)
 {
-    int i, y, w;
-
     if (!g_edApp || !g_status || g_modCount <= 0)
         return;
 
@@ -2308,16 +2479,10 @@ static void layoutMain(HWND hw, int cw, int ch)
     MoveWindow(g_btnBrowse, cw - LMARG - U(92), U(100), U(92), U(30), TRUE);
     MoveWindow(g_ver, LMARG + U(2), U(138),
                cw - 2 * LMARG - U(4), U(16), TRUE);
-    for (i = 0; i < g_modCount; i++) {
-        y = g_rowY[i];
-        SetRect(&g_cardR[i], LMARG, y, cw - LMARG,
-                y + cardHeightOf(&g_mods[i]));
-        w = cw - 2 * LMARG - U(90);
-        MoveWindow(g_name[i], LMARG + U(16), y + U(10), w, U(17), TRUE);
-        MoveWindow(g_desc[i], LMARG + U(16), y + U(31), w, U(15), TRUE);
-        MoveWindow(g_check[i], cw - LMARG - U(16) - U(46), y + U(17),
-                   U(46), U(24), TRUE);
-    }
+    MoveWindow(g_modArea, 0, AREA_TOP, cw,
+               ch - AREA_TOP - FOOT_H, TRUE);
+    MoveWindow(g_btnRestore, LMARG, ch - FOOT_H + U(10), U(250), U(34), TRUE);
+    g_logTop = ch - FOOT_H + U(60);
     SetRect(&g_rLog, LMARG, g_logTop, cw - LMARG, ch - U(16));
     MoveWindow(g_status, LMARG + U(10), g_logTop + U(8),
                cw - 2 * LMARG - U(20),
@@ -2371,6 +2536,11 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
         mkStatic(&g_ver, L"", LMARG + U(2), U(138), cw - 2 * LMARG - U(4), U(16), g_fontS, hw);
         mkStatic(&g_hdr, L"MODULES", LMARG + U(2), U(168), U(300), U(16), g_fontS, hw);
 
+        g_modArea = CreateWindowExW(0, L"ExSmArea", L"",
+                    WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+                    0, AREA_TOP, cw, ch - AREA_TOP - FOOT_H, hw,
+                    NULL, g_hInst, NULL);
+
         y = U(192);
         for (i = 0; i < g_modCount; i++) {
             g_ctrls[i].kind = CKIND_SWITCH;
@@ -2383,20 +2553,21 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
             HWND nm, ds;
             int nSl = g_mods[i].nSliders;
             int nPr = g_mods[i].nPresets;
-            int s2, p2;
+            int s2, p2, yr;
             int cardH = cardHeightOf(&g_mods[i]);
 
-            g_rowY[i] = y;
-            SetRect(&g_cardR[i], LMARG, y, cw - LMARG, y + cardH);
+            yr = g_rowYrel[i] = y - AREA_TOP;  /* content coordinates     */
+            SetRect(&g_cardR[i], LMARG, g_rowYrel[i], cw - LMARG,
+                    g_rowYrel[i] + cardH);
             swprintf(buf, 256, L"%ls  %hs", g_mods[i].title, g_mods[i].version);
-            nm = mkStatic(&g_name[i], buf, LMARG + U(16), y + U(10),
-                          cw - 2 * LMARG - U(90), U(17), g_fontB, hw);
-            ds = mkStatic(&g_desc[i], g_mods[i].desc, LMARG + U(16), y + U(31),
-                          cw - 2 * LMARG - U(90), U(15), g_fontS, hw);
+            nm = mkStatic(&g_name[i], buf, LMARG + U(16), yr + U(10),
+                          cw - 2 * LMARG - U(90), U(17), g_fontB, g_modArea);
+            ds = mkStatic(&g_desc[i], g_mods[i].desc, LMARG + U(16), yr + U(31),
+                          cw - 2 * LMARG - U(90), U(15), g_fontS, g_modArea);
             g_check[i] = CreateWindowExW(0, L"ExSmCtrl", L"",
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                        cw - LMARG - U(16) - U(46), y + U(17), U(46), U(24),
-                        hw,
+                        cw - LMARG - U(16) - U(46), yr + U(17), U(46), U(24),
+                        g_modArea,
                         (HMENU) (UINT_PTR) (IDC_MODBASE + i), g_hInst,
                         &g_ctrls[i]);
             SetWindowSubclass(nm, rowSub, (UINT_PTR) (1000 + i),
@@ -2429,8 +2600,8 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
                                : (v > d->maxV ? d->maxV : v);
                     g_slider[i][s2] = CreateWindowExW(0, L"ExSmCtrl", L"",
                             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                            LMARG + U(16), y + U(52) + s2 * U(30),
-                            U(470), U(24), hw,
+                            LMARG + U(16), yr + U(52) + s2 * U(30),
+                            U(470), U(24), g_modArea,
                             (HMENU) (UINT_PTR) (IDC_SCBASE + i * MAX_SLIDERS
                                                 + s2),
                             g_hInst, sc);
@@ -2457,8 +2628,8 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
                     pc->pdef = &g_mods[i].presets[p2];
                     g_preset[i][p2] = CreateWindowExW(0, L"ExSmCtrl", L"",
                             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                            LMARG + U(16) + p2 * (pw + pg), y + U(50),
-                            pw, U(46), hw,
+                            LMARG + U(16) + p2 * (pw + pg), yr + U(50),
+                            pw, U(46), g_modArea,
                             (HMENU) (UINT_PTR) (IDC_PRBASE + i * MAX_PRESETS
                                                 + p2),
                             g_hInst, pc);
@@ -2466,8 +2637,8 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
                 /* caption under the pill row: the row itself is the
                  * control, the line only names what it tunes */
                 g_pcap[i] = mkStatic(&g_pcap[i], g_mods[i].presetCap,
-                          LMARG + U(16), y + U(99), U(360), U(15),
-                          g_fontS, hw);
+                          LMARG + U(16), yr + U(99), U(360), U(15),
+                          g_fontS, g_modArea);
             }
             if (g_mods[i].hasFileBtn) {
                 static const wchar_t *wpNames[MAX_FILEBTNS] =
@@ -2481,7 +2652,7 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
                             wpNames[s2],
                             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                             LMARG + U(16) + s2 * (U(170) + U(8)),
-                            y + U(50), U(170), U(26), hw,
+                            yr + U(50), U(170), U(26), g_modArea,
                             (HMENU) (UINT_PTR) (IDC_WPBASE
                                                 + i * MAX_FILEBTNS + s2),
                             g_hInst, fc);
@@ -2489,14 +2660,15 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
             }
             y += cardH + U(8);
         }
+        g_contentH = y + U(8) - AREA_TOP;   /* full scrollable height      */
 
         g_btnRestore = CreateWindowExW(0, L"ExSmCtrl", L"Restore stock",
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                    LMARG, y + U(10), U(250), U(34), hw,
+                    LMARG, ch - FOOT_H + U(10), U(250), U(34), hw,
                     (HMENU) IDC_RESTORE, g_hInst, &g_ctrls[g_modCount + 1]);
 
-        SetRect(&g_rLog, LMARG, y + U(60), cw - LMARG, ch - U(16));
-        g_logTop = y + U(60);
+        g_logTop = ch - FOOT_H + U(60);
+        SetRect(&g_rLog, LMARG, g_logTop, cw - LMARG, ch - U(16));
         g_status = CreateWindowExW(0, L"EDIT", L"",
                     WS_CHILD | WS_VISIBLE
                     | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
@@ -2506,6 +2678,7 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
                     hw, (HMENU) IDC_STATUS, g_hInst, NULL);
         SendMessageW(g_status, WM_SETFONT, (WPARAM) g_fontL, TRUE);
 
+        areaUpdateScroll(g_modArea);
         refreshChecks();
         return 0;
     }
@@ -2518,8 +2691,7 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
             ncH = (wr.bottom - wr.top) - (cr.bottom - cr.top);
         }
         mm->ptMinTrackSize.x = U(600) + ncW;
-        mm->ptMinTrackSize.y = (g_logTop ? g_logTop : U(500))
-                               + U(120) + ncH;
+        mm->ptMinTrackSize.y = AREA_TOP + AREA_MIN_H + FOOT_H + ncH;
         return 0;
     }
     case WM_SIZE:
@@ -2533,12 +2705,9 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
     case WM_ERASEBKGND: {
         HDC dc = (HDC) wp;
         RECT rc;
-        int i;
 
         GetClientRect(hw, &rc);
         FillRect(dc, &rc, g_brBg);
-        for (i = 0; i < g_modCount; i++)
-            rr(dc, &g_cardR[i], U(10), g_brCard, C_CARDLN);
         rr(dc, &g_rEd, U(8), g_brBg, RGB(64, 64, 64));
         rr(dc, &g_rLog, U(8), g_brLog, C_CARDLN);
         return TRUE;
@@ -2832,6 +3001,15 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmdLine, int show)
     wc.hInstance     = hInst;
     wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
     wc.lpszClassName = L"ExSmCtrl";
+    RegisterClassExW(&wc);
+
+    memset(&wc, 0, sizeof wc);
+    wc.cbSize        = sizeof wc;
+    wc.lpfnWndProc   = areaProc;
+    wc.hInstance     = hInst;
+    wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = g_brBg;
+    wc.lpszClassName = L"ExSmArea";
     RegisterClassExW(&wc);
 
     {   /* the design grid is 96 dpi; U() scales everything by g_us */
