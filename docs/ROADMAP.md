@@ -18,6 +18,10 @@ not included in git).
 - Vendor-update deadline procedure: first offline anchor validation
   (`zrc_lab`/`dim_dryrun` over the update files), then install.
 - Deploy into Program Files only via `Start-Process -Verb RunAs`.
+- Versioning is `MAJOR.MINOR.PATCH` (same for the manager and every
+  module): MAJOR is bumped only on the owner's explicit decision and is
+  `0` until the first proven release; MINOR = a new feature/capability;
+  PATCH = a fix. Full rule in README § Versioning.
 
 ## Shipped
 

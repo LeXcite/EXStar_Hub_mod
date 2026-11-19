@@ -77,6 +77,23 @@ Everything the manager places is recorded in `<app>\exstar_mods.state`, so
 `winmm.dll` (a vendor file there is detected by its version resource and
 aborts the install).
 
+## Versioning
+
+`MAJOR.MINOR.PATCH`, the same scheme for the manager and for every module:
+
+* **MAJOR** (first digit) - bumped only on the project owner's explicit
+  decision. The line is `0.x` until the first proven release; the first
+  proven release is `1.x`. The owner alone decides when to move 1 → 2 → 3.
+* **MINOR** (second digit) - a new feature: a new module, a new user-facing
+  capability of the manager, or a new capability of an existing module.
+* **PATCH** (third digit) - fixes and behavior adjustments only.
+
+Modules follow the same scheme: `0.x` while experimental, `1.0.0` at the
+first live-verified ship, then MINOR for new capabilities and PATCH for
+fixes. Windows requires a 4-part version resource, so shipped binaries
+carry a technical `.0` fourth component (e.g. file `…1.3.10.exe`, resource
+`1.3.10.0`); it is not part of the version and never conveys meaning.
+
 ## How it works
 
 ```
