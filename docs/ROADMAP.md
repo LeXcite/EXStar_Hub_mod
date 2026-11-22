@@ -35,7 +35,7 @@ not included in git).
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
 | fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
-| ExStarModManager | 1.3.10 | manager: enabling modules, installing/updating payload, resizable window |
+| ExStarModManager | 1.4.0 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome) |
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
 
@@ -243,19 +243,43 @@ checklist: [scanner-hub-module.md](research/scanner-hub-module.md).
 
 ### 8. Fan control — quiet the scanner
 
-Status: research complete (vendor telemetry path + device-side control
-surface understood), **no code**. Pending from the collaborator: the
-pseudo-PID recipe (anchors in `app_tx2`, the ARM64 blob, hook points,
-Kp/Ki/Kd defaults, thresholds) — we will not guess into a running
-process.
+Status: **implemented CLI-side 2026-11-21** (`--scanner-fan
+status|apply|stop|restore|probe`), awaiting live tests on the device.
+The collaborator's recipe was recovered by decompiling his r6.1
+installer (class `FanBinary`): full pseudo-PID analysis in the private
+research artifacts. His modes patch the on-disk `app_tx2` (writable
+rootfs + reboot) — **not** our policy; ours is memory-only:
 
-Agreed shape: a status card (duty / RPM / CPU+projector temperature,
-`FANBLOCKED` alert) plus an **in-memory** patch of the running `app_tx2`
-- version gate by device-binary hash before applying, refuse while a scan
-is active, reboot = rollback, zero writes to the device filesystem.
-Read-only or coarse-duty variants first, since both are already available
-through the vendor telemetry channel (`RWFanActualSpeed`, `threshold`,
-`RWFanSpeed`) with no patching at all.
+- `shell` (default): PID loop as a /tmp shell script — reads
+  `thermal_zone0/temp`, writes `/dev/hwmon/pwm1`; works on every build,
+  `stop`/reboot = rollback.
+- `memhook`: the A64 in-process loop (hook + code cave) applied via
+  `/proc/<pid>/mem` only, gated by the exact factory profile (size + 7
+  anchor words + PT_LOAD coverage + writable-segment check), RAM
+  snapshot before writing, read-back verify + auto-rollback, `restore`
+  replays the snapshot. Refuses any build that does not match.
+- `probe`: read-only profile report for deriving gates on new firmware
+  (ELF layout, anchor window, candidate hook words, segment perms).
+
+User docs: [scanner-fan-control.md](scanner-fan-control.md).
+Remaining before "tested": live run of `probe`, calibration of the
+temperature scale / reload register questions noted in the research
+artifact, then `apply` on the device; UI card comes after the CLI is
+verified (manager Scanner tab, card 10).
+
+### 8a. Scanner Wi-Fi visibility fix — `--scanner-wifi`
+
+Status: **implemented CLI-side 2026-11-20/21**. One-click repair of
+"phone does not see the scanner AP" (vendor regulatory table ships
+5.8 GHz channels for KZ/RU/CN while local phones may not scan there —
+real incident: AP on ch153). `status|fix|rollback`: idempotent
+narrowing of the device's own country row (channels ≤ 64), mandatory
+factory backup under `%LOCALAPPDATA%\ExStarHubMods\scanner\`, AP
+restart through the vendor's own init script, verified afterwards.
+User docs: [scanner-wifi-channel-fix.md](scanner-wifi-channel-fix.md);
+standalone equivalent `tools\scanner-wifi-fix.ps1`. The user's device
+was fixed under a one-time approved exception; the tool keeps it
+repairable after firmware updates.
 
 ### 9. Home-network (STA) assistant + dashboard + log collector
 
@@ -279,12 +303,40 @@ Status: research complete, **no code**. Key facts (details in
   session (only for the PC-bridge option), and one live device pass over
   the verification checklist.
 
+## Batch "manager UI" (2026-11-21 → 22) — CLOSED
+
+Redesigned the whole manager GUI to the approved HTML mockup, shipped as
+manager 1.4.0. Pure C/Win32: every page is owner-drawn (GDI+ shapes,
+GDI ClearType text, double-buffered, per-frame alpha fades), the only
+real child control is the app-folder EDIT.
+
+* Pages: **Interface** (status tiles, module cards, live activity feed),
+  **Scanner** (placeholder for item 9), **Settings** (folder, *Manager
+  behavior*: journal toggle + zoom slider persisted in
+  `%APPDATA%\ExStar\exstar_modmanager.ini`; journal log
+  `%APPDATA%\ExStar\journal.log`; About; Restore stock).
+* No icon fonts/tiles anywhere (typographic wordmark and card heads),
+  no hover displacement (hover only warms border/shadow), custom dark
+  overlay scroll thumb and no native scrollbar at any window height.
+* Fixes found live: switch activation dead (`ReleaseCapture()` ran
+  before the hit test and cleared the press state); a NULL deref in the
+  preset band (redesign dropped child-window creation, so control
+  descriptors were never seeded - now `uiSeedControls()`); worker-thread
+  `MessageBoxW` could hang a job behind an invisible dialog (warnings
+  now travel through the window queue and are shown by the UI thread).
+* `src/manager.c` is pure ASCII: all UI glyphs (`× → « » µ …`) are
+  `\uXXXX` escapes - the file cannot be mojibake'd by an editor or a
+  build again (an earlier CP1251 round-trip had baked `25Г—25` into the
+  Laser title).
+* CLI (`--install/--remove/--restore/--scanner-*`) behavior unchanged;
+  version resources carry 1.4.0.
+
 ## Open regressions
 
 | Item | Since | Status |
 |---|---|---|
 | fitfill has no effect on 2.1.0-10 | vendor update 2.1.0-10 | diagnosed 2026-11-19: the flag it forces is dead code on the new fit pipeline (analysis: [zoom-fit-optimization.md §6](research/zoom-fit-optimization.md)); replacement anchor found the same day - the `setEnableScanScale(false)` call site in `sn3d.digit.scenecontrol.dll` ([§7](research/zoom-fit-optimization.md)), implemented in fitfill 1.1.0 (import-name-anchored in-memory byte patch). TODO: live confirmation on the hub (log line `scan scale forced to 1 at sn3d.digit.scenecontrol.dll+0x...` + Ctrl+D re-fills the frame). |
-| manager window was fixed-size | before 1.3.10 | fixed in manager 1.3.10: `WS_OVERLAPPEDWINDOW` (resizable, minimize, maximize), `WM_SIZE` re-layout of width-dependent controls, `WM_GETMINMAXINFO` floor. Needs user visual confirmation. |
+| manager window was fixed-size | before 1.3.10 | fixed in manager 1.3.10: `WS_OVERLAPPEDWINDOW` (resizable, minimize, maximize), `WM_SIZE` re-layout of width-dependent controls, `WM_GETMINMAXINFO` floor. Visually confirmed 2026-11-22 during the 1.4.0 UI redesign (any height re-flows the grid; the stock white scrollbar that surfaced at short heights is gone - the only scroll thumb is the custom dark overlay). |
 
 ## Rejected
 
@@ -294,8 +346,12 @@ Status: research complete, **no code**. Key facts (details in
   himself rolled it back) — not taken without an explicit need.
 - Bypassing the resolution check on import, forcing Mesh Editing's isEnabled
   (breaks the left panel), edition/terminology cosmetics.
-- The hardware part of the TX2 (Wi-Fi/IP/MAC/buttons/web portal) — out of the framework's
-  scope, remains knowledge in the private base.
+- The hardware part of the TX2 (Wi-Fi/IP/MAC/buttons/web portal) — was
+  out of the framework's scope; scope revised 2026-11-20/21: device
+  tools now exist as manager CLI (`--scanner-wifi`, `--scanner-fan`),
+  still injection/memory-only with reboot rollback, no vendor-file
+  patching (the one country-table exception was a user-approved
+  one-time repair).
 
 ## External circumstances
 

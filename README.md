@@ -45,8 +45,15 @@ startup-gate research:
 `ExStarModManager.exe` is a single self-contained executable (bootstrap,
 host and all modules are embedded as resources):
 
-* **GUI** (elevated automatically): pick the application folder, flip the
-  switch next to a module - ON installs and enables it, OFF removes it.
+* **GUI** (elevated automatically) - since 1.4.0 a redesigned dark
+  interface: every page is owner-drawn (GDI+ shapes, ClearType text),
+  animated, no framework dependencies. Three pages: *Interface*
+  (status tiles, the module cards, a live activity feed), *Scanner*
+  (reserved for the scanner-hub dashboard, roadmap item 9) and
+  *Settings* (application folder, *Manager behavior* - activity
+  journal and UI zoom -, About, *Restore stock*). Pick the
+  application folder, flip the switch on a module card - ON installs
+  and enables it, OFF removes it.
   The window scales itself to the screen (system DPI and physical panel
   density are detected at startup; force it with `--zoom 1.5`).
   Modules with tunable behavior show inline controls that write the
@@ -64,6 +71,9 @@ host and all modules are embedded as resources):
   the module's ini;
   switch states are read back from disk, so the window always shows what
   is actually installed. *Restore stock* removes everything.
+* **Manager preferences**: zoom and journal switches persist in
+  `%APPDATA%\ExStar\exstar_modmanager.ini`; the activity journal itself
+  is `%APPDATA%\ExStar\journal.log` (UTF-8).
 * **CLI**:
 
 ```text
@@ -72,12 +82,17 @@ ExStarModManager.exe --install --modules marker_inframe[,id2] [--scale 1.5] [--a
 ExStarModManager.exe --remove  --modules id1,id2
 ExStarModManager.exe --restore
 ExStarModManager.exe --zoom 1.5        # GUI only: force UI scale 1.0..4.0
+ExStarModManager.exe --scanner-wifi  status|fix|rollback [--scanner-ip 192.168.42.3] [--scanner-channels 36,40,44,48] [--scanner-pass ...]
+ExStarModManager.exe --scanner-fan   status|apply|stop|restore|probe [--scanner-ip ...]
 ```
 
 Everything the manager places is recorded in `<app>\exstar_mods.state`, so
 *restore stock* deletes exactly its own files - and never touches a foreign
 `winmm.dll` (a vendor file there is detected by its version resource and
-aborts the install).
+aborts the install). The `--scanner-*` commands are unrelated to local
+module files: they talk to the scanner over its Wi-Fi link
+([scanner-wifi-channel-fix.md](docs/scanner-wifi-channel-fix.md),
+[scanner-fan-control.md](docs/scanner-fan-control.md)).
 
 ## Versioning
 

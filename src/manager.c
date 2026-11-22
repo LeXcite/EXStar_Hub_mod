@@ -1,4 +1,4 @@
-﻿/*
+/*
  * manager.c - ExStarModManager.exe
  *
  * Installer / enabler / remover for EXStar Hub mods. Single file: the
@@ -35,12 +35,14 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <ctype.h>
 #include <wchar.h>
 
 /* GDI+ (wallpaper image conversion): the manager is the only component
  * that touches images, modules never link it */
 #include <gdiplus.h>
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "msimg32.lib")   /* GradientFill                     */
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -48,7 +50,7 @@
 
 #define APP_EXE_NAME     L"EXStar Hub.exe"
 #define APP_EXE_A        "EXStar Hub.exe"
-#define MANAGER_VERSION  L"1.3.10"  /* keep in sync with $version in build.ps1 */
+#define MANAGER_VERSION  L"1.4.0"   /* keep in sync with $version in build.ps1 */
 #define PROXY_MARKER     L"ExStarMod.winmm.dll"   /* OriginalFilename of our proxy */
 #define DEFAULT_APP_DIR  "C:\\Program Files\\Shining3d\\EXStar Hub"
 /* The vendor freezes the exe ProductVersion (the "file stamp", still
@@ -71,8 +73,8 @@ typedef struct {
     const wchar_t *label;    /* right-aligned caption                    */
     float          minV, maxV, defV;   /* in DISPLAY units               */
     BOOL           isInt;    /* display value is an integer             */
-    const wchar_t *unit;     /* appended to the value ("µm", "mm", "×")  */
-    float          iniMul;   /* ini value = display * iniMul (µm <- mm)  */
+    const wchar_t *unit;     /* appended to the value ("\u00B5m", "mm", "\u00D7")  */
+    float          iniMul;   /* ini value = display * iniMul (\u00B5m <- mm)  */
     float          step;     /* display quantization (0 = 0.1)           */
     BOOL           noDefHint;/* do not show "(default X)" next to values */
 } SliderDef;
@@ -102,14 +104,16 @@ typedef struct {
     BOOL           needsSiblings; /* module also runs in sibling processes
                                    * (scanservice.exe): keep the [host]
                                    * sibling_* whitelist in sync          */
-    BOOL           hasFileBtn;  /* card shows "Choose file…" / "Reset":
+    BOOL           hasFileBtn;  /* card shows "Choose file\u2026" / "Reset":
                                  * the module reads a user image from
                                  * modules\ (see the wallpaper module)   */
+    int            cat;         /* sidebar section: 0 = Interface,
+                                 * 1 = Scanner (rows omit it -> 0)        */
 } ModDef;
 
 /* ---- adjustable knobs -------------------------------------------------- */
 static const SliderDef g_slInframe[] = {
-    { "scale", L"scale", 1.0f, 2.0f, 1.6f, FALSE, L"×", 0.0f, 0.0f, TRUE },
+    { "scale", L"scale", 1.0f, 2.0f, 1.6f, FALSE, L"\u00D7", 0.0f, 0.0f, TRUE },
 };
 
 /* Popup Dim tuning: one percentage - how dark the background curtain
@@ -155,12 +159,12 @@ static const ModDef g_mods[MAX_MODS] = {
       L"live real FPS counter on the scan page",
       L"MOD_FPS", L"MOD_FPS_INI",
       NULL, 0, NULL, 0, NULL, FALSE },
-    { "laser50", L"Laser 25×25", "1.1.0",
-      L"all 25+25 laser lines (plane range (3,21) → (0,24)); the button shows «50 lines» right away",
+    { "laser50", L"Laser 25\u00D725", "1.1.0",
+      L"all 25+25 laser lines (plane range (3,21) \u2192 (0,24)); the button shows \u00AB50 lines\u00BB right away",
       L"MOD_LASER50", L"MOD_LASER50_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
     { "fitfill", L"Zoom to Fit Fill", "1.0.0",
-      L"«Zoom to Fit» (Ctrl+D) fits the model into the whole frame, not a third of the window",
+      L"\u00ABZoom to Fit\u00BB (Ctrl+D) fits the model into the whole frame, not a third of the window",
       L"MOD_FITFILL", L"MOD_FITFILL_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
     { "gpu_gate", L"GPU Gate", "1.0.0",
@@ -381,6 +385,20 @@ static BOOL resourceWrite(LPCWSTR name, const char *dstPath)
     return ok;
 }
 
+/* A refused write is nearly always a permission problem, and a bare
+ * error code sends the user hunting for the wrong file. */
+static void report(const wchar_t *fmt, ...);
+
+static void reportWriteErr(const char *what, DWORD err)
+{
+    if (err == ERROR_ACCESS_DENIED || err == ERROR_PRIVILEGE_NOT_HELD)
+        report(L"%hs: access denied (err=%lu). Close EXStar Hub and, when "
+               L"the folder is protected, start the manager as "
+               L"administrator.", what, err);
+    else
+        report(L"%hs: write failed (err=%lu).", what, err);
+}
+
 /* ------------------------------------------------------------------ */
 /* simple INI document (sections + key=value, comments ';')            */
 /* ------------------------------------------------------------------ */
@@ -580,6 +598,10 @@ static float  g_cliScale = -1.0f; /* CLI --scale, -1 = not given       */
 static float  g_cliDim   = -1.0f; /* CLI --dim,   -1 = not given       */
 static HWND   g_mainHwnd;         /* GUI window (journal target), 0 in CLI */
 
+/* Both channels reach the GUI through the message queue. A job runs on a
+ * worker thread, and a modal box from there would freeze the job - and
+ * the progress animation with it - until the user finds the dialog, so
+ * warnings are queued and shown once the interface is live again.      */
 static void vreport(int journal, const wchar_t *fmt, va_list ap)
 {
     wchar_t buf[1024];
@@ -590,14 +612,14 @@ static void vreport(int journal, const wchar_t *fmt, va_list ap)
         w2a(buf, a, sizeof a);
         fputs(a, g_report);
         fflush(g_report);
-    } else if (journal && g_mainHwnd) {
-        /* progress line -> GUI journal; posted (worker-thread safe, and
-         * unlike a MessageBox it never blocks the job or boxes the user */
+    } else if (g_mainHwnd) {
         size_t cb = (wcslen(buf) + 1) * sizeof *buf;
         wchar_t *cp = (wchar_t *) HeapAlloc(GetProcessHeap(), 0, cb);
+
         if (cp) {
             memcpy(cp, buf, cb);
-            if (!PostMessageW(g_mainHwnd, WM_APP + 2, 0, (LPARAM) cp))
+            if (!PostMessageW(g_mainHwnd, journal ? WM_APP + 2 : WM_APP + 3,
+                              0, (LPARAM) cp))
                 HeapFree(GetProcessHeap(), 0, cp);
         }
     } else {
@@ -660,7 +682,7 @@ static BOOL ensureCore(State *st)
     }
 
     if (!resourceWrite(L"BOOT_WINMM", winmm)) {
-        report(L"Failed to write winmm.dll (proxy).");
+        reportWriteErr("winmm.dll", GetLastError());
         return FALSE;
     }
     stateAdd(st, "winmm.dll");
@@ -669,15 +691,14 @@ static BOOL ensureCore(State *st)
         char host[MAX_PATH];
         snprintf(host, sizeof host, "%s\\ExStarRec.dll", g_appDir);
         if (!resourceWrite(L"HOST", host)) {
-            report(L"Failed to write ExStarRec.dll (host).");
+            reportWriteErr("ExStarRec.dll", GetLastError());
             return FALSE;
         }
         stateAdd(st, "ExStarRec.dll");
     }
 
     if (!CopyFileA(sys, real, FALSE)) {
-        report(L"Failed to update winmm_real.dll (err=%lu). "
-               L"The application may still be running.", GetLastError());
+        reportWriteErr("winmm_real.dll", GetLastError());
         return FALSE;
     }
     stateAdd(st, "winmm_real.dll");
@@ -856,6 +877,86 @@ static BOOL iniGetKeyS(const char *path, const char *key, char *out, size_t cap)
     return FALSE;
 }
 
+/* ------------------------------------------------------------------ */
+/* animator: one shared ~8ms timer interpolates every animated float    */
+/* (toggles, hover, card intro, nav, page slide, smooth scroll). The    */
+/* timer is armed on interaction and dies when everything settled.      */
+/* ------------------------------------------------------------------ */
+typedef struct {
+    float    cur, from, to;
+    ULONGLONG t0;                          /* start tick (delayed = past) */
+    int      dur;                          /* ms; 0 = jump               */
+    int      ease;                         /* EASE_OUT / EASE_BACK       */
+} Anim;
+#define EASE_OUT  0
+#define EASE_BACK 1
+#define ANIM_TIMER 77
+#define ANIM_MS   8
+
+static BOOL g_animOn;
+
+static void animWake(void)
+{
+    if (!g_animOn && g_mainHwnd) {
+        g_animOn = TRUE;
+        SetTimer(g_mainHwnd, ANIM_TIMER, ANIM_MS, NULL);
+    }
+}
+static float animEase(int kind, float t)
+{
+    if (kind == EASE_BACK) {                /* slight overshoot, springy */
+        float c1 = 1.70158f, c3 = c1 + 1.0f, u = t - 1.0f;
+        return 1.0f + c3 * u * u * u + c1 * u * u;
+    }
+    { float u = 1.0f - t; return 1.0f - u * u * u; }
+}
+static void animAt(Anim *a, float v)        /* jump without motion       */
+{
+    a->cur = a->from = a->to = v; a->t0 = 0; a->dur = 0; a->ease = EASE_OUT;
+}
+static void animTo(Anim *a, float to, int dur, int ease)
+{
+    if (a->dur == 0 && a->to == to)
+        return;
+    if (dur <= 0) { animAt(a, to); return; }
+    a->from = a->cur; a->to = to; a->dur = dur; a->ease = ease;
+    a->t0 = GetTickCount64();
+    animWake();
+}
+static void animDelay(Anim *a, float from, float to, int dur, int ease,
+                      int waitMs)
+{
+    a->cur = a->from = from; a->to = to; a->dur = dur; a->ease = ease;
+    a->t0 = GetTickCount64() + (ULONGLONG) waitMs;
+    animWake();
+}
+static BOOL animStep(Anim *a, ULONGLONG now) /* TRUE while still moving  */
+{
+    float t, e;
+    if (a->dur <= 0) { a->cur = a->to; return FALSE; }
+    if (now < a->t0)
+        return TRUE;                         /* waiting out the delay    */
+    t = (float) (now - a->t0) / (float) a->dur;
+    if (t >= 1.0f) {
+        BOOL was = a->cur != a->to;
+        a->cur = a->to;
+        a->dur = 0;
+        return was;
+    }
+    e = animEase(a->ease, t);
+    a->cur = a->from + (a->to - a->from) * e;
+    return TRUE;
+}
+/* lerp two colors; t is clamped */
+static COLORREF mix(COLORREF a, COLORREF b, float t)
+{
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return RGB((int) (GetRValue(a) + (GetRValue(b) - GetRValue(a)) * t + 0.5f),
+               (int) (GetGValue(a) + (GetGValue(b) - GetGValue(a)) * t + 0.5f),
+               (int) (GetBValue(a) + (GetBValue(b) - GetBValue(a)) * t + 0.5f));
+}
+
 /* hover/press state for our custom controls:
  * [0..g_modCount) switches, [MAX_MODS] browse, [MAX_MODS+1] restore,
  * slider block (MAX_SLIDERS per module), preset pill block
@@ -866,6 +967,7 @@ static BOOL iniGetKeyS(const char *path, const char *key, char *out, size_t cap)
 #define CKIND_SLIDER  3
 #define CKIND_PRESET  4
 #define CKIND_FILEBTN 5
+#define CKIND_NAV     6
 typedef struct {
     int                kind;
     int                idx;
@@ -875,6 +977,8 @@ typedef struct {
     float              fval, fmin, fmax;  /* CKIND_SLIDER state */
     const SliderDef   *sdef;              /* CKIND_SLIDER config */
     const PresetDef   *pdef;              /* CKIND_PRESET config */
+    HWND               hwnd;              /* self, for per-frame repaints */
+    Anim               ha, pa;            /* animated hover / press      */
 } ExCtrl;
 #define CTL_SLIDER(m, s)  (&g_ctrls[MAX_MODS + 2 + (m) * MAX_SLIDERS + (s)])
 #define CTL_PRESET(m, p)  (&g_ctrls[MAX_MODS + 2 + MAX_MODS * MAX_SLIDERS \
@@ -883,11 +987,7 @@ typedef struct {
                               + MAX_MODS * MAX_PRESETS + (m) * MAX_FILEBTNS + (b)])
 static ExCtrl g_ctrls[MAX_MODS * (MAX_SLIDERS + MAX_PRESETS + MAX_FILEBTNS + 1) + 2];
 
-static HWND g_fileBtn[MAX_MODS][MAX_FILEBTNS]; /* "Choose file…"/"Reset"  */
-
-static HWND g_preset[MAX_MODS][MAX_PRESETS]; /* preset pill buttons       */
-static HWND g_pcap[MAX_MODS];                /* caption above the pill row*/
-static int  g_presetSel[MAX_MODS];           /* selected pill, -1 = none  */
+static int  g_presetSel[MAX_MODS]; /* selected pill, -1 = none (owner-drawn)   */
 
 /* user wallpaper image placed next to the wallpaper module DLL; the
  * slot budget is the stock JPEG size in AppUi.dll, the wallpaper module
@@ -918,7 +1018,7 @@ static int sliderDecimals(const SliderDef *d)
     return (d->step > 0.0f && d->step < 0.1f) ? 2 : 1;
 }
 
-/* human-readable value in display units: "20", "0.10 mm", "1.6×" */
+/* human-readable value in display units: "20", "0.10 mm", "1.6\u00D7" */
 static void sliderDisplayTextW(const SliderDef *d, float v, BOOL withUnit,
                                wchar_t *out, int cap)
 {
@@ -932,7 +1032,7 @@ static void sliderDisplayTextW(const SliderDef *d, float v, BOOL withUnit,
     if (withUnit && d->unit && d->unit[0]) {
         if (lstrlenW(d->unit) > 1)            /* "0.10 mm" gets a space   */
             swprintf(out, cap, L"%ls %ls", num, d->unit);
-        else                                  /* "1.6×" does not          */
+        else                                  /* "1.6\u00D7" does not          */
             swprintf(out, cap, L"%ls%ls", num, d->unit);
     } else {
         wcsncpy(out, num, (size_t)cap - 1);
@@ -940,7 +1040,7 @@ static void sliderDisplayTextW(const SliderDef *d, float v, BOOL withUnit,
     }
 }
 
-/* the string stored in the ini (iniMul converts mm display -> µm storage) */
+/* the string stored in the ini (iniMul converts mm display -> \u00B5m storage) */
 static void sliderValueText(const SliderDef *d, float v, char *out, size_t cap)
 {
     float w = d->iniMul ? v * d->iniMul : v;
@@ -1001,13 +1101,11 @@ static int nearestPreset(int idx, const char *iniAbs)
     return best;
 }
 
-static void presetSelRefresh(int idx)
+/* the pill row is owner-drawn on the page: a page repaint refreshes it */
+static void invalidatePages(void);       /* defined with the page painters */
+static void presetSelRefresh(void)
 {
-    int p;
-
-    for (p = 0; p < MAX_PRESETS; p++)
-        if (g_preset[idx][p])
-            InvalidateRect(g_preset[idx][p], NULL, TRUE);
+    invalidatePages();
 }
 
 static void applyPreset(int idx, int p)
@@ -1029,7 +1127,7 @@ static void applyPreset(int idx, int p)
         return;
     }
     g_presetSel[idx] = p;
-    presetSelRefresh(idx);
+    presetSelRefresh();
     if (r1 < 0 || r2 < 0 || r3 < 0)
         status(L"%ls: preset \"%ls\" (%ls, %d frames, %d views) - "
                L"will be stored on install.",
@@ -1107,12 +1205,14 @@ static BOOL doInstall(UINT mask)
         killApp();
     }
     stateLoad(&st, g_appDir);
-    if (!ensureCore(&st))
+    if (!ensureCore(&st)) {
         return FALSE;
+    }
 
     iniPathFor(iniPath, sizeof iniPath, "modules.ini");
-    if (!iniLoad(&ini, iniPath))
+    if (!iniLoad(&ini, iniPath)) {
         memset(&ini, 0, sizeof ini);
+    }
     {   /* discoverable default, but never overwrite a user's choice */
         Sec *hs = iniSec(&ini, "host");
         int j, hasLog = 0;
@@ -1135,11 +1235,11 @@ static BOOL doInstall(UINT mask)
 
         if (mask & (1u << i)) {
             if (!resourceWrite(m->resDll, dllAbs)) {
-                report(L"Failed to write %hs.", dllRel);
+                reportWriteErr(dllRel, GetLastError());
                 return FALSE;
             }
             if (!pathExistsA(iniAbs) && !resourceWrite(m->resIni, iniAbs)) {
-                report(L"Failed to write %hs.", iniRel);
+                reportWriteErr(iniRel, GetLastError());
                 return FALSE;
             }
             stateAdd(&st, dllRel);
@@ -1333,8 +1433,6 @@ static void doList(void)
 #define IDC_PRBASE    700   /* preset pill (id - IDC_PRBASE = mod*MAX_PRESETS+p) */
 #define IDC_WPBASE    800   /* file button (id - IDC_WPBASE = mod*MAX_FILEBTNS+b) */
 
-#define LMARG         U(20)     /* window margin grid (scaled)    */
-
 /* ------------------------------------------------------------------ */
 /* UI scaling: every pixel constant in the GUI goes through U().     */
 /* g_us = max(system DPI / 96, physical ppi / 96); 4K panels that    */
@@ -1370,62 +1468,311 @@ static void uiScaleInit(void)
     g_us = best > 2.5f ? 2.5f : best;
 }
 
-/* fixed dark palette (no light theme by design) */
+/* ------------------------------------------------------------------ */
+/* persisted manager preferences: %APPDATA%\ExStar\exstar_modmanager.ini */
+/* [ui] zoom = 1.00      UI scale, applied at start-up (0 = auto)        */
+/* [ui] journal = 1      append the activity journal to                 */
+/*                       %APPDATA%\ExStar\journal.log                    */
+/* ------------------------------------------------------------------ */
+static float g_zoomSaved = 0.0f;
+static BOOL  g_journalOn = TRUE;
+
+/* the settings-page behaviour controls (switch + zoom slider); the
+ * journal switch paints through paintSwitch with this sentinel idx */
+#define JSW_IDX (-7)
+static Anim       g_journalSwA;
+static ExCtrl     g_zoomCtl;
+static ExCtrl     g_journalCtl;
+static RECT       g_setSwR, g_setZoomR;
+static BOOL       g_zoomDrag;
+static const SliderDef g_zoomDef = {
+    "ui_zoom", L"UI zoom", 0.5f, 2.0f, 1.0f, FALSE, L"x", 0.0f, 0.1f, FALSE
+};
+
+static void cfgPathW(wchar_t *out, size_t cap, const wchar_t *leaf)
+{
+    wchar_t base[MAX_PATH] = L"";
+
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, base))) {
+        wchar_t dir[MAX_PATH];
+
+        swprintf(dir, MAX_PATH, L"%s\\ExStar", base);
+        CreateDirectoryW(dir, NULL);
+        swprintf(out, cap, L"%s\\ExStar\\%s", base, leaf);
+    } else
+        wcsncpy(out, leaf, cap - 1);
+}
+
+static void cfgLoad(void)
+{
+    wchar_t p[MAX_PATH], v[32];
+
+    cfgPathW(p, MAX_PATH, L"exstar_modmanager.ini");
+    if (GetPrivateProfileStringW(L"ui", L"zoom", L"", v, 32, p) > 0)
+        g_zoomSaved = (float) _wtof(v);
+    if (GetPrivateProfileStringW(L"ui", L"journal", L"1", v, 32, p) > 0)
+        g_journalOn = _wtoi(v) != 0;
+}
+
+static void cfgSaveZoom(float z)
+{
+    wchar_t p[MAX_PATH], v[32];
+
+    cfgPathW(p, MAX_PATH, L"exstar_modmanager.ini");
+    swprintf(v, 32, L"%.2f", (double) z);
+    WritePrivateProfileStringW(L"ui", L"zoom", v, p);
+}
+
+static void cfgSaveJournal(BOOL on)
+{
+    wchar_t p[MAX_PATH];
+
+    cfgPathW(p, MAX_PATH, L"exstar_modmanager.ini");
+    WritePrivateProfileStringW(L"ui", L"journal", on ? L"1" : L"0", p);
+}
+
+/* one UTF-8 line per journal event, newest at the bottom */
+static void journalAppend(const SYSTEMTIME *t, int lvl, const wchar_t *txt)
+{
+    static const char *const lvlName[3] = { "info", "ok  ", "warn" };
+    wchar_t p[MAX_PATH], line[300];
+    FILE *f;
+    char *u8;
+    int n;
+
+    if (!g_journalOn)
+        return;
+    cfgPathW(p, MAX_PATH, L"journal.log");
+    {   BOOL fresh = (_waccess(p, 0) != 0);
+
+        f = _wfopen(p, L"a");
+        if (!f)
+            return;
+        if (fresh)
+            fputs("\357\273\277", f);          /* UTF-8 BOM once       */
+    }
+    swprintf(line, 300, L"%02d:%02d:%02d  %hs  %ls\r\n",
+             t->wHour, t->wMinute, t->wSecond, lvlName[lvl % 3], txt);
+    n = WideCharToMultiByte(CP_UTF8, 0, line, -1, NULL, 0, NULL, NULL);
+    u8 = (char *) malloc((size_t) n + 1);
+    if (u8) {
+        WideCharToMultiByte(CP_UTF8, 0, line, -1, u8, n, NULL, NULL);
+        fputs(u8, f);
+        free(u8);
+    }
+    fclose(f);
+}
+
+/* Fixed dark palette - the exact design tokens of the approved mockup
+ * (bg #1b1b1b, sidebar #171717, card #262626, line #3d3d3d, text
+ * #f5f5f5 / #9b9b9b / #6e6e6e, accent #4cc2ff and the 135deg gradient
+ * #4cc2ff -> #7d8bff -> #a855f7). GDI has no alpha channel, so every
+ * rgba() of the mockup becomes a mix() toward the surface it sits on. */
 #define C_BG      RGB(27, 27, 27)
-#define C_CARD    RGB(39, 39, 39)
-#define C_CARDLN  RGB(61, 61, 61)
+#define C_SIDE    RGB(23, 23, 23)     /* sidebar #171717                 */
+#define C_SIDELN  RGB(36, 36, 36)     /* sidebar right border #242424    */
+#define C_CARD    RGB(38, 38, 38)     /* card #262626                    */
+#define C_CARDLN  RGB(61, 61, 61)     /* card border #3d3d3d             */
+#define C_HILN    RGB(76, 76, 76)     /* card border on hover #4c4c4c    */
 #define C_TEXT    RGB(245, 245, 245)
 #define C_TEXT2   RGB(155, 155, 155)
-#define C_LOG     RGB(20, 20, 20)
-#define C_LOGTX   RGB(210, 210, 210)
+#define C_TEXT3   RGB(110, 110, 110)
+#define C_CHIP    RGB(36, 36, 36)     /* chips / buttons #242424         */
+#define C_FIELD   RGB(33, 33, 33)     /* input wells #212121             */
+#define C_PILL    RGB(35, 35, 35)     /* preset pills #232323            */
+#define C_BADG    RGB(48, 48, 48)     /* switch track (off)   #303030    */
+#define C_LOG     RGB(21, 21, 21)     /* journal #151515                 */
+#define C_LOGLN   RGB(42, 42, 42)     /* journal border #2a2a2a          */
+#define C_LOGTX   RGB(201, 201, 201)  /* journal text #c9c9c9            */
+#define C_LOGTS   RGB(95, 95, 95)     /* journal timestamps #5f5f5f      */
 #define C_ACCENT  RGB(76, 194, 255)
+#define C_GRAD1   RGB(76, 194, 255)
+#define C_GRAD2   RGB(125, 139, 255)
+#define C_GRAD3   RGB(168, 85, 247)
+#define C_INK     RGB(4, 18, 28)      /* glyph on a gradient fill #06131e*/
 #define C_OK      RGB(122, 213, 113)
 #define C_WARN    RGB(242, 197, 94)
 #define C_ERR     RGB(255, 122, 122)
 
-static HWND g_edApp, g_status, g_check[MAX_MODS], g_ver;
-static HWND g_title, g_sub, g_lblPath, g_hdr, g_btnBrowse, g_btnRestore;
-static HWND g_name[MAX_MODS], g_desc[MAX_MODS];
-static HWND g_slider[MAX_MODS][MAX_SLIDERS];
-static BOOL g_modOn[MAX_MODS];    /* toggle position we applied (mirrors disk) */
+static HWND g_edApp;                  /* app folder field (real EDIT)     */
+static BOOL g_modOn[MAX_MODS];        /* toggle position (mirrors disk)   */
+static BOOL g_uiOn = TRUE;            /* controls live (no job running)   */
 static HFONT g_font, g_fontB, g_fontT, g_fontS, g_fontL;
+static HFONT g_fontV, g_fontK, g_fontK2, g_fontM, g_fontN, g_fontNB;
 static HBRUSH g_brBg, g_brCard, g_brLog;
-static RECT g_cardR[MAX_MODS], g_rEd, g_rLog;
-static int  g_rowYrel[MAX_MODS]; /* top of every card, in area coordinates */
-static int  g_logTop;            /* top of the log box (recomputed)        */
-static HWND g_modArea;           /* scrollable child hosting the card rows */
-static int  g_scroll, g_scrollMax, g_contentH;
-#define AREA_TOP  U(186)         /* area top within the main client        */
-#define AREA_MIN_H  U(60)        /* smallest visible card strip            */
-#define FOOT_H      (U(60) + U(110) + U(16)) /* restore + log block        */
-static int g_verTone;             /* 0 ok, 1 untested, 2 not found */
+static RECT g_cardR[MAX_MODS], g_rLog;
+static int  g_logTop;                 /* top of the journal box           */
+static HWND g_modArea;                /* Interface page window            */
+static HWND g_nav;                    /* sidebar navigation               */
+static HWND g_pageArea[3];            /* Interface / Scanner / Settings   */
+static int  g_curPage;
+#define PAGE_IF 0
+#define PAGE_SC 1
+#define PAGE_ST 2
 
+/* module -> sidebar section lists, built once in WM_CREATE; the Scanner
+ * page stays an empty state until a registry row declares cat = 1 */
+static int  g_catMods[2][MAX_MODS], g_catCnt[2];
+
+/* per-module animation state (see the animator above). The whole page is
+ * owner-drawn, so every one of these is a plain float the painter reads -
+ * no child window has to be moved per frame, which is what makes the
+ * mockup's motion (lift, slide-open, staggered rise) possible at all. */
+static Anim g_swA[MAX_MODS];     /* toggle knob 0..1 (EASE_BACK overshoot) */
+static Anim g_pulA[MAX_MODS];    /* one-shot ring when a switch flips      */
+static Anim g_hovA[MAX_MODS];    /* card hover lift 0..1                   */
+static Anim g_introA[MAX_MODS];  /* staggered rise-in of the cards         */
+static Anim g_extA[MAX_MODS];    /* extras band: 0 collapsed .. 1 open     */
+static Anim g_navHov[3];         /* sidebar row hover                      */
+static Anim g_navSelA;           /* active-row indicator, in row units     */
+static Anim g_navPop;            /* indicator scaleY pop on page change    */
+static Anim g_pgSlide, g_pgAlpha;/* page transition: rise 12px + fade      */
+static Anim g_kpiBar;            /* KPI progress bar width                 */
+static Anim g_kpiCnt;            /* KPI active counter (counts up)         */
+static Anim g_kpiHov[3];         /* KPI tile hover lift                    */
+static Anim g_sbA;               /* overlay scrollbar visibility           */
+static Anim g_focusA;            /* app folder field focus glow            */
+
+/* smooth scrolling: g_scrollF eases toward g_scrollTgt on the anim tick */
+static float g_scrollF, g_scrollTgt;
+static int   g_scroll, g_scrollMax, g_contentH;
+
+/* ambient loops of the mockup (LED blink, KPI shimmer, empty-state dots)
+ * run off GetTickCount64(); this slow timer only repaints them           */
+#define AMBIENT_TIMER 78
+#define AMBIENT_MS    120
+static BOOL g_ambientOn;
+
+/* journal: a feed of the newest lines first, exactly like .feed of the
+ * mockup (timestamp, level dot, text, slide-in on arrival). Owner-drawn:
+ * a real EDIT cannot colour its lines or animate them.                   */
+#define FEED_MAX 32
+#define FEED_LVL_INFO 0      /* cyan  */
+#define FEED_LVL_OK   1      /* green */
+#define FEED_LVL_WARN 2      /* amber */
+typedef struct {
+    SYSTEMTIME t;
+    int        lvl;
+    Anim       a;                        /* 0 -> 1 slide-in of one line   */
+    wchar_t    s[240];
+} Feed;
+static Feed g_feed[FEED_MAX];
+static int  g_feedN;
+static RECT g_rFeed;                     /* the feed frame (window coords)*/
+
+/* per-module card geometry, recomputed by the layout pass and shared by
+ * the painter and the hit tester (they can never disagree)               */
+typedef struct {
+    RECT card;                           /* content space (scrolled)       */
+    RECT nm, desc, sw, onoff, stripe;
+    RECT band;                           /* extras band (clip + fade)      */
+    RECT pcap;
+    RECT pill[MAX_PRESETS];
+    RECT srow[MAX_SLIDERS];              /* whole slider row               */
+    RECT fbtn[MAX_FILEBTNS];
+    int  colw, bandTop;
+} CardGeo;
+static CardGeo g_geo[MAX_MODS];
+
+/* Settings page geometry (owner-drawn cards, one real EDIT inside) */
+static RECT g_setC[4];                   /* path / about / danger / extra  */
+static RECT g_setBtn[2];                 /* Browse / Restore stock         */
+static RECT g_setField;                  /* folder field well              */
+
+/* header chips (version, active counter, state) */
+static RECT g_chip[3];
+static wchar_t g_prod[64];               /* product no. e.g. 2.1.0-10      */
+static wchar_t g_stamp[64];              /* file stamp e.g. 3.1.49.1       */
+static int  g_verTone;                   /* 0 ok, 1 untested, 2 not found  */
+static int  g_installed;                 /* how many module files are there*/
+static BOOL g_fileHas;                   /* modules\wallpaper.jpg exists   */
+
+/* layout: sidebar + header + page + journal footer */
+#define SB_W       U(216)        /* sidebar width                          */
+#define PAGE_TOP   U(78)         /* page area top within the main client   */
+#define PAGE_MIN_H U(220)        /* smallest visible page strip            */
+#define FOOT2_H    (U(78) + U(26)) /* journal box + margins                */
+#define PAGE_PAD   U(30)         /* .main side padding                     */
+#define KPI_TOP    U(26)         /* .main top padding                      */
+#define KPI_H      U(96)         /* KPI tile height                        */
+#define KPI_GAP    U(12)
+#define GRID_TOP   (KPI_TOP + KPI_H + U(22) + U(26)) /* first card row     */
+#define LMARG      PAGE_PAD      /* legacy name kept: page side margin     */
+#define CARD_GAP   U(12)         /* grid gap                               */
+
+static void cardHover(int i, BOOL on)
+{
+    if (i < 0 || i >= g_modCount)
+        return;
+    animTo(&g_hovA[i], on ? 1.0f : 0.0f, 180, EASE_OUT);
+}
+
+/* journal line levels: the mockup colours its dots, so the manager reads
+ * the wording of its own messages instead of carrying a level argument */
+static int feedLevel(const wchar_t *s)
+{
+    static const wchar_t *const warnW[] =
+        { L"fail", L"could not", L"cannot", L"denied", L"not completed",
+          L"not found", L"error", L"Wait for", L"first -", NULL };
+    static const wchar_t *const okW[] =
+        { L"installed", L"enabled", L"Done", L"restored", L"reset",
+          L"written", L"deleted", L"validated", L"ok ", L"updated", NULL };
+    wchar_t low[240];
+    int i;
+
+    wcsncpy(low, s, 236);
+    low[236] = 0;
+    for (i = 0; low[i]; i++)
+        if (low[i] >= L'A' && low[i] <= L'Z')
+            low[i] = (wchar_t)(low[i] - L'A' + L'a');
+    for (i = 0; warnW[i]; i++)
+        if (wcsstr(low, warnW[i]))
+            return FEED_LVL_WARN;
+    for (i = 0; okW[i]; i++)
+        if (wcsstr(low, okW[i]))
+            return FEED_LVL_OK;
+    return FEED_LVL_INFO;
+}
+
+/* append one line to the feed (newest first) and repaint the journal */
 static void status(const wchar_t *fmt, ...)
 {
-    wchar_t buf[1024];
+    wchar_t buf[240];
     va_list ap;
-    int len;
+    int i;
 
     va_start(ap, fmt);
-    vswprintf(buf, 1024, fmt, ap);
+    vswprintf(buf, 240, fmt, ap);
     va_end(ap);
 
-    len = GetWindowTextLengthW(g_status);
-    SendMessageW(g_status, EM_SETSEL, len, len);
-    SendMessageW(g_status, EM_REPLACESEL, FALSE, (LPARAM)L"\r\n");
-    len = GetWindowTextLengthW(g_status);
-    SendMessageW(g_status, EM_SETSEL, len, len);
-    SendMessageW(g_status, EM_REPLACESEL, FALSE, (LPARAM)buf);
+    for (i = FEED_MAX - 1; i > 0; i--)
+        g_feed[i] = g_feed[i - 1];
+    GetLocalTime(&g_feed[0].t);
+    g_feed[0].lvl = feedLevel(buf);
+    wcsncpy(g_feed[0].s, buf, 236);
+    g_feed[0].s[236] = 0;
+    animDelay(&g_feed[0].a, 0.0f, 1.0f, 400, EASE_OUT, 0);
+    journalAppend(&g_feed[0].t, g_feed[0].lvl, buf);
+    if (g_feedN < FEED_MAX)
+        g_feedN++;
+    if (g_mainHwnd)
+        InvalidateRect(g_mainHwnd, &g_rFeed, FALSE);
 }
 
 /* forward declarations for the worker thread */
 static volatile LONG g_busy;
 
+/* warning raised while a job runs: the box can only be shown once the
+ * interface is live again (a modal box on the worker thread would leave
+ * the job, the progress chip and the window waiting forever) */
+static wchar_t g_warnTxt[1024];
+static BOOL    g_warnPend;
+
 static HFONT mkFont(int h, int weight, const wchar_t *face)
 {
     h = h < 0 ? -(int)(-(float)h * g_us + 0.5f) : U(h);
     return CreateFontW(h, 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET,
-                       0, 0, CLEARTYPE_QUALITY, 0, face);
+                       0, 0, CLEARTYPE_NATURAL_QUALITY, 0, face);
 }
 
 static HWND mkStatic(HWND *slot, const wchar_t *txt, int x, int y, int w,
@@ -1453,299 +1800,1936 @@ static void rr(HDC dc, RECT *r, int rad, HBRUSH bg, COLORREF line)
     DeleteObject(p);
 }
 
-/* iOS-style toggle painting, Win11 dark palette */
-static void paintSwitch(HDC dc, RECT *r, const ExCtrl *c, BOOL enabled)
+/* ------------------------------------------------------------------ */
+/* drawing layer                                                       */
+/*                                                                     */
+/* Shapes are drawn with GDI+ (anti-aliased rounded geometry, real     */
+/* 8-bit alpha, path-gradient shadows and radial lights - the pieces   */
+/* plain GDI cannot do), text stays GDI ClearType. One Graphics lives  */
+/* for the duration of a WM_PAINT (gpBegin/gpEnd); every helper below  */
+/* uses it, so shapes and text can be interleaved freely.              */
+/* ------------------------------------------------------------------ */
+
+static void ensureGdiplus(void);
+static Gdiplus::Graphics *g_g;
+
+static Gdiplus::Color gpc(COLORREF c, int a)
 {
-    BOOL checked = (c->idx >= 0 && c->idx < g_modCount) ? g_modOn[c->idx] : FALSE;
-    const int tw = U(44), th = U(22);
-    RECT tr, knob;
-    COLORREF tk, tb, kc;
-    int kd, kx;
-    HBRUSH b; HPEN p; HGDIOBJ ob, op;
+    return Gdiplus::Color((BYTE) (a < 0 ? 0 : a > 255 ? 255 : a),
+                          GetRValue(c), GetGValue(c), GetBValue(c));
+}
+/* the mockup's --grad: 135deg over the shape (top-left -> bottom-right) */
+static void gpAddRR(Gdiplus::GraphicsPath *p, Gdiplus::REAL x, Gdiplus::REAL y,
+                    Gdiplus::REAL w, Gdiplus::REAL h, Gdiplus::REAL r)
+{
+    Gdiplus::REAL d = r * 2;
 
-    FillRect(dc, r, g_brCard);
-
-    tr.left   = r->left + ((r->right - r->left) - tw) / 2;
-    tr.top    = r->top  + ((r->bottom - r->top) - th) / 2;
-    tr.right  = tr.left + tw;
-    tr.bottom = tr.top + th;
-
-    if (!enabled) {
-        tk = checked ? RGB(40, 72, 90) : RGB(38, 38, 38);
-        tb = RGB(62, 62, 62);
-        kc = RGB(112, 112, 112);
-    } else if (checked) {
-        tk = C_ACCENT;
-        tb = c->hover ? RGB(122, 208, 255) : C_ACCENT;
-        kc = RGB(255, 255, 255);
-    } else {
-        tk = RGB(43, 43, 43);
-        tb = c->hover ? RGB(170, 170, 170) : RGB(138, 138, 138);
-        kc = RGB(208, 208, 208);
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (d > w) d = w;
+    if (d > h) d = h;
+    if (r <= 0) {
+        p->AddRectangle(Gdiplus::RectF(x, y, w, h));
+        return;
     }
-    b = CreateSolidBrush(tk);
-    p = CreatePen(PS_SOLID, 1, tb);
-    ob = SelectObject(dc, b);
-    op = SelectObject(dc, p);
-    RoundRect(dc, tr.left, tr.top, tr.right, tr.bottom, th, th);
-    SelectObject(dc, ob);
-    SelectObject(dc, op);
-    DeleteObject(b);
-    DeleteObject(p);
+    p->AddArc(x, y, d, d, 180, 90);
+    p->AddArc(x + w - d, y, d, d, 270, 90);
+    p->AddArc(x + w - d, y + h - d, d, d, 0, 90);
+    p->AddArc(x, y + h - d, d, d, 90, 90);
+    p->CloseFigure();
+}
+static void gpAddRRc(Gdiplus::GraphicsPath *p, const RECT *r, Gdiplus::REAL rad)
+{
+    gpAddRR(p, (Gdiplus::REAL) r->left, (Gdiplus::REAL) r->top,
+            (Gdiplus::REAL) (r->right - r->left),
+            (Gdiplus::REAL) (r->bottom - r->top), rad);
+}
+static Gdiplus::Graphics *gpBegin(HDC dc)
+{
+    ensureGdiplus();
+    g_g = new Gdiplus::Graphics(dc);
+    g_g->SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g_g->SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    g_g->SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+    return g_g;
+}
+static void gpEnd(void)
+{
+    delete g_g;
+    g_g = NULL;
+}
+/* filled (optionally stroked) rounded rect */
+static void gpRR(const RECT *r, Gdiplus::REAL rad, COLORREF fill, int fa,
+                 COLORREF line, int la, Gdiplus::REAL lw)
+{
+    Gdiplus::GraphicsPath p;
 
-    kd = th - U(8);
-    kx = checked ? tr.right - U(4) - kd : tr.left + U(4);
-    knob.left = kx; knob.top = tr.top + U(4);
-    knob.right = kx + kd; knob.bottom = tr.top + U(4) + kd;
-    b = CreateSolidBrush(kc);
-    p = CreatePen(PS_SOLID, 1, kc);
-    ob = SelectObject(dc, b);
-    op = SelectObject(dc, p);
-    Ellipse(dc, knob.left, knob.top, knob.right, knob.bottom);
-    SelectObject(dc, ob);
-    SelectObject(dc, op);
-    DeleteObject(b);
-    DeleteObject(p);
+    if (fa <= 0 && la <= 0)
+        return;
+    gpAddRRc(&p, r, rad);
+    if (fa > 0) {
+        Gdiplus::SolidBrush b(gpc(fill, fa));
+        g_g->FillPath(&b, &p);
+    }
+    if (la > 0) {
+        Gdiplus::Pen pn(gpc(line, la), lw > 0 ? lw : 1.0f);
+        g_g->DrawPath(&pn, &p);
+    }
+}
+/* the mockup gradient (3 stops, top-left -> bottom-right) in a rounded rect */
+static void gpGradRR(const RECT *r, Gdiplus::REAL rad, COLORREF c1, COLORREF c2,
+                     COLORREF c3, int alpha, COLORREF line, int la,
+                     Gdiplus::REAL lw)
+{
+    Gdiplus::GraphicsPath p;
+    Gdiplus::RectF bb((Gdiplus::REAL) r->left, (Gdiplus::REAL) r->top,
+                      (Gdiplus::REAL) (r->right - r->left),
+                      (Gdiplus::REAL) (r->bottom - r->top));
+    Gdiplus::LinearGradientBrush gr(bb, gpc(c1, alpha), gpc(c3, alpha),
+                                    Gdiplus::LinearGradientModeForwardDiagonal);
+    static const Gdiplus::REAL ratios[3] = { 0.0f, 0.55f, 1.0f };
+    Gdiplus::Color stops[3];
+
+    if (bb.Width < 1 || bb.Height < 1)
+        return;
+    stops[0] = gpc(c1, alpha);
+    stops[1] = gpc(c2, alpha);
+    stops[2] = gpc(c3, alpha);
+    gr.SetGammaCorrection(TRUE);
+    gr.SetInterpolationColors(stops, ratios, 3);   /* c2 at 55%, as the CSS */
+    gpAddRRc(&p, r, rad);
+    g_g->FillPath(&gr, &p);
+    if (la > 0) {
+        Gdiplus::Pen pn(gpc(line, la), lw > 0 ? lw : 1.0f);
+        g_g->DrawPath(&pn, &p);
+    }
+}
+/* soft drop shadow (0 2px 10px / 0 8px 26px rgba(0,0,0,.35/.55)) */
+static void gpShadow(const RECT *r, Gdiplus::REAL rad, Gdiplus::REAL blur,
+                     Gdiplus::REAL dy, int alpha)
+{
+    Gdiplus::GraphicsPath p;
+    Gdiplus::RectF bb;
+
+    if (blur < 1.0f || alpha <= 1)
+        return;
+    bb = Gdiplus::RectF((Gdiplus::REAL) r->left - blur,
+                        (Gdiplus::REAL) r->top - blur + dy,
+                        (Gdiplus::REAL) (r->right - r->left) + blur * 2,
+                        (Gdiplus::REAL) (r->bottom - r->top) + blur * 2);
+    gpAddRR(&p, bb.X, bb.Y, bb.Width, bb.Height, rad + blur * 0.7f);
+    {   Gdiplus::PathGradientBrush bg(&p);
+        Gdiplus::Color sur(0, 0, 0, 0);
+        int n = 1;
+        bg.SetCenterColor(Gdiplus::Color((BYTE) alpha, 0, 0, 0));
+        bg.SetSurroundColors(&sur, &n);
+        bg.SetGammaCorrection(TRUE);
+        bg.SetCenterPoint(Gdiplus::PointF(bb.X + bb.Width / 2,
+                                          bb.Y + bb.Height / 2));
+        g_g->FillPath(&bg, &p);
+    }
+}
+/* coloured halo behind a small round element (LED, knob) */
+static void gpHalo(const RECT *r, Gdiplus::REAL rad, COLORREF col,
+                   Gdiplus::REAL blur, int alpha)
+{
+    Gdiplus::GraphicsPath p;
+    Gdiplus::RectF bb((Gdiplus::REAL) r->left - blur,
+                      (Gdiplus::REAL) r->top - blur,
+                      (Gdiplus::REAL) (r->right - r->left) + blur * 2,
+                      (Gdiplus::REAL) (r->bottom - r->top) + blur * 2);
+
+    if (blur < 1.0f || alpha <= 1)
+        return;
+    gpAddRR(&p, bb.X, bb.Y, bb.Width, bb.Height, rad + blur);
+    {   Gdiplus::PathGradientBrush bg(&p);
+        Gdiplus::Color sur(0, GetRValue(col), GetGValue(col), GetBValue(col));
+        int n = 1;
+        bg.SetCenterColor(gpc(col, alpha));
+        bg.SetSurroundColors(&sur, &n);
+        bg.SetGammaCorrection(TRUE);
+        g_g->FillPath(&bg, &p);
+    }
+}
+/* the .main::before wash: two big radial lights bleeding in from the top */
+static void gpWash(const RECT *rc, int alpha1, int alpha2)
+{
+    struct { float cx, cy, rx, ry; COLORREF col; int a; } l[2];
+    int i;
+
+    l[0].cx = (rc->right - rc->left) * 0.12f;
+    l[0].cy = (float) -U(60);
+    l[0].rx = (float) U(620);
+    l[0].ry = (float) U(260);
+    l[0].col = C_GRAD1;
+    l[0].a = alpha1;
+    l[1].cx = (rc->right - rc->left) * 1.05f;
+    l[1].cy = (float) -U(80);
+    l[1].rx = (float) U(700);
+    l[1].ry = (float) U(300);
+    l[1].col = C_GRAD3;
+    l[1].a = alpha2;
+    for (i = 0; i < 2; i++) {
+        Gdiplus::GraphicsPath p;
+        Gdiplus::RectF bb(l[i].cx - l[i].rx, l[i].cy - l[i].ry,
+                          l[i].rx * 2, l[i].ry * 2);
+        int a = i == 0 ? alpha1 : alpha2;
+
+        if (a <= 0)
+            continue;
+        p.AddEllipse(bb);
+        {   Gdiplus::PathGradientBrush bg(&p);
+            Gdiplus::Color sur(0, GetRValue(l[i].col), GetGValue(l[i].col),
+                               GetBValue(l[i].col));
+            int n = 1;
+            bg.SetCenterColor(gpc(l[i].col, a));
+            bg.SetSurroundColors(&sur, &n);
+            bg.SetGammaCorrection(TRUE);
+            {   Gdiplus::Rect cr(rc->left, rc->top, rc->right - rc->left,
+                                 rc->bottom - rc->top);
+                g_g->SetClip(cr, Gdiplus::CombineModeReplace);
+            }
+            g_g->FillPath(&bg, &p);
+            g_g->ResetClip();
+        }
+    }
+}
+/* .shimmer::after: a light band that sweeps the tile every 1.8s */
+static void gpShimmer(const RECT *r, Gdiplus::REAL rad, float phase, int maxA)
+{
+    float w = (float) (r->right - r->left);
+    float x = (float) r->left - w + phase * 2.0f * w;
+    Gdiplus::Region old;
+    Gdiplus::GraphicsPath clip;
+    Gdiplus::RectF bb(x, (Gdiplus::REAL) r->top, w * 0.6f,
+                      (Gdiplus::REAL) (r->bottom - r->top));
+
+    if (maxA <= 0 || w < 4)
+        return;
+    g_g->GetClip(&old);
+    gpAddRRc(&clip, r, rad);
+    g_g->SetClip(&clip, Gdiplus::CombineModeReplace);
+    {   Gdiplus::LinearGradientBrush lb(bb, Gdiplus::Color(0, 76, 194, 255),
+                                       gpc(C_GRAD1, maxA),
+                                       Gdiplus::LinearGradientModeHorizontal);
+        Gdiplus::Color stops[3];
+        Gdiplus::REAL pos[3] = { 0.0f, 0.5f, 1.0f };
+
+        stops[0] = Gdiplus::Color(0, 76, 194, 255);
+        stops[1] = gpc(C_GRAD1, maxA);
+        stops[2] = Gdiplus::Color(0, 76, 194, 255);
+        lb.SetGammaCorrection(TRUE);
+        lb.SetInterpolationColors(stops, pos, 3);
+        g_g->FillRectangle(&lb, bb);
+    }
+    g_g->SetClip(&old, Gdiplus::CombineModeReplace);
 }
 
-/* flat rounded push button, Win11-style: neutral or danger variant */
-static void paintButton(HDC dc, RECT *r, const ExCtrl *c, BOOL enabled, HWND h)
+/* small solid dot (LED core, list marker) */
+static void gpDot(const RECT *r, COLORREF col, int a)
 {
-    COLORREF bg, bd, tx;
-    wchar_t text[128];
-    int len;
-    HBRUSH b; HPEN p; HGDIOBJ ob, op;
+    Gdiplus::SolidBrush b(gpc(col, a));
 
-    if (c->kind == CKIND_DANGER) {
+    g_g->FillEllipse(&b, (Gdiplus::REAL) r->left, (Gdiplus::REAL) r->top,
+                     (Gdiplus::REAL) (r->right - r->left),
+                     (Gdiplus::REAL) (r->bottom - r->top));
+}
+
+/* --- painter scope fade ----------------------------------------------
+ * The mockup fades every rising element in (rise / pagein / max-height),
+ * and GDI has no per-element alpha: every colour goes through FK() and
+ * every shape alpha through AK(), both scaled by the fade of the element
+ * currently being drawn (g_fade). Mixing toward the page colour is
+ * indistinguishable from real alpha over this background.              */
+static float g_fade = 1.0f;
+
+static COLORREF FK(COLORREF c)
+{
+    if (g_fade >= 0.995f)
+        return c;
+    if (g_fade <= 0.005f)
+        return C_BG;
+    return mix(C_BG, c, g_fade);
+}
+static int AK(int a)
+{
+    if (g_fade >= 0.995f)
+        return a;
+    if (g_fade <= 0.005f)
+        return 0;
+    return (int) (a * g_fade + 0.5f);
+}
+
+/* --- text helpers ---------------------------------------------------- */
+static void textEllW(HDC dc, const wchar_t *s, RECT *r, UINT fmt)
+{
+    /* DrawText has no "end with an ellipsis on one line"; DT_END_ELLIPSIS
+     * does it, this only guarantees the flags are set the way we want */
+    DrawTextW(dc, s, -1, r, fmt | DT_END_ELLIPSIS | DT_NOCLIP);
+}
+/* letter-spaced uppercase label: GDI has no tracking, so every glyph
+ * gets the extra advance (the mockup's .seclab / .kpi .l / .onoff)     */
+static void drawSpacedW(HDC dc, const wchar_t *s, RECT *r, int sp,
+                        int halign /* 0 left, 1 centre, 2 right */, int vmid)
+{
+    int dx[160];
+    SIZE sz, tm;
+    int n = 0, tot = 0, x, y, i, top;
+    TEXTMETRICW mt;
+
+    SetBkMode(dc, TRANSPARENT);
+    GetTextMetricsW(dc, &mt);
+    for (i = 0; s[i] && n < 158; i++) {
+        GetTextExtentPoint32W(dc, s + i, 1, &sz);
+        dx[n] = (WORD) (sz.cx + (s[i + 1] ? sp : 0));
+        tot += dx[n];
+        n++;
+    }
+    if (!n)
+        return;
+    sz.cy = mt.tmHeight;
+    top = vmid ? (r->top + r->bottom - sz.cy) / 2 : r->top;
+    x = r->left;
+    if (halign == 1)
+        x = (r->left + r->right) / 2 - tot / 2;
+    else if (halign == 2)
+        x = r->right - tot;
+    y = top + (vmid ? 0 : 0);
+    ExtTextOutW(dc, x, y, ETO_CLIPPED, r, s, n, dx);
+    (void) tm;
+}
+/* text width without drawing */
+static int textMeasW(HDC dc, const wchar_t *s)
+{
+    SIZE sz;
+
+    GetTextExtentPoint32W(dc, s, (int) wcslen(s), &sz);
+    return sz.cx;
+}
+/* "06:12:48"-style stamp for the journal */
+static void stampText(const SYSTEMTIME *t, wchar_t *out)
+{
+    swprintf(out, 16, L"%02d:%02d:%02d", t->wHour, t->wMinute, t->wSecond);
+}
+
+/* --- card metrics (the mockup's .card geometry, all scaled) ----------- */
+#define CD_PAD_T   U(16)
+#define CD_PAD_L   U(20)
+#define CD_PAD_R   U(18)
+#define CD_PAD_B   U(15)
+#define CD_MINH   U(40)
+#define CD_GAPX    U(12)
+#define CD_RAD     U(14)
+#define CD_SW_W    U(46)
+#define CD_SW_H    U(25)
+#define CD_PILL_H  U(42)
+#define CD_FBTN_H  U(28)
+#define CD_SROW_H  U(26)
+#define CD_EXT_T   U(13)      /* gap between the header and the extras   */
+#define SL_LABEL   U(58)      /* right-aligned slider caption column     */
+#define SL_VAL_W   U(126)     /* value + unit + default hint column      */
+
+/* iOS-style toggle, the mockup's .sw: 46x25 pill with a 19px knob; the
+ * track fades into the gradient as g_swA runs 0 -> 1 (the float itself is
+ * eased with an overshoot, so the knob springs past its rail like the
+ * cubic-bezier(.3,1.6,.5,1) of the mockup)                              */
+static void paintSwitch(RECT *r, const ExCtrl *c, BOOL enabled)
+{
+    int   i = c->idx;
+    float t = (i == JSW_IDX) ? g_journalSwA.cur
+              : (i >= 0 && i < g_modCount) ? g_swA[i].cur : 0.0f;
+    float tt = t < 0 ? 0 : (t > 1 ? 1 : t);
+    float h = enabled ? c->ha.cur : 0.0f;
+    int   w = r->right - r->left, hh = r->bottom - r->top;
+    int   kd, kx, cy;
+    RECT  kr, sh;
+
+    if (tt < 0.995f) {
+        COLORREF tk = mix(RGB(43, 43, 43), RGB(52, 52, 52), h);
+        COLORREF tb = !enabled ? RGB(62, 62, 62)
+                  : mix(RGB(69, 69, 69), RGB(93, 93, 93), h);
+
+        gpRR(r, hh / 2.0f, tk, AK(255), tb, AK((int) (255 - 210 * tt)), 1.0f);
+    }
+    if (tt > 0.005f)
+        gpGradRR(r, hh / 2.0f, C_GRAD1, C_GRAD2, C_GRAD3, AK((int) (255 * tt)),
+                 C_GRAD1, 0, 1.0f);
+
+    kd = U(19);
+    if (kd > hh - U(4))
+        kd = hh - U(4);
+    kx = r->left + U(3) + (int) (t * (w - U(6) - kd) + 0.5f);
+    cy = r->top + (hh - kd) / 2;
+    SetRect(&kr, kx, cy, kx + kd, cy + kd);
+    sh = kr;
+    OffsetRect(&sh, 0, U(2));
+    gpShadow(&sh, kd / 2.0f, (Gdiplus::REAL) U(4), 0, AK(110));
+    gpDot(&kr, mix(RGB(207, 207, 207), RGB(255, 255, 255), tt),
+          AK(enabled ? 255 : 150));
+}
+
+/* flat rounded push button (.btn / .gbtn): neutral or danger variant,
+ * 1px lift on hover, a 2% squeeze on press                             */
+static void paintButton(HDC dc, RECT *r0, const wchar_t *label,
+                        float hv, float pr, BOOL danger, BOOL enabled,
+                        int rad)
+{
+    RECT  r = *r0, tr;
+    COLORREF bg, bd, tx;
+    int   lift = (int) (U(1) * hv + 0.5f), tw, x, cy;
+
+    if (danger) {
         tx = C_ERR;
-        bd = RGB(98, 52, 52);
-        bg = !enabled ? RGB(36, 26, 26)
-           : c->pressed ? RGB(76, 38, 38)
-           : c->hover ? RGB(66, 34, 34) : RGB(52, 29, 29);
+        bd = mix(RGB(98, 52, 52), RGB(124, 69, 69), hv);
+        bg = mix(mix(RGB(46, 26, 26), RGB(61, 34, 34), hv), RGB(76, 38, 38), pr);
     } else {
         tx = RGB(240, 240, 240);
-        bd = RGB(72, 72, 72);
-        bg = !enabled ? RGB(31, 31, 31)
-           : c->pressed ? RGB(37, 37, 37)
-           : c->hover ? RGB(55, 55, 55) : RGB(46, 46, 46);
+        bd = mix(RGB(65, 65, 65), RGB(88, 88, 88), hv);
+        bg = mix(mix(RGB(44, 44, 44), RGB(55, 55, 55), hv), RGB(37, 37, 37), pr);
     }
     if (!enabled) {
         tx = RGB(110, 110, 110);
         bd = RGB(48, 48, 48);
+        bg = RGB(31, 31, 31);
     }
-    b = CreateSolidBrush(bg);
-    p = CreatePen(PS_SOLID, 1, bd);
-    ob = SelectObject(dc, b);
-    op = SelectObject(dc, p);
-    RoundRect(dc, r->left, r->top, r->right, r->bottom, U(14), U(14));
-    SelectObject(dc, ob);
-    SelectObject(dc, op);
-    DeleteObject(b);
-    DeleteObject(p);
+    OffsetRect(&r, 0, -lift);
+    if (pr > 0.01f) {                       /* .btn:active scale(.98) */
+        int sx = (int) (pr * (r.right - r.left) * 0.02f + 0.5f);
+        int sy = (int) (pr * (r.bottom - r.top) * 0.02f + 0.5f);
 
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, tx);
+        InflateRect(&r, -sx, -sy);
+    }
+    if (hv > 0.02f)
+        gpShadow(&r, (Gdiplus::REAL) rad, (Gdiplus::REAL) U(9),
+                 (Gdiplus::REAL) U(3), AK((int) (75 * hv)));
+    gpRR(&r, (Gdiplus::REAL) rad, bg, AK(255), bd,
+         AK(enabled ? 255 : 150), 1.0f);
+
+    /* label, centred */
     SelectObject(dc, g_font);
-    len = GetWindowTextW(h, text, 128);
-    DrawTextW(dc, text, len, r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, FK(tx));
+    tw  = textMeasW(dc, label);
+    cy  = (r.top + r.bottom) / 2;
+    x   = (r.left + r.right) / 2 - tw / 2;
+    SetRect(&tr, x, r.top, x + tw + U(8), r.bottom);
+    DrawTextW(dc, label, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 }
 
-/* --- slider row: [label][track+knob][value], all self-drawn ---------- */
-#define SL_LABEL    U(104)    /* right-aligned caption occupies 0..104  */
-#define SL_TRACK_L  U(112)    /* track start                            */
-#define SL_VAL_W    U(130)    /* value + unit + default note column     */
-
+/* --- slider row: [label][rail + knob][value (def x)] -----------------
+ * .srow of the mockup: right-aligned caption, a 4px rail filled with the
+ * gradient, a 14px knob that grows and turns accent when grabbed.       */
 static float sliderT(const ExCtrl *c)
 {
     return c->fmax > c->fmin ? (c->fval - c->fmin) / (c->fmax - c->fmin)
                              : 0.0f;
 }
 
-static void sliderSetFromX(HWND h, ExCtrl *c, int x)
+/* x -> value, quantised the way the ini keys are read back */
+static void sliderSetFromX(RECT *row, ExCtrl *c, int x)
 {
-    RECT rc;
-    int w, tr;
+    int   tl = row->left + SL_LABEL + U(12);
+    int   tr = row->right - SL_VAL_W - U(6);
     float t, v;
 
-    GetClientRect(h, &rc);
-    w  = rc.right;
-    tr = w - SL_VAL_W - U(6);
-    if (x < SL_TRACK_L)
-        x = SL_TRACK_L;
+    if (tr <= tl + U(20))
+        tr = tl + U(20);
+    if (x < tl)
+        x = tl;
     if (x > tr)
         x = tr;
-    t = (float)(x - SL_TRACK_L) / (float)(tr - SL_TRACK_L);
+    t = (float) (x - tl) / (float) (tr - tl);
     v = c->fmin + t * (c->fmax - c->fmin);
     if (c->sdef && c->sdef->isInt) {
-        v = (float)(int)(v + 0.5f);          /* whole steps               */
+        v = (float) (int) (v + 0.5f);             /* whole steps          */
     } else if (c->sdef && c->sdef->step > 0.0f) {
-        float st = c->sdef->step;            /* e.g. 0.01 mm              */
-        v = c->fmin +
-            (float)(int)((v - c->fmin) / st + 0.5f) * st;
+        float st = c->sdef->step;                 /* e.g. 0.01 mm         */
+        v = c->fmin + (float) (int) ((v - c->fmin) / st + 0.5f) * st;
     } else {
-        int v10 = (int)(v * 10.0f + 0.5f);   /* 0.1 steps                 */
-        v = (float)v10 / 10.0f;
+        int v10 = (int) (v * 10.0f + 0.5f);       /* 0.1 steps            */
+        v = (float) v10 / 10.0f;
     }
-    if (v != c->fval) {
+    if (v != c->fval)
         c->fval = v;
-        InvalidateRect(h, NULL, FALSE);
-    }
+}
+
+/* value, plus the factory default as a dim hint: "1.6x (def 1.6)" */
+static void sliderValueLine(const ExCtrl *c, wchar_t *vt, int capV,
+                            wchar_t *hint, int capH)
+{
+    wchar_t dv[24];
+    float diff = c->fval - (c->sdef ? c->sdef->defV : c->fval);
+    float eps  = (c->sdef && c->sdef->step > 0.0f) ? c->sdef->step * 0.4f
+                                                   : 0.05f;
+
+    vt[0] = hint[0] = 0;
+    sliderDisplayTextW(c->sdef, c->fval, TRUE, vt, capV);
+    if (c->sdef && !c->sdef->noDefHint
+        && (diff < 0.0f ? -diff : diff) > eps) {
+        sliderDisplayTextW(c->sdef, c->sdef->defV, FALSE, dv, 24);
+        swprintf(hint, capH, L"(def %ls)", dv);
+    } else if (c->sdef == &g_zoomDef && !hint[0])
+        wcsncpy(hint, L"(auto)", capH);   /* zoom at 1.0 = system auto  */
 }
 
 static void paintSlider(HDC dc, RECT *r, const ExCtrl *c, BOOL enabled)
 {
-    int w  = r->right - r->left;
-    int cy = (r->top + r->bottom) / 2;
-    int tr = w - SL_VAL_W - U(6);
-    int kx = SL_TRACK_L + (int)(sliderT(c) * (tr - SL_TRACK_L) + 0.5f);
-    int kr = (c->hover || c->pressed) ? U(7) : U(6);
-    RECT seg, lr, vr;
-    wchar_t vt[40];
-    HBRUSH b;
-    COLORREF fill = enabled ? C_ACCENT        : RGB(82, 82, 82);
-    COLORREF rest = enabled ? RGB(70, 70, 70) : RGB(46, 46, 46);
-    COLORREF kc   = !enabled ? RGB(120, 120, 120)
-                : c->pressed ? C_ACCENT : RGB(250, 250, 250);
-    COLORREF ko   = enabled ? RGB(90, 90, 90) : RGB(60, 60, 60);
+    int   cy = (r->top + r->bottom) / 2;
+    int   tr = r->right - SL_VAL_W - U(6);
+    int   tl = r->left + SL_LABEL + U(12);
+    int   kx, kr;
+    RECT  rail, lr, vr, hr, kn;
+    wchar_t vt[40], hint[32];
 
-    FillRect(dc, r, g_brCard);
-    SetBkMode(dc, TRANSPARENT);
+    if (tr <= tl + U(20))
+        tr = tl + U(20);
+    kx = tl + (int) (sliderT(c) * (tr - tl) + 0.5f);
+    kr = U(7) + (int) (c->ha.cur * U(2) + 0.5f);
 
+    /* caption */
     SelectObject(dc, g_fontS);
-    SetTextColor(dc, enabled ? C_TEXT2 : RGB(110, 110, 110));
-    SetRect(&lr, 0, r->top, SL_LABEL, r->bottom);
-    DrawTextW(dc, (c->sdef && c->sdef->label) ? c->sdef->label
-                                              : L"scale",
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, FK(enabled ? C_TEXT2 : RGB(110, 110, 110)));
+    SetRect(&lr, r->left, r->top, r->left + SL_LABEL, r->bottom);
+    DrawTextW(dc, (c->sdef && c->sdef->label) ? c->sdef->label : L"scale",
               -1, &lr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
-    b = CreateSolidBrush(fill);
-    SetRect(&seg, SL_TRACK_L, cy - U(2), kx, cy + U(3));
-    FillRect(dc, &seg, b);
-    DeleteObject(b);
-    b = CreateSolidBrush(rest);
-    SetRect(&seg, kx, cy - U(2), tr, cy + U(3));
-    FillRect(dc, &seg, b);
-    DeleteObject(b);
+    SetRect(&rail, tl, cy - U(2), tr, cy + U(2));
+    gpRR(&rail, (Gdiplus::REAL) U(2),
+         enabled ? RGB(58, 58, 58) : RGB(46, 46, 46), AK(255), 0, 0, 0);
+    {   RECT f = rail;
 
-    {
-        HPEN p = CreatePen(PS_SOLID, 1, ko);
-        HGDIOBJ op = SelectObject(dc, p);
-        b = CreateSolidBrush(kc);
-        {
-            HGDIOBJ ob = SelectObject(dc, b);
-            Ellipse(dc, kx - kr, cy - kr, kx + kr, cy + kr);
-            SelectObject(dc, ob);
-        }
-        SelectObject(dc, op);
-        DeleteObject(b);
-        DeleteObject(p);
+        f.right = kx;
+        if (f.right > f.left + 1)
+            gpGradRR(&f, (Gdiplus::REAL) U(2), C_GRAD1, C_GRAD2, C_GRAD3,
+                     AK(enabled ? 255 : 110), 0, 0, 0);
+    }
+    SetRect(&kn, kx - kr, cy - kr, kx + kr, cy + kr);
+    gpShadow(&kn, (Gdiplus::REAL) kr, (Gdiplus::REAL) U(5), U(1), AK(120));
+    gpDot(&kn, RGB(250, 250, 250), AK(enabled ? 255 : 140));
+    {   Gdiplus::Pen pn(gpc(enabled
+                            ? mix(RGB(106, 106, 106), C_ACCENT,
+                                  c->ha.cur * 0.9f + c->pa.cur * 0.1f)
+                            : RGB(70, 70, 70), AK(255)),
+                        (Gdiplus::REAL) (U(2) > 1 ? 1.6f : 1.0f));
+
+        g_g->DrawEllipse(&pn, (Gdiplus::REAL) kn.left, (Gdiplus::REAL) kn.top,
+                         (Gdiplus::REAL) (kn.right - kn.left),
+                         (Gdiplus::REAL) (kn.bottom - kn.top));
     }
 
-    /* value + unit, plus the factory default when moved off it:
-     * "20", "0.30 mm (default 0.10)" */
-    {
-        wchar_t dv[24];
-        float diff = c->fval - (c->sdef ? c->sdef->defV : c->fval);
-        float eps  = (c->sdef && c->sdef->step > 0.0f) ? c->sdef->step * 0.4f
-                                                       : 0.05f;
-
-        sliderDisplayTextW(c->sdef, c->fval, TRUE, vt, 40);
-        if (c->sdef && !c->sdef->noDefHint
-            && (diff < 0.0f ? -diff : diff) > eps) {
-            sliderDisplayTextW(c->sdef, c->sdef->defV, FALSE, dv, 24);
-            wcsncat(vt, L" (default ", 39);
-            wcsncat(vt, dv, 39);
-            wcsncat(vt, L")", 39);
-            vt[39] = 0;
-        }
-    }
+    sliderValueLine(c, vt, 40, hint, 32);
     SelectObject(dc, g_font);
-    SetTextColor(dc, enabled ? C_TEXT : RGB(110, 110, 110));
-    SetRect(&vr, tr + U(10), r->top, w, r->bottom);
-    DrawTextW(dc, vt, -1, &vr,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+    SetTextColor(dc, FK(enabled ? C_TEXT : RGB(110, 110, 110)));
+    SetRect(&vr, tr + U(10), r->top, r->right, r->bottom);
+    DrawTextW(dc, vt, -1, &vr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    if (hint[0]) {
+        int vw = textMeasW(dc, vt);
+
+        SelectObject(dc, g_fontM);
+        SetTextColor(dc, FK(enabled ? C_TEXT3 : RGB(85, 85, 85)));
+        SetRect(&hr, vr.left + vw + U(6), r->top, r->right, r->bottom);
+        DrawTextW(dc, hint, -1, &hr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
 }
 
-/* --- quality preset pill: two-line button on the card, accent when
- * it is the pill matching the current ini values ---------------------- */
-static void paintPreset(HDC dc, RECT *r, const ExCtrl *c, BOOL enabled)
+/* --- quality preset pill (.pill): two lines, accent frame when the
+ * current ini values match it ---------------------------------------- */
+static void paintPreset(HDC dc, RECT *r0, const ExCtrl *c, BOOL enabled)
 {
     const PresetDef *d = c->pdef;
     BOOL sel = (c->pi == g_presetSel[c->idx]);
-    COLORREF bd, tx, tx2;
-    HBRUSH b; HPEN p; HGDIOBJ ob, op;
-    RECT tr;
-    int cy;
+    float h = enabled ? c->ha.cur : 0.0f;
+    float prs = enabled ? c->pa.cur : 0.0f;
+    RECT  r = *r0, tr;
+    COLORREF bg, bd, tx, tx2;
+    int   cy;
 
-    FillRect(dc, r, g_brCard);
-    bd = !enabled ? RGB(48, 48, 48)
-       : sel ? C_ACCENT
-       : (c->hover || c->pressed) ? RGB(96, 96, 96) : C_CARDLN;
-    if (sel)
-        b = CreateSolidBrush(RGB(40, 54, 63));      /* accent-tinted card */
-    else if (c->pressed && enabled)
-        b = CreateSolidBrush(RGB(34, 34, 34));
-    else if (c->hover && enabled)
-        b = CreateSolidBrush(RGB(49, 49, 49));
-    else
-        b = CreateSolidBrush(C_CARD);
-    p = CreatePen(PS_SOLID, sel ? 2 : 1, bd);
-    ob = SelectObject(dc, b);
-    op = SelectObject(dc, p);
-    RoundRect(dc, r->left + 1, r->top + 1, r->right - 1, r->bottom - 1,
-              U(14), U(14));
-    SelectObject(dc, ob);
-    SelectObject(dc, op);
-    DeleteObject(b);
-    DeleteObject(p);
+    OffsetRect(&r, 0, -(int) (U(1) * h + 0.5f));
+    if (prs > 0.01f)
+        InflateRect(&r, -1, -1);
+    bg  = mix(mix(C_PILL, RGB(47, 47, 47), h), RGB(30, 30, 30), prs);
+    bd  = enabled ? mix(RGB(58, 58, 58), RGB(90, 90, 90), h) : RGB(48, 48, 48);
+    tx  = !enabled ? RGB(110, 110, 110) : (sel ? RGB(235, 246, 255) : C_TEXT);
+    tx2 = !enabled ? RGB(95, 95, 95)    : (sel ? C_ACCENT : C_TEXT3);
 
+    if (h > 0.02f)
+        gpShadow(&r, (Gdiplus::REAL) U(9), (Gdiplus::REAL) U(8), U(2),
+                 (int) (65 * h));
+    gpRR(&r, (Gdiplus::REAL) U(9), bg, 255, bd, 255, 1.0f);
+    if (sel) {
+        gpRR(&r, (Gdiplus::REAL) U(9), C_GRAD1, 26, 0, 0, 0);
+        gpRR(&r, (Gdiplus::REAL) U(9), 0, 0, C_ACCENT, 255,
+             U(2) > 1 ? 1.7f : 1.2f);
+    }
     SetBkMode(dc, TRANSPARENT);
-    cy = (r->top + r->bottom) / 2;
-    tx = !enabled ? RGB(110, 110, 110)
-       : sel ? RGB(235, 246, 255) : C_TEXT;
-    tx2 = !enabled ? RGB(95, 95, 95)
-        : sel ? C_ACCENT : C_TEXT2;
-    SelectObject(dc, g_font);
+    cy = (r.top + r.bottom) / 2;
+    SelectObject(dc, g_fontB);
     SetTextColor(dc, tx);
-    SetRect(&tr, r->left, cy - U(17), r->right, cy);
+    SetRect(&tr, r.left, cy - U(17), r.right, cy - U(1));
     DrawTextW(dc, d->label, -1, &tr, DT_CENTER | DT_SINGLELINE);
-    SelectObject(dc, g_fontS);
+    SelectObject(dc, g_fontM);
     SetTextColor(dc, tx2);
-    SetRect(&tr, r->left, cy + 1, r->right, cy + U(16));
+    SetRect(&tr, r.left, cy, r.right, cy + U(14));
     DrawTextW(dc, d->spreadText, -1, &tr, DT_CENTER | DT_SINGLELINE);
 }
 
-/* module card height derived from the controls it shows */
-static int cardHeightOf(const ModDef *m)
+/* extras band height (pills / sliders / file buttons) of one card */
+static int extrasHeightOf(const ModDef *m)
 {
-    int extra = 0;
-
-    if (m->nSliders)
-        extra += m->nSliders * U(30);
     if (m->nPresets)
-        extra += U(20) + U(46);       /* caption row + pill row */
+        return CD_PILL_H + (m->presetCap ? U(4) + U(14) : 0);
+    if (m->nSliders)
+        return m->nSliders * CD_SROW_H + (m->nSliders - 1) * U(4);
     if (m->hasFileBtn)
-        extra += U(36);               /* file button row       */
-    return extra ? U(52) + extra + U(12) : U(58);
+        return CD_FBTN_H;
+    return 0;
 }
 
-/*
- * Custom control class. We deliberately do NOT use the system "BUTTON"
- * class: BS_OWNERDRAW shares the 4-bit style field with BS_AUTOCHECKBOX,
- * BM_SETCHECK state is not kept, and Win11 decorates even owner-drawn
- * BUTTON windows with system focus/default glyphs. A plain child window
- * painting itself is the only fully controllable option.
- */
-static LRESULT CALLBACK ctrlProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+/* collapsed height (header only) for a given description height */
+static int cardCollapsedH(int descH)
 {
-    ExCtrl *c = (ExCtrl *) GetWindowLongPtrW(h, GWLP_USERDATA);
+    int th = U(19) + U(3) + descH;
 
-    switch (msg) {
-    case WM_NCCREATE: {
-        CREATESTRUCTW *cs = (CREATESTRUCTW *) lp;
-        SetWindowLongPtrW(h, GWLP_USERDATA, (LONG_PTR) cs->lpCreateParams);
-        return DefWindowProcW(h, msg, wp, lp);
+    if (th < CD_MINH)
+        th = CD_MINH;
+    return CD_PAD_T + th + CD_PAD_B;
+}
+
+/* ------------------------------------------------------------------ */
+/* Interface page                                                      */
+/*                                                                     */
+/* KPI tiles, the section label and the whole card grid are painted by */
+/* this one window and hit-tested by hand: there are no child controls */
+/* inside a card at all. That is what makes the motion of the mockup   */
+/* possible in plain Win32 - cards lift on hover, the extras band      */
+/* slides open, the knob springs past its rail, entries rise in with a */
+/* stagger - and it also removes every chance of a child surface       */
+/* leaving a ghost of the previous frame behind.                       */
+/* ------------------------------------------------------------------ */
+
+/* installed / active counters of one sidebar section */
+static void catCounts(int cat, int *on, int *tot)
+{
+    int t = 0, n = 0, i;
+
+    *on = *tot = 0;
+    for (i = 0; i < g_modCount; i++)
+        if (g_mods[i].cat == cat) {
+            t++;
+            if (g_modOn[i])
+                n++;
+        }
+    *on = n;
+    *tot = t;
+}
+static void upcaseW(const wchar_t *s, wchar_t *out, int cap)
+{
+    int i;
+
+    for (i = 0; s[i] && i < cap - 1; i++)
+        out[i] = (s[i] >= L'a' && s[i] <= L'z')
+                 ? (wchar_t) (s[i] - 32) : s[i];
+    out[i] = 0;
+}
+static void areaSyncScrollInfo(HWND a);
+static int  g_pageH;                   /* visible page height (culling)  */
+
+/* --- shared background: the .main::before radial wash ----------------
+ * Built once per window size for the whole client area; every page blits
+ * the part that belongs to it, so the light stays continuous with the
+ * header that the main window paints.                                  */
+static HBITMAP g_washBmp;
+static HDC     g_washDc;
+static int     g_washW, g_washH;
+
+static void washBuild(int w, int h)
+{
+    HDC dc = GetDC(NULL);
+    HDC mem;
+    HBITMAP bmp, obmp;
+    RECT rc = { 0, 0, w, h };
+
+    if (w < 2 || h < 2)
+        return;
+    mem = CreateCompatibleDC(dc);
+    bmp = CreateCompatibleBitmap(dc, w, h);
+    obmp = (HBITMAP) SelectObject(mem, bmp);
+    {   HBRUSH b = CreateSolidBrush(C_BG);
+        FillRect(mem, &rc, b);
+        DeleteObject(b);
     }
+    gpBegin(mem);
+    gpWash(&rc, 26, 18);
+    gpEnd();
+    SelectObject(mem, obmp);
+    DeleteDC(mem);
+    ReleaseDC(NULL, dc);
+    if (g_washBmp)
+        DeleteObject(g_washBmp);
+    if (g_washDc)
+        DeleteDC(g_washDc);
+    g_washBmp = bmp;
+    g_washDc  = CreateCompatibleDC(NULL);
+    SelectObject(g_washDc, bmp);
+    g_washW = w;
+    g_washH = h;
+}
+/* ox/oy = where this surface sits inside the window client */
+static void washBlit(HDC dc, RECT *rc, int ox, int oy)
+{
+    if (!g_washDc) {
+        FillRect(dc, rc, g_brBg);
+        return;
+    }
+    if (ox + rc->right > g_washW || oy + rc->bottom > g_washH)
+        FillRect(dc, rc, g_brBg);       /* mid-resize: cover the shortfall */
+    BitBlt(dc, rc->left, rc->top, rc->right - rc->left,
+           rc->bottom - rc->top, g_washDc, ox + rc->left, oy + rc->top,
+           SRCCOPY);
+}
+
+/* a hairline that fades out to the right (.seclab .rule) */
+static void gpRule(RECT *r, COLORREF c, int a0, int a1)
+{
+    Gdiplus::RectF bb((Gdiplus::REAL) r->left, (Gdiplus::REAL) r->top,
+                      (Gdiplus::REAL) (r->right - r->left),
+                      (Gdiplus::REAL) (r->bottom - r->top));
+    Gdiplus::LinearGradientBrush lb(bb, gpc(c, AK(a0)), gpc(c, AK(a1)),
+                                    Gdiplus::LinearGradientModeHorizontal);
+
+    if (bb.Width < 1)
+        return;
+    g_g->FillRectangle(&lb, bb);
+}
+/* dashed rounded frame (.empty) - real dashes with round caps */
+static void gpDashedRR(RECT *r, Gdiplus::REAL rad, COLORREF c, int a)
+{
+    Gdiplus::GraphicsPath p;
+    Gdiplus::Pen pn(gpc(c, AK(a)), 1.0f);
+    Gdiplus::REAL dash[2] = { 4.0f, 4.0f };
+
+    gpAddRRc(&p, r, rad);
+    pn.SetDashPattern(dash, 2);
+    pn.SetDashCap(Gdiplus::DashCapRound);
+    g_g->DrawPath(&pn, &p);
+}
+
+/* --- card geometry ---------------------------------------------------
+ * Rects live in "content space" (y 0 = the first card row, scroll not
+ * applied); the painter and the hit tester add the same offset, so what
+ * you see is exactly what you click.                                    */
+static void cardGeoBuild(int i, int x, int yTop, int colw, HDC dc)
+{
+    const ModDef *m = &g_mods[i];
+    CardGeo *g = &g_geo[i];
+    float e = g_extA[i].cur;
+    int stateW = U(26) + U(10) + CD_SW_W;
+    int innerW = colw - CD_PAD_L - CD_PAD_R;
+    int textL  = x + CD_PAD_L;
+    int textR  = x + colw - CD_PAD_R - stateW - U(12);
+    int descH, topH, bandH, gap, bandTop, s;
+    RECT wr;
+    wchar_t buf[400];
+
+    if (textR - textL < U(80))
+        textR = textL + U(80);
+
+    /* .ds wraps inside the header row: measure how tall it becomes */
+    wcsncpy(buf, m->desc, 398);
+    buf[398] = 0;
+    SelectObject(dc, g_fontS);
+    SetRect(&wr, textL, 0, textR, 4000);
+    DrawTextW(dc, buf, -1, &wr, DT_CALCRECT | DT_WORDBREAK | DT_LEFT);
+    descH = wr.bottom - wr.top;
+    if (descH < U(15))
+        descH = U(15);
+    topH = U(19) + U(3) + descH;
+    if (topH < CD_MINH)
+        topH = CD_MINH;
+
+    bandH   = extrasHeightOf(m);
+    gap     = (int) (CD_EXT_T * e + 0.5f);
+    bandTop = yTop + CD_PAD_T + topH + gap;
+
+    SetRect(&g->card, x, yTop, x + colw,
+            bandTop + (int) (bandH * e) + CD_PAD_B);
+    SetRect(&g->nm, textL, yTop + CD_PAD_T, textR, yTop + CD_PAD_T + U(19));
+    SetRect(&g->desc, textL, yTop + CD_PAD_T + U(19) + U(3), textR,
+            yTop + CD_PAD_T + U(19) + U(3) + descH);
+    SetRect(&g->sw, x + colw - CD_PAD_R - CD_SW_W,
+            yTop + CD_PAD_T + (U(19) - CD_SW_H) / 2,
+            x + colw - CD_PAD_R,
+            yTop + CD_PAD_T + (U(19) - CD_SW_H) / 2 + CD_SW_H);
+    SetRect(&g->onoff, g->sw.left - U(10) - U(28), g->sw.top,
+            g->sw.left - U(10), g->sw.bottom);
+    SetRect(&g->stripe, x, yTop + U(10), x + 3, g->card.bottom - U(10));
+    SetRect(&g->band, x + CD_PAD_L, bandTop, x + colw - CD_PAD_R,
+            bandTop + (int) (bandH * e));
+    g->bandTop = bandTop;
+    g->colw = colw;
+    SetRectEmpty(&g->pcap);
+    for (s = 0; s < MAX_PRESETS; s++)
+        SetRectEmpty(&g->pill[s]);
+    for (s = 0; s < MAX_SLIDERS; s++)
+        SetRectEmpty(&g->srow[s]);
+    for (s = 0; s < MAX_FILEBTNS; s++)
+        SetRectEmpty(&g->fbtn[s]);
+    if (innerW < U(60))
+        innerW = U(60);
+
+    if (m->nPresets > 0) {
+        int y = bandTop, pw;
+
+        if (m->presetCap) {
+            SetRect(&g->pcap, x + CD_PAD_L, bandTop, x + colw - CD_PAD_R,
+                    bandTop + U(14));
+            y += U(14) + U(4);
+        }
+        pw = (innerW - (m->nPresets - 1) * U(7)) / m->nPresets;
+        if (pw < U(48))
+            pw = U(48);
+        for (s = 0; s < m->nPresets; s++)
+            SetRect(&g->pill[s], x + CD_PAD_L + s * (pw + U(7)), y,
+                    x + CD_PAD_L + s * (pw + U(7)) + pw, y + CD_PILL_H);
+    } else if (m->nSliders > 0) {
+        for (s = 0; s < m->nSliders; s++)
+            SetRect(&g->srow[s], x + CD_PAD_L,
+                    bandTop + s * (CD_SROW_H + U(4)),
+                    x + colw - CD_PAD_R,
+                    bandTop + s * (CD_SROW_H + U(4)) + CD_SROW_H);
+    } else if (m->hasFileBtn) {
+        static const wchar_t *const names[MAX_FILEBTNS] =
+            { L"Choose file", L"Reset" };
+        int bx = x + CD_PAD_L;
+
+        for (s = 0; s < MAX_FILEBTNS; s++) {
+            int w2;
+
+            SelectObject(dc, g_font);
+            w2 = textMeasW(dc, names[s]) + U(30);
+            SetRect(&g->fbtn[s], bx, bandTop, bx + w2, bandTop + CD_FBTN_H);
+            bx += w2 + U(8);
+        }
+    }
+}
+
+/* screen offset of a card: scroll + the staggered rise-in. Hover only
+ * warms the frame and the shadow, the card itself stays put           */
+static int cardDy(int i)
+{
+    return GRID_TOP - g_scroll
+           + (int) ((1.0f - g_introA[i].cur) * U(14));
+}
+static RECT rOff(RECT r, int dy)
+{
+    OffsetRect(&r, 0, dy);
+    return r;
+}
+
+/* two-column masonry, columns balanced by height; card heights follow
+ * the animated extras band, so the grid re-flows while a card opens    */
+static void areaLayoutRows(HWND a, int w)
+{
+    int n = g_catCnt[PAGE_IF], k;
+    int cols = w >= U(900) ? 2 : 1;
+    int colw = cols == 2 ? (w - 2 * PAGE_PAD - CARD_GAP) / 2
+                         : w - 2 * PAGE_PAD;
+    int top[2];
+    HDC dc;
+
+    if (colw < U(240))
+        colw = U(240);
+    top[0] = top[1] = 0;
+    dc = GetDC(a);
+    for (k = 0; k < n; k++) {
+        int i = g_catMods[PAGE_IF][k];
+        int col = cols == 2 ? (top[0] <= top[1] ? 0 : 1) : 0;
+        int x = PAGE_PAD + col * (colw + CARD_GAP);
+
+        cardGeoBuild(i, x, top[col], colw, dc);
+        g_cardR[i] = g_geo[i].card;
+        top[col] = g_geo[i].card.bottom + CARD_GAP;
+    }
+    ReleaseDC(a, dc);
+    g_contentH = (top[0] > top[1] ? top[0] : top[1]) + U(10);
+    areaSyncScrollInfo(a);
+    InvalidateRect(a, NULL, TRUE);
+}
+
+/* scroll range vs. the visible grid strip. The thumb is entirely our own;
+ * no native scrollbar is used - SetScrollInfo(SB_VERT) quietly adds
+ * WS_VSCROLL to the window, and Windows then paints a stock white bar in
+ * the non-client area right next to the custom dark thumb. Keeping the
+ * scroll model here (g_scroll/g_scrollMax) and never touching the system
+ * scrollbar is what keeps the strip clean at every window height.       */
+static void areaSyncScrollInfo(HWND a)
+{
+    RECT rc;
+    int view;
+
+    GetClientRect(a, &rc);
+    view = rc.bottom - GRID_TOP;
+    if (view < U(60))
+        view = U(60);
+    g_scrollMax = g_contentH > view ? g_contentH - view : 0;
+    if (g_scrollTgt > g_scrollMax)
+        g_scrollTgt = (float) g_scrollMax;
+    if (g_scrollTgt < 0)
+        g_scrollTgt = 0;
+}
+
+/* smooth scroll: set the target, the anim tick eases toward it */
+static void areaScrollTo(HWND a, int v)
+{
+    (void) a;
+    if (v > g_scrollMax)
+        v = g_scrollMax;
+    if (v < 0)
+        v = 0;
+    if ((float) v == g_scrollTgt)
+        return;
+    g_scrollTgt = (float) v;
+    animTo(&g_sbA, 1.0f, 140, EASE_OUT);
+    animWake();
+}
+
+/* the thin overlay thumb (the mockup has no classic scrollbar) */
+static void sbThumbRect(HWND h, RECT *out)
+{
+    RECT rc;
+    int view, th, ty;
+    float vis;
+
+    SetRectEmpty(out);
+    GetClientRect(h, &rc);
+    if (g_scrollMax <= 0)
+        return;
+    view = rc.bottom - GRID_TOP;
+    vis = (float) view / (float) (g_contentH > 0 ? g_contentH : 1);
+    th = (int) (vis * view);
+    if (th < U(30))
+        th = U(30);
+    if (th > view)
+        th = view;
+    ty = GRID_TOP + (int) ((view - th)
+         * (g_scrollMax > 0 ? (float) g_scroll / (float) g_scrollMax : 0.0f));
+    SetRect(out, rc.right - U(4) - U(3), ty, rc.right - U(4), ty + th);
+}
+
+/* --- KPI tiles -------------------------------------------------------
+ * "<section> . active" with the animated gradient bar, the application
+ * stamp, and the install state under a shimmer sweep.                  */
+static void kpiRects(int w, RECT out[3])
+{
+    int cw = (w - 2 * PAGE_PAD - 2 * KPI_GAP) / 3;
+    int i;
+
+    if (cw < U(110))
+        cw = U(110);
+    for (i = 0; i < 3; i++)
+        SetRect(&out[i], PAGE_PAD + i * (cw + KPI_GAP), KPI_TOP,
+                PAGE_PAD + i * (cw + KPI_GAP) + cw, KPI_TOP + KPI_H);
+}
+/* retarget the counters when the page or the module state changes */
+static void kpiSync(int cat)
+{
+    int on, tot;
+
+    catCounts(cat, &on, &tot);
+    animTo(&g_kpiCnt, (float) on, 600, EASE_OUT);
+    animTo(&g_kpiBar, tot > 0 ? (float) on / tot : 0.0f, 600, EASE_OUT);
+}
+static void paintKpis(HDC dc, int w, int cat)
+{
+    static const wchar_t *const lab1[2] =
+        { L"INTERFACE \x00b7 ACTIVE", L"SCANNER \x00b7 ACTIVE" };
+    RECT r[3], br, lr;
+    wchar_t sub[140];
+    int on, tot, i;
+    BOOL running = appRunning();
+
+    catCounts(cat, &on, &tot);
+    kpiRects(w, r);
+    for (i = 0; i < 3; i++) {
+        float hv = g_kpiHov[i].cur;
+        RECT sh = r[i];
+
+        /* hover only warms the border and the shadow: nothing moves,
+         * a lifting tile reads as lag next to the pointer */
+        sh = r[i];
+        OffsetRect(&sh, 0, U(2));
+        gpShadow(&sh, U(14), (Gdiplus::REAL) U(10), 0,
+                 AK(85 + (int) (55 * hv)));
+        gpRR(&r[i], U(14), C_CARD, AK(255), mix(C_CARDLN, C_HILN, hv),
+             AK(255), 1.0f);
+    }
+    SetBkMode(dc, TRANSPARENT);
+
+    /* 1: active modules of this section, plus the gradient bar */
+    {   float bar = g_kpiBar.cur;
+        int   n = (int) (g_kpiCnt.cur + 0.5f);
+
+        SelectObject(dc, g_fontV);
+        SetTextColor(dc, FK(C_TEXT3));
+        SetRect(&br, r[0].left + U(18), r[0].top + U(14), r[0].right - U(14),
+                r[0].top + U(28));
+        drawSpacedW(dc, lab1[cat], &br, U(2), 0, 0);
+
+        SelectObject(dc, g_fontK);
+        SetTextColor(dc, FK(C_TEXT));
+        SetRect(&br, r[0].left + U(18), r[0].top + U(30), r[0].right - U(18),
+                r[0].top + U(30) + U(30));
+        {   wchar_t a1[16], a2[16];
+            int w1;
+
+            swprintf(a1, 16, L"%d", n);
+            swprintf(a2, 16, L" / %d", tot);
+            w1 = textMeasW(dc, a1);
+            DrawTextW(dc, a1, -1, &br, DT_LEFT | DT_TOP | DT_SINGLELINE);
+            SelectObject(dc, g_fontK2);
+            SetTextColor(dc, FK(C_TEXT3));
+            OffsetRect(&br, w1, U(6));
+            DrawTextW(dc, a2, -1, &br, DT_LEFT | DT_TOP | DT_SINGLELINE);
+        }
+        SetRect(&br, r[0].left + U(18), r[0].bottom - U(15) - U(4),
+                r[0].right - U(18), r[0].bottom - U(15));
+        gpRR(&br, (Gdiplus::REAL) U(2), RGB(51, 51, 51), AK(255), 0, 0, 0);
+        lr = br;
+        lr.right = br.left + (int) ((br.right - br.left) * bar + 0.5f);
+        if (lr.right > lr.left + 1)
+            gpGradRR(&lr, (Gdiplus::REAL) U(2), C_GRAD1, C_GRAD2, C_GRAD3,
+                     AK(255), 0, 0, 0);
+    }
+
+    /* 2: the detected application */
+    {   COLORREF led = g_verTone == 0 ? C_OK
+                     : (g_verTone == 1 ? C_WARN : C_ERR);
+
+        SelectObject(dc, g_fontV);
+        SetTextColor(dc, FK(C_TEXT3));
+        SetRect(&lr, r[1].left + U(18), r[1].top + U(14), r[1].right - U(14),
+                r[1].top + U(28));
+        drawSpacedW(dc, L"APPLICATION", &lr, U(2), 0, 0);
+
+        SelectObject(dc, g_fontK);
+        SetTextColor(dc, FK(C_TEXT));
+        SetRect(&lr, r[1].left + U(18), r[1].top + U(30), r[1].right - U(18),
+                r[1].top + U(30) + U(30));
+        DrawTextW(dc, g_prod[0] ? g_prod : L"-", -1, &lr,
+                  DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        if (g_stamp[0])
+            swprintf(sub, 140, g_verTone == 1
+                     ? L"file stamp %ls \x00b7 NOT tested"
+                     : L"file stamp %ls \x00b7 tested", g_stamp);
+        else
+            wcsncpy(sub, L"application not detected", 139);
+        sub[139] = 0;
+        SetRect(&lr, r[1].left + U(18), r[1].bottom - U(15) - U(16),
+                r[1].right - U(14), r[1].bottom - U(13));
+        {   RECT d = { lr.left + U(1), (lr.top + lr.bottom) / 2 - U(3),
+                       lr.left + U(1) + U(7), (lr.top + lr.bottom) / 2 + U(4) };
+            COLORREF t1;
+
+            gpHalo(&d, U(4), led, (Gdiplus::REAL) U(7), AK(190));
+            gpDot(&d, led, AK(255));
+            t1 = GetTextColor(dc);
+            (void) t1;
+            SelectObject(dc, g_fontS);
+            SetTextColor(dc, FK(C_TEXT2));
+            OffsetRect(&lr, U(13), 0);
+            DrawTextW(dc, sub, -1, &lr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        }
+    }
+
+    /* 3: state, with the shimmer sweep */
+    {   float ph = (float) (GetTickCount64() % 1800) / 1800.0f;
+
+        gpShimmer(&r[2], U(14), ph, AK(14));
+        SelectObject(dc, g_fontV);
+        SetTextColor(dc, FK(C_TEXT3));
+        SetRect(&lr, r[2].left + U(18), r[2].top + U(14), r[2].right - U(14),
+                r[2].top + U(28));
+        drawSpacedW(dc, L"STATE", &lr, U(2), 0, 0);
+
+        SelectObject(dc, g_fontK);
+        SetTextColor(dc, FK(g_installed > 0 ? C_OK : C_TEXT2));
+        SetRect(&lr, r[2].left + U(18), r[2].top + U(30), r[2].right - U(18),
+                r[2].top + U(30) + U(30));
+        DrawTextW(dc, g_installed > 0 ? L"Installed" : L"Stock", -1, &lr,
+                  DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+        if (g_installed > 0)
+            wcsncpy(sub, running ? L"restart EXStar Hub to apply changes"
+                                 : L"applies on the next EXStar Hub start",
+                    139);
+        else
+            wcsncpy(sub, L"no module files in the app folder", 139);
+        sub[139] = 0;
+        SelectObject(dc, g_fontS);
+        SetTextColor(dc, FK(C_TEXT2));
+        SetRect(&lr, r[2].left + U(18), r[2].bottom - U(15) - U(16),
+                r[2].right - U(14), r[2].bottom - U(13));
+        DrawTextW(dc, sub, -1, &lr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+}
+
+/* .seclab: letter-spaced caption + a hairline that fades out */
+static void paintSecLabel(HDC dc, int w, const wchar_t *label)
+{
+    RECT r = { PAGE_PAD, KPI_TOP + KPI_H + U(22), w - PAGE_PAD,
+               KPI_TOP + KPI_H + U(22) + U(14) };
+    int tw;
+
+    SelectObject(dc, g_fontV);
+    SetTextColor(dc, FK(C_TEXT3));
+    tw = textMeasW(dc, label) + U(2) * (int) wcslen(label);
+    drawSpacedW(dc, label, &r, U(2), 0, 0);
+    SetRect(&r, r.left + tw + U(12), (r.top + r.bottom) / 2,
+            w - PAGE_PAD, (r.top + r.bottom) / 2 + 1);
+    gpRule(&r, RGB(60, 60, 60), 255, 0);
+}
+
+/* --- one module card -------------------------------------------------- */
+static void paintCard(HDC dc, int i)
+{
+    const ModDef *m = &g_mods[i];
+    CardGeo *G = &g_geo[i];
+    float hv = g_hovA[i].cur, t = g_swA[i].cur, e = g_extA[i].cur;
+    float p = g_pulA[i].cur;
+    float tt = t < 0 ? 0 : (t > 1 ? 1 : t);
+    float fadeSave = g_fade;
+    int   dy = cardDy(i), s;
+    RECT  card = rOff(G->card, dy), r, pr;
+    wchar_t buf[400];
+    ExCtrl *swc = &g_ctrls[i];
+
+    if (card.bottom < -U(40) || card.top > g_pageH + U(40))
+        return;
+    g_fade = fadeSave * g_introA[i].cur;
+
+    /* .card shadow: 0 2px 10px .35, on hover 0 8px 26px .55 */
+    {   RECT sh = card;
+
+        OffsetRect(&sh, 0, U(2));
+        gpShadow(&sh, CD_RAD, (Gdiplus::REAL) (U(10) + U(16) * hv), 0,
+                 AK(90 + (int) (50 * hv)));
+    }
+    gpRR(&card, CD_RAD, C_CARD, AK(255), mix(C_CARDLN, C_HILN, hv), AK(255),
+         1.0f);
+
+    /* .card.on::before - the gradient stripe on the left edge */
+    if (tt > 0.02f) {
+        r = rOff(G->stripe, dy);
+        gpGradRR(&r, (Gdiplus::REAL) U(3), C_GRAD1, C_GRAD2, C_GRAD3,
+                 AK((int) (255 * tt)), 0, 0, 0);
+    }
+    /* .badge removed: the card head is typographic only */
+
+    /* extras band: clipped to the animated height, faded and lifted 6px
+     * while it opens (max-height + opacity + translateY of the mockup) */
+    if (e > 0.01f && extrasHeightOf(m) > 0) {
+        RECT band = rOff(G->band, dy);
+        int slide = (int) (U(6) * (1.0f - e) + 0.5f);
+        int save = SaveDC(dc);
+        Gdiplus::Region oldClip;
+
+        g_g->GetClip(&oldClip);
+        IntersectClipRect(dc, band.left, band.top, band.right, band.bottom);
+        {   Gdiplus::RectF br((Gdiplus::REAL) band.left,
+                              (Gdiplus::REAL) band.top,
+                              (Gdiplus::REAL) (band.right - band.left),
+                              (Gdiplus::REAL) (band.bottom - band.top));
+            g_g->SetClip(br, Gdiplus::CombineModeReplace);
+        }
+        g_fade = fadeSave * g_introA[i].cur * e;
+        if (m->nPresets > 0) {
+            if (!IsRectEmpty(&G->pcap)) {
+                r = rOff(G->pcap, dy);
+                OffsetRect(&r, 0, -slide);
+                upcaseW(m->presetCap, buf, 400);
+                SelectObject(dc, g_fontV);
+                SetTextColor(dc, FK(C_TEXT3));
+                drawSpacedW(dc, buf, &r, U(1), 0, 0);
+            }
+            for (s = 0; s < m->nPresets; s++) {
+                r = rOff(G->pill[s], dy);
+                OffsetRect(&r, 0, -slide);
+                paintPreset(dc, &r, CTL_PRESET(i, s), g_uiOn);
+            }
+        } else if (m->nSliders > 0) {
+            for (s = 0; s < m->nSliders; s++) {
+                r = rOff(G->srow[s], dy);
+                OffsetRect(&r, 0, -slide);
+                paintSlider(dc, &r, CTL_SLIDER(i, s), g_uiOn);
+            }
+        } else if (m->hasFileBtn) {
+            static const wchar_t *const names[MAX_FILEBTNS] =
+                { L"Choose file", L"Reset" };
+
+            for (s = 0; s < MAX_FILEBTNS; s++) {
+                ExCtrl *fc = CTL_FILEBTN(i, s);
+
+                r = rOff(G->fbtn[s], dy);
+                OffsetRect(&r, 0, -slide);
+                paintButton(dc, &r, names[s], fc->ha.cur, fc->pa.cur,
+                            FALSE, g_uiOn && (s == 0 || g_fileHas), U(8));
+            }
+        }
+        RestoreDC(dc, save);
+        g_g->SetClip(&oldClip, Gdiplus::CombineModeReplace);
+        g_fade = fadeSave * g_introA[i].cur;
+    }
+
+    /* .nm + the version chip */
+    SetBkMode(dc, TRANSPARENT);
+    r = rOff(G->nm, dy);
+    SelectObject(dc, g_fontB);
+    SetTextColor(dc, FK(C_TEXT));
+    DrawTextW(dc, m->title, -1, &r,
+              DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+    {   int nw = textMeasW(dc, m->title);
+        int ph, pw;
+
+        swprintf(buf, 400, L"v%hs", m->version);
+        SelectObject(dc, g_fontV);
+        pw = textMeasW(dc, buf) + U(14);
+        ph = U(14) + U(4);
+        SetRect(&pr, r.left + nw + U(8), r.top + (U(19) - ph) / 2,
+                r.left + nw + U(8) + pw, r.top + (U(19) - ph) / 2 + ph);
+        if (pr.right < G->nm.right) {
+            gpRR(&pr, U(6), RGB(44, 44, 44), AK(255), 0, 0, 0);
+            SetTextColor(dc, FK(C_TEXT3));
+            DrawTextW(dc, buf, -1, &pr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+    }
+    /* .ds */
+    r = rOff(G->desc, dy);
+    wcsncpy(buf, m->desc, 398);
+    buf[398] = 0;
+    SelectObject(dc, g_fontS);
+    SetTextColor(dc, FK(C_TEXT2));
+    DrawTextW(dc, buf, -1, &r, DT_LEFT | DT_TOP | DT_WORDBREAK);
+
+    /* .state: the ON/OFF word and the switch */
+    r = rOff(G->sw, dy);
+    paintSwitch(&r, swc, g_uiOn);
+    r = rOff(G->onoff, dy);
+    SelectObject(dc, g_fontV);
+    SetTextColor(dc, FK(mix(C_TEXT3, C_ACCENT, tt)));
+    drawSpacedW(dc, g_modOn[i] ? L"ON" : L"OFF", &r, U(1), 2, 1);
+    if (p > 0.01f && p < 0.999f) {           /* .pulse ring on a flip */
+        int rad = U(2) + (int) (p * U(14));
+
+        InflateRect(&r, rad, rad);
+        gpRR(&r, (Gdiplus::REAL) (r.bottom - r.top) / 2.0f, 0, 0, C_GRAD1,
+             AK((int) (140 * (1.0f - p))), 1.6f);
+    }
+    g_fade = fadeSave;
+}
+
+/* the whole interface page into `out` (the caller blits or fades it) */
+static void pageRender(HDC out, RECT *rc)
+{
+    int k;
+
+    g_pageH = rc->bottom;
+    g_fade = g_pgAlpha.cur;
+    washBlit(out, rc, SB_W, PAGE_TOP);
+    gpBegin(out);
+    paintKpis(out, rc->right, PAGE_IF);
+    SetBkMode(out, TRANSPARENT);
+    paintSecLabel(out, rc->right, L"INTERFACE MODULES");
+    for (k = 0; k < g_catCnt[PAGE_IF]; k++)
+        paintCard(out, g_catMods[PAGE_IF][k]);
+    gpEnd();
+    g_fade = 1.0f;
+}
+
+/* double buffered paint. During a page transition the finished frame is
+ * composited with a constant alpha, offset 12px down (the .pagein of the
+ * mockup) - no layered window is involved, so no child surface can go
+ * black and nothing can tear.                                          */
+static void pagePaint(HWND h, HDC dc, RECT *rc)
+{
+    int w = rc->right - rc->left, hh = rc->bottom - rc->top;
+    float a = g_pgAlpha.cur, sl = g_pgSlide.cur;
+    HDC mem = CreateCompatibleDC(dc);
+    HBITMAP bmp = CreateCompatibleBitmap(dc, w, hh), obmp;
+
+    obmp = (HBITMAP) SelectObject(mem, bmp);
+    pageRender(mem, rc);
+    if (a < 0.995f || sl > 0.005f) {
+        BLENDFUNCTION bf;
+        HDC bkg = CreateCompatibleDC(dc);
+        HBITMAP b2 = CreateCompatibleBitmap(dc, w, hh), ob2;
+
+        ob2 = (HBITMAP) SelectObject(bkg, b2);
+        washBlit(bkg, rc, SB_W, PAGE_TOP);
+        BitBlt(dc, 0, 0, w, hh, bkg, 0, 0, SRCCOPY);
+        SelectObject(bkg, ob2);
+        DeleteObject(b2);
+        DeleteDC(bkg);
+        memset(&bf, 0, sizeof bf);
+        bf.BlendOp = AC_SRC_OVER;
+        bf.SourceConstantAlpha = (BYTE) (255 * (a < 0 ? 0 : (a > 1 ? 1 : a)));
+        AlphaBlend(dc, 0, (int) (U(12) * sl), w, hh, mem, 0, 0, w, hh, bf);
+    } else {
+        BitBlt(dc, 0, 0, w, hh, mem, 0, 0, SRCCOPY);
+    }
+    SelectObject(mem, obmp);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+}
+
+/* --- hit testing ------------------------------------------------------
+ * The geometry the painter used, offset the same way: a click can never
+ * miss the pixel it is drawn on.                                       */
+enum { HIT_NONE = 0, HIT_CARD, HIT_SWITCH, HIT_PILL, HIT_SLIDER,
+       HIT_FBTN, HIT_SB };
+static int  g_hit = HIT_NONE, g_hitMod = -1, g_hitSub = -1;
+static int  g_press = HIT_NONE, g_pressMod = -1, g_pressSub = -1;
+static BOOL g_sbDrag;
+static POINT g_sbGrab;
+
+static int areaHit(HWND h, POINT pt, int *modOut, int *subOut)
+{
+    int k;
+
+    *modOut = *subOut = -1;
+    {   RECT tb, big;
+
+        sbThumbRect(h, &tb);
+        if (!IsRectEmpty(&tb)) {
+            big = tb;
+            InflateRect(&big, U(7), 0);
+            if (PtInRect(&big, pt))
+                return HIT_SB;
+        }
+    }
+    if (pt.y < GRID_TOP)
+        return HIT_NONE;
+    for (k = 0; k < g_catCnt[PAGE_IF]; k++) {
+        int i = g_catMods[PAGE_IF][k];
+        float e = g_extA[i].cur;
+        int dy = cardDy(i), s;
+        RECT cr = rOff(g_geo[i].card, dy);
+
+        if (!PtInRect(&cr, pt))
+            continue;
+        if (e > 0.55f) {                      /* extras: only when open */
+            for (s = 0; s < g_mods[i].nPresets; s++) {
+                RECT q = rOff(g_geo[i].pill[s], dy);
+
+                if (PtInRect(&q, pt)) {
+                    *modOut = i;
+                    *subOut = s;
+                    return HIT_PILL;
+                }
+            }
+            for (s = 0; s < g_mods[i].nSliders; s++) {
+                RECT q = rOff(g_geo[i].srow[s], dy);
+
+                if (PtInRect(&q, pt)) {
+                    *modOut = i;
+                    *subOut = s;
+                    return HIT_SLIDER;
+                }
+            }
+            if (g_mods[i].hasFileBtn)
+                for (s = 0; s < MAX_FILEBTNS; s++)
+                    if (!IsRectEmpty(&g_geo[i].fbtn[s])) {
+                        RECT q = rOff(g_geo[i].fbtn[s], dy);
+
+                        if (PtInRect(&q, pt)) {
+                            *modOut = i;
+                            *subOut = s;
+                            return HIT_FBTN;
+                        }
+                    }
+        }
+        {   RECT q = rOff(g_geo[i].sw, dy);
+
+            if (PtInRect(&q, pt)) {
+                *modOut = i;
+                *subOut = -1;
+                return HIT_SWITCH;
+            }
+        }
+        *modOut = i;
+        *subOut = -1;
+        return HIT_CARD;                       /* the card is a big target */
+    }
+    return HIT_NONE;
+}
+
+/* drive the hover floats of the cards and of the control under the pointer */
+static void areaHover(HWND h, POINT pt, BOOL inside)
+{
+    int mod = -1, sub = -1, k;
+    int hit = inside ? areaHit(h, pt, &mod, &sub) : HIT_NONE;
+    ExCtrl *want = NULL;
+
+    if (hit == HIT_PILL)
+        want = CTL_PRESET(mod, sub);
+    else if (hit == HIT_SLIDER)
+        want = CTL_SLIDER(mod, sub);
+    else if (hit == HIT_FBTN)
+        want = CTL_FILEBTN(mod, sub);
+    for (k = 0; k < g_catCnt[PAGE_IF]; k++) {
+        int i = g_catMods[PAGE_IF][k];
+        float w2 = (inside && i == mod) ? 1.0f : 0.0f;
+
+        if (g_hovA[i].cur != w2)
+            animTo(&g_hovA[i], w2, 180, EASE_OUT);
+    }
+    for (k = 0; k < (int) (sizeof g_ctrls / sizeof g_ctrls[0]); k++) {
+        ExCtrl *c = &g_ctrls[k];
+        float w2 = (c == want) ? 1.0f : 0.0f;
+
+        if (c->kind == CKIND_SWITCH || c->kind == CKIND_BUTTON
+            || c->kind == CKIND_DANGER)
+            continue;
+        if (c->ha.cur != w2)
+            animTo(&c->ha, w2, 140, EASE_OUT);
+    }
+    g_hit = hit;
+    g_hitMod = mod;
+    g_hitSub = sub;
+    if (inside && pt.y >= GRID_TOP)
+        animTo(&g_sbA, 1.0f, 160, EASE_OUT);
+    else if (!g_sbDrag)
+        animTo(&g_sbA, 0.0f, 500, EASE_OUT);
+}
+
+static void areaActivate(HWND h, int what, int mod, int sub)
+{
+    WORD id;
+
+    if (mod < 0)
+        return;
+    switch (what) {
+    case HIT_SWITCH:
+    case HIT_CARD:
+        id = (WORD) (IDC_MODBASE + mod);
+        break;
+    case HIT_PILL:
+        id = (WORD) (IDC_PRBASE + mod * MAX_PRESETS + sub);
+        break;
+    case HIT_FBTN:
+        id = (WORD) (IDC_WPBASE + mod * MAX_FILEBTNS + sub);
+        break;
+    default:
+        return;
+    }
+    if (!g_uiOn) {
+        status(L"Wait for the current operation to finish.");
+        return;
+    }
+    if (what == HIT_FBTN && sub == 1 && !g_fileHas)
+        return;
+    PostMessageW(g_mainHwnd, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED),
+                 (LPARAM) h);
+}
+
+static LRESULT CALLBACK areaProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;                       /* WM_PAINT paints everything */
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        RECT rc, tb;
+
+        GetClientRect(h, &rc);
+        pagePaint(h, dc, &rc);
+        sbThumbRect(h, &tb);
+        if (!IsRectEmpty(&tb) && g_sbA.cur > 0.02f) {
+            gpBegin(dc);
+            gpRR(&tb, (Gdiplus::REAL) U(2),
+                 (g_hit == HIT_SB || g_sbDrag) ? C_ACCENT : RGB(100, 100, 100),
+                 (int) (210 * g_sbA.cur), 0, 0, 0);
+            gpEnd();
+        }
+        EndPaint(h, &ps);
+        return 0;
+    }
+    case WM_SIZE:
+        g_pageH = HIWORD(lp);
+        areaSyncScrollInfo(h);
+        areaLayoutRows(h, (int) LOWORD(lp));
+        return 0;
+    case WM_MOUSEMOVE: {
+        POINT pt;
+        TRACKMOUSEEVENT tme = { sizeof tme, TME_LEAVE, h, 0 };
+
+        pt.x = (short) LOWORD(lp);
+        pt.y = (short) HIWORD(lp);
+        if (g_sbDrag) {
+            RECT rc, tb;
+            int view, th, y = pt.y - g_sbGrab.y;
+
+            GetClientRect(h, &rc);
+            sbThumbRect(h, &tb);
+            view = rc.bottom - GRID_TOP;
+            th = tb.bottom - tb.top;
+            if (y < 0)
+                y = 0;
+            if (y > view - th)
+                y = view - th;
+            g_scrollF = g_scrollTgt =
+                (float) (view - th > 0
+                         ? y / (float) (view - th) * g_scrollMax : 0.0f);
+            g_scroll = (int) (g_scrollF + 0.5f);
+            animWake();
+            InvalidateRect(h, NULL, TRUE);
+            return 0;
+        }
+        if (g_press == HIT_SLIDER && g_pressMod >= 0) {
+            ExCtrl *c = CTL_SLIDER(g_pressMod, g_pressSub);
+            RECT row = rOff(g_geo[g_pressMod].srow[g_pressSub],
+                            cardDy(g_pressMod));
+
+            sliderSetFromX(&row, c, pt.x);
+            InvalidateRect(h, NULL, TRUE);
+            return 0;
+        }
+        areaHover(h, pt, TRUE);
+        TrackMouseEvent(&tme);
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+    }
+    case WM_MOUSELEAVE: {
+        POINT z;
+
+        z.x = 0;
+        z.y = 0;
+        areaHover(h, z, FALSE);
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+    }
+    case WM_SETCURSOR: {
+        POINT pt;
+        int mod, sub;
+
+        GetCursorPos(&pt);
+        ScreenToClient(h, &pt);
+        g_hit = areaHit(h, pt, &mod, &sub);
+        if (g_hit != HIT_NONE) {
+            SetCursor(LoadCursor(NULL, IDC_HAND));
+            return TRUE;
+        }
+        SetCursor(LoadCursor(NULL, IDC_ARROW));
+        return TRUE;
+    }
+    case WM_LBUTTONDOWN: {
+        POINT pt;
+        int mod, sub, hit;
+
+        pt.x = (short) LOWORD(lp);
+        pt.y = (short) HIWORD(lp);
+        hit = areaHit(h, pt, &mod, &sub);
+        SetFocus(h);
+        SetCapture(h);
+        if (hit == HIT_SB) {
+            RECT tb;
+
+            sbThumbRect(h, &tb);
+            g_sbDrag = TRUE;
+            g_sbGrab = pt;
+            g_sbGrab.y -= tb.top;
+            animTo(&g_sbA, 1.0f, 100, EASE_OUT);
+            return 0;
+        }
+        g_press = hit;
+        g_pressMod = mod;
+        g_pressSub = sub;
+        if (hit == HIT_SLIDER && mod >= 0) {
+            ExCtrl *c = CTL_SLIDER(mod, sub);
+            RECT row = rOff(g_geo[mod].srow[sub], cardDy(mod));
+
+            if (!g_uiOn) {
+                g_press = HIT_NONE;
+                return 0;
+            }
+            animTo(&c->pa, 1.0f, 90, EASE_OUT);
+            sliderSetFromX(&row, c, pt.x);
+            InvalidateRect(h, NULL, TRUE);
+            return 0;
+        }
+        if (hit == HIT_PILL || hit == HIT_FBTN) {
+            ExCtrl *c = hit == HIT_PILL ? CTL_PRESET(mod, sub)
+                                        : CTL_FILEBTN(mod, sub);
+            animTo(&c->pa, 1.0f, 90, EASE_OUT);
+            InvalidateRect(h, NULL, FALSE);
+        }
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        POINT pt;
+        int mod, sub, hit;
+        int press, pmod, psub;
+
+        pt.x = (short) LOWORD(lp);
+        pt.y = (short) HIWORD(lp);
+        hit = areaHit(h, pt, &mod, &sub);
+        /* ReleaseCapture() delivers WM_CAPTURECHANGED to us, and that
+         * handler drops the press state - snapshot it first, otherwise
+         * the click that began in WM_LBUTTONDOWN never activates */
+        press = g_press;
+        pmod  = g_pressMod;
+        psub  = g_pressSub;
+        ReleaseCapture();
+        if (g_sbDrag) {
+            g_sbDrag = FALSE;
+            animTo(&g_sbA, 0.0f, 700, EASE_OUT);
+            return 0;
+        }
+        if (press == HIT_SLIDER && pmod >= 0) {
+            ExCtrl *c = CTL_SLIDER(pmod, psub);
+
+            animTo(&c->pa, 0.0f, 160, EASE_OUT);
+            if (g_uiOn)
+                applySliderSetting(pmod, psub);
+            g_press = HIT_NONE;
+            InvalidateRect(h, NULL, TRUE);
+            return 0;
+        }
+        if (press == HIT_PILL || press == HIT_FBTN) {
+            ExCtrl *c = press == HIT_PILL ? CTL_PRESET(pmod, psub)
+                                          : CTL_FILEBTN(pmod, psub);
+            animTo(&c->pa, 0.0f, 150, EASE_OUT);
+        }
+        if ((press == HIT_CARD || press == HIT_SWITCH)
+            && (hit == HIT_CARD || hit == HIT_SWITCH) && mod == pmod)
+            areaActivate(h, HIT_CARD, pmod, -1);
+        else if (hit != HIT_NONE && hit == press && mod == pmod
+                 && sub == psub)
+            areaActivate(h, hit, mod, sub);
+        g_press = HIT_NONE;
+        g_pressMod = g_pressSub = -1;
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+    }
+    case WM_CAPTURECHANGED:
+        g_sbDrag = FALSE;
+        if (g_press == HIT_PILL || g_press == HIT_FBTN) {
+            ExCtrl *c = g_press == HIT_PILL
+                        ? CTL_PRESET(g_pressMod, g_pressSub)
+                        : CTL_FILEBTN(g_pressMod, g_pressSub);
+            animTo(&c->pa, 0.0f, 150, EASE_OUT);
+        }
+        g_press = HIT_NONE;
+        return 0;
+    case WM_MOUSEWHEEL:
+        areaScrollTo(h, (int) g_scrollTgt
+                     - GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA * U(120));
+        return 0;
+    case WM_KEYDOWN: {
+        RECT rc;
+        int v = (int) g_scrollTgt;
+
+        GetClientRect(h, &rc);
+        switch (wp) {
+        case VK_UP:    v -= U(60); break;
+        case VK_DOWN:  v += U(60); break;
+        case VK_PRIOR: v -= rc.bottom - GRID_TOP; break;
+        case VK_NEXT:  v += rc.bottom - GRID_TOP; break;
+        case VK_HOME:  v = 0; break;
+        case VK_END:   v = g_scrollMax; break;
+        default: return DefWindowProcW(h, msg, wp, lp);
+        }
+        areaScrollTo(h, v);
+        return 0;
+    }
+    }
+    return DefWindowProcW(h, msg, wp, lp);
+}
+
+/* ------------------------------------------------------------------ */
+/* Scanner page: the same frame, an empty state in the middle          */
+/* ------------------------------------------------------------------ */
+
+static void emptyRender(HDC out, RECT *rc)
+{
+    static const wchar_t *const CAP =
+        L"This section is reserved for scanning-related modules \x2014 they "
+        L"will appear here as cards, exactly like on the Interface page.";
+    RECT r, dr;
+    int cx, mid, i;
+
+    g_pageH = rc->bottom;
+    g_fade = g_pgAlpha.cur;
+    washBlit(out, rc, SB_W, PAGE_TOP);
+    gpBegin(out);
+    paintKpis(out, rc->right, PAGE_SC);
+    SetBkMode(out, TRANSPARENT);
+    paintSecLabel(out, rc->right, L"SCANNER MODULES");
+
+    SetRect(&r, PAGE_PAD, GRID_TOP, rc->right - PAGE_PAD, GRID_TOP + U(360));
+    if (r.bottom > rc->bottom - U(10))
+        r.bottom = rc->bottom - U(10);
+    if (r.bottom > r.top + U(120))
+        gpDashedRR(&r, U(16), RGB(58, 58, 58), 255);
+    gpEnd();
+    if (r.bottom > r.top + U(120)) {
+        int ty;
+
+        cx  = (r.left + r.right) / 2;
+        mid = (r.top + r.bottom) / 2;
+        ty  = mid - U(56);
+        SetBkMode(out, TRANSPARENT);
+        SelectObject(out, g_fontB);
+        SetTextColor(out, FK(C_TEXT));
+        SetRect(&dr, r.left, ty, r.right, ty + U(22));
+        DrawTextW(out, L"No scanner modules yet", -1, &dr,
+                  DT_CENTER | DT_SINGLELINE);
+        SelectObject(out, g_fontS);
+        SetTextColor(out, FK(C_TEXT2));
+        SetRect(&dr, cx - U(230), ty + U(28), cx + U(230), ty + U(84));
+        DrawTextW(out, CAP, -1, &dr, DT_CENTER | DT_WORDBREAK);
+        gpBegin(out);                   /* the three breathing dots */
+        for (i = 0; i < 3; i++) {
+            ULONGLONG t0 = (GetTickCount64() / 400 + (ULONGLONG) i) % 4;
+            float d = (float) t0 / 4.0f;
+            float a = d < 0.5f ? 1.0f - d * 2.0f : (d - 0.5f) * 2.0f;
+            RECT q = { cx - U(12) + i * U(12), ty + U(96),
+                       cx - U(6) + i * U(12), ty + U(102) };
+
+            gpDot(&q, mix(RGB(66, 66, 66), C_ACCENT, a), 255);
+        }
+        gpEnd();
+    }
+    g_fade = 1.0f;
+}
+
+static LRESULT CALLBACK emptyProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        RECT rc;
+        int w, hh;
+        float a = g_pgAlpha.cur, sl = g_pgSlide.cur;
+        HDC mem;
+        HBITMAP bmp, obmp;
+
+        GetClientRect(h, &rc);
+        w = rc.right;
+        hh = rc.bottom;
+        mem = CreateCompatibleDC(dc);
+        bmp = CreateCompatibleBitmap(dc, w, hh);
+        obmp = (HBITMAP) SelectObject(mem, bmp);
+        emptyRender(mem, &rc);
+        if (a < 0.995f || sl > 0.005f) {
+            BLENDFUNCTION bf;
+
+            washBlit(dc, &rc, SB_W, PAGE_TOP);
+            memset(&bf, 0, sizeof bf);
+            bf.BlendOp = AC_SRC_OVER;
+            bf.SourceConstantAlpha = (BYTE) (255 * (a < 0 ? 0 : (a > 1 ? 1 : a)));
+            AlphaBlend(dc, 0, (int) (U(12) * sl), w, hh, mem, 0, 0, w, hh, bf);
+        } else {
+            BitBlt(dc, 0, 0, w, hh, mem, 0, 0, SRCCOPY);
+        }
+        SelectObject(mem, obmp);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    case WM_SIZE:
+        InvalidateRect(h, NULL, TRUE);
+        return 0;
+    }
+    return DefWindowProcW(h, msg, wp, lp);
+}
+
+/* ------------------------------------------------------------------ */
+/* sidebar: gradient logo + animated section rows                       */
+/* ------------------------------------------------------------------ */
+
+#define IDC_NAVBASE 900
+
+#define NAV_TOP   U(78)
+#define NAV_ROW_H U(38)
+#define NAV_ROW_G U(4)
+
+static void navRowRect(int idx, int w, RECT *r)
+{
+    SetRect(r, U(12), NAV_TOP + idx * (NAV_ROW_H + NAV_ROW_G),
+            w - U(12), NAV_TOP + idx * (NAV_ROW_H + NAV_ROW_G) + NAV_ROW_H);
+}
+/* installed / active counters of one section category */
+static int navCounts(int cat, int *on)
+{
+    int tot = 0, i;
+
+    *on = 0;
+    for (i = 0; i < g_modCount; i++)
+        if (g_mods[i].cat == cat) {
+            tot++;
+            if (g_modOn[i])
+                (*on)++;
+        }
+    return tot;
+}
+static void navPaint(HWND h, HDC dc, RECT *rc)
+{
+    static const wchar_t *const navName[3] =
+        { L"Interface", L"Scanner", L"Settings" };
+    RECT r;
+    int i;
+    ULONGLONG tick = GetTickCount64();
+
+    (void) h;
+    {   HBRUSH b = CreateSolidBrush(C_SIDE);
+
+        FillRect(dc, rc, b);
+        DeleteObject(b);
+    }
+    {   RECT ln = { rc->right - 1, 0, rc->right, rc->bottom };
+        HBRUSH b = CreateSolidBrush(C_SIDELN);
+
+        FillRect(dc, &ln, b);
+        DeleteObject(b);
+    }
+    SetBkMode(dc, TRANSPARENT);
+
+    /* wordmark: typographic only, no logo tile or glyph */
+    SelectObject(dc, g_fontB);
+    SetTextColor(dc, FK(C_TEXT));
+    SetRect(&r, U(22), U(19), rc->right - U(8), U(41));
+    {   int w1;
+
+        DrawTextW(dc, L"EXStar ", -1, &r, DT_LEFT | DT_SINGLELINE);
+        w1 = textMeasW(dc, L"EXStar ");
+        SetTextColor(dc, FK(C_ACCENT));
+        OffsetRect(&r, w1, 0);
+        DrawTextW(dc, L"Hub", -1, &r, DT_LEFT | DT_SINGLELINE);
+    }
+    SelectObject(dc, g_fontM);
+    SetTextColor(dc, FK(RGB(121, 121, 121)));
+    SetRect(&r, U(22), U(41), rc->right - U(8), U(56));
+    drawSpacedW(dc, L"MOD MANAGER", &r, U(1), 0, 1);
+
+    /* the active-section pill glides (cubic-bezier .34 1.4 .5 1) and
+     * pops: it is thin at the start of the glide, full height at rest */
+    {   float s = g_navSelA.cur;
+        float pop = 1.0f - 0.45f * g_navPop.cur;
+        int   hh = (int) (U(20) * pop);
+        int   y0 = NAV_TOP + (int) (s * (NAV_ROW_H + NAV_ROW_G))
+                   + (NAV_ROW_H - hh) / 2;
+
+        SetRect(&r, 0, y0, U(3), y0 + hh);
+        gpBegin(dc);
+        gpGradRR(&r, (Gdiplus::REAL) U(2), C_GRAD1, C_GRAD2, C_GRAD3,
+                 AK(255), 0, 0, 0);
+        gpEnd();
+    }
+
+    for (i = 0; i < 3; i++) {
+        RECT tr;
+        float selT, hv;
+        COLORREF bgc, tx;
+        int on, tot;
+        wchar_t cnt[16];
+
+        navRowRect(i, rc->right, &r);
+        selT = g_navSelA.cur - (float) i;
+        if (selT < 0.0f)
+            selT = -selT;
+        selT = 1.0f - selT;
+        if (selT < 0.0f)
+            selT = 0.0f;
+        if (selT > 1.0f)
+            selT = 1.0f;
+        hv = g_navHov[i].cur;
+        bgc = mix(RGB(23, 23, 23), RGB(35, 35, 35), selT);
+        bgc = mix(bgc, RGB(31, 31, 31), hv * 0.85f);
+        tx  = mix(C_TEXT3, C_TEXT, selT > hv ? selT : hv);
+        tx  = mix(tx, C_ACCENT, g_navPop.cur * selT * 0.4f);
+
+        gpBegin(dc);
+        gpRR(&r, U(9), bgc, AK(255), 0, 0, 0);
+        gpEnd();
+
+        SelectObject(dc, selT > 0.5f ? g_fontNB : g_fontN);
+        SetTextColor(dc, FK(tx));
+        SetRect(&tr, r.left + U(16), r.top, r.right - U(54), r.bottom);
+        DrawTextW(dc, navName[i], -1, &tr,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        tot = navCounts(i, &on);
+        if (i < 2 && tot > 0) {
+            swprintf(cnt, 16, L"%d/%d", on, tot);
+            SetRect(&tr, r.right - U(13) - U(46),
+                    (r.top + r.bottom) / 2 - U(9), r.right - U(13),
+                    (r.top + r.bottom) / 2 + U(9));
+            gpBegin(dc);
+            gpRR(&tr, U(9), RGB(44, 44, 44), AK(255), 0, 0, 0);
+            gpEnd();
+            SelectObject(dc, g_fontM);
+            SetTextColor(dc, FK(selT > 0.5f ? mix(RGB(178, 178, 178),
+                                                  C_ACCENT, selT)
+                                            : RGB(150, 150, 150)));
+            DrawTextW(dc, cnt, -1, &tr,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+    }
+
+    /* footer: hairline, breathing LED, version */
+    {   RECT ln = { U(12), rc->bottom - U(52), rc->right - U(12),
+                    rc->bottom - U(51) };
+        HBRUSH b = CreateSolidBrush(RGB(34, 34, 34));
+
+        FillRect(dc, &ln, b);
+        DeleteObject(b);
+    }
+    {   ULONGLONG t0 = tick % 3400;
+        float blink = (t0 > 2600 && t0 < 3000) ? 0.25f : 1.0f;
+        RECT d = { U(22), rc->bottom - U(36), U(22) + U(7),
+                   rc->bottom - U(29) };
+
+        gpBegin(dc);
+        gpHalo(&d, U(4), C_OK, (Gdiplus::REAL) U(7), AK((int) (150 * blink)));
+        gpDot(&d, C_OK, AK((int) (255 * blink)));
+        gpEnd();
+    }
+    SelectObject(dc, g_fontM);
+    SetTextColor(dc, FK(RGB(110, 110, 110)));
+    SetRect(&r, U(36), rc->bottom - U(40), rc->right - U(8),
+            rc->bottom - U(24));
+    DrawTextW(dc, L"manager v" MANAGER_VERSION, -1, &r,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    g_fade = 1.0f;
+}
+static int navHit(HWND h, LPARAM lp)
+{
+    POINT pt;
+    RECT rc, r;
+    int i;
+
+    pt.x = (short) LOWORD(lp);
+    pt.y = (short) HIWORD(lp);
+    GetClientRect(h, &rc);
+    for (i = 0; i < 3; i++) {
+        navRowRect(i, rc.right, &r);
+        if (PtInRect(&r, pt))
+            return i;
+    }
+    return -1;
+}
+static LRESULT CALLBACK navProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(h, &ps);
@@ -1757,17 +3741,7 @@ static LRESULT CALLBACK ctrlProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         mem = CreateCompatibleDC(dc);
         bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
         obmp = (HBITMAP) SelectObject(mem, bmp);
-        if (c) {
-            BOOL en = IsWindowEnabled(h);
-            if (c->kind == CKIND_SWITCH)
-                paintSwitch(mem, &rc, c, en);
-            else if (c->kind == CKIND_SLIDER)
-                paintSlider(mem, &rc, c, en);
-            else if (c->kind == CKIND_PRESET)
-                paintPreset(mem, &rc, c, en);
-            else
-                paintButton(mem, &rc, c, en, h);
-        }
+        navPaint(h, mem, &rc);
         BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
         SelectObject(mem, obmp);
         DeleteObject(bmp);
@@ -1775,263 +3749,532 @@ static LRESULT CALLBACK ctrlProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         EndPaint(h, &ps);
         return 0;
     }
-    case WM_ERASEBKGND:
-        return 1;                       /* WM_PAINT paints everything */
-    case WM_SETCURSOR:
-        SetCursor(LoadCursor(NULL, IDC_HAND));
-        return TRUE;
-    case WM_MOUSEWHEEL:
-        if (GetParent(h) == g_modArea)
-            return SendMessageW(g_modArea, msg, wp, lp);
-        return DefWindowProcW(h, msg, wp, lp);
-    case WM_MOUSEMOVE:
-        if (c && c->kind == CKIND_SLIDER && GetCapture() == h) {
-            sliderSetFromX(h, c, (short) LOWORD(lp));
-            return 0;
-        }
-        if (c && !c->hover) {
-            TRACKMOUSEEVENT tme = { sizeof tme, TME_LEAVE, h, 0 };
+    case WM_SETCURSOR: {
+        POINT pt;
 
-            c->hover = TRUE;
-            TrackMouseEvent(&tme);
-            InvalidateRect(h, NULL, FALSE);
+        GetCursorPos(&pt);
+        ScreenToClient(h, &pt);
+        if (navHit(h, MAKELPARAM(pt.x, pt.y)) >= 0) {
+            SetCursor(LoadCursor(NULL, IDC_HAND));
+            return TRUE;
         }
         break;
-    case WM_MOUSELEAVE:
-        if (c && GetCapture() == h)
-            return 0;                       /* keep hover while dragging */
-        if (c && c->hover) {
-            c->hover = FALSE;
-            InvalidateRect(h, NULL, FALSE);
-        }
-        break;
-    case WM_LBUTTONDOWN:
-        if (c) {
-            SetCapture(h);
-            c->pressed = TRUE;
-            if (c->kind == CKIND_SLIDER)
-                sliderSetFromX(h, c, (short) LOWORD(lp));
-            else
-                InvalidateRect(h, NULL, FALSE);
-        }
-        return 0;
-    case WM_LBUTTONUP:
-        if (c) {
-            BOOL inside;
-            POINT pt = { (short) LOWORD(lp), (short) HIWORD(lp) };
-            RECT rc;
+    }
+    case WM_MOUSEMOVE: {
+        int hit = navHit(h, lp), i;
+        TRACKMOUSEEVENT tme = { sizeof tme, TME_LEAVE, h, 0 };
+        BOOL dirty = FALSE;
 
-            ReleaseCapture();
-            c->pressed = FALSE;
-            GetClientRect(h, &rc);
-            inside = PtInRect(&rc, pt) != 0;
-            if (c->kind == CKIND_SLIDER)
-                inside = TRUE;              /* a drag release commits too */
-            InvalidateRect(h, NULL, FALSE);
-            if (inside)
-                SendMessageW(GetParent(h), WM_COMMAND,
-                             MAKEWPARAM((WORD) GetDlgCtrlID(h), BN_CLICKED),
-                             (LPARAM) h);
+        for (i = 0; i < 3; i++) {
+            float want = i == hit ? 1.0f : 0.0f;
+
+            if (g_navHov[i].cur != want) {
+                animTo(&g_navHov[i], want, 140, EASE_OUT);
+                dirty = TRUE;
+            }
         }
+        if (dirty)
+            InvalidateRect(h, NULL, FALSE);
+        TrackMouseEvent(&tme);
         return 0;
-    case WM_KEYDOWN:
-        if (wp == VK_SPACE && c) {
-            c->pressed = TRUE;
-            InvalidateRect(h, NULL, FALSE);
-        }
-        break;
-    case WM_KEYUP:
-        if (wp == VK_SPACE && c) {
-            c->pressed = FALSE;
-            InvalidateRect(h, NULL, FALSE);
-            SendMessageW(GetParent(h), WM_COMMAND,
-                         MAKEWPARAM((WORD) GetDlgCtrlID(h), BN_CLICKED),
-                         (LPARAM) h);
-        }
-        break;
-    case WM_ENABLE:
-        InvalidateRect(h, NULL, FALSE);
-        break;
+    }
+    case WM_MOUSELEAVE: {
+        int i;
+
+        for (i = 0; i < 3; i++)
+            if (g_navHov[i].cur > 0.0f)
+                animTo(&g_navHov[i], 0.0f, 180, EASE_OUT);
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        int idx = navHit(h, lp);
+
+        if (idx >= 0 && g_mainHwnd)
+            PostMessageW(g_mainHwnd, WM_COMMAND,
+                         MAKEWPARAM(IDC_NAVBASE + idx, BN_CLICKED), 0);
+        return 0;
+    }
+    case WM_SIZE:
+        InvalidateRect(h, NULL, TRUE);
+        return 0;
     }
     return DefWindowProcW(h, msg, wp, lp);
 }
 
-/* clicking the text area of a module row flips its switch too */
-static LRESULT CALLBACK rowSub(HWND h, UINT msg, WPARAM wp, LPARAM lp,
-                               UINT_PTR sid, DWORD_PTR ref)
-{
-    HWND sw = (HWND) ref;
+/* ------------------------------------------------------------------ */
+/* Settings page: two cards left, info column right                     */
+/* ------------------------------------------------------------------ */
 
-    switch (msg) {
-    case WM_SETCURSOR:
-        SetCursor(LoadCursor(NULL, IDC_HAND));
-        return TRUE;
-    case WM_LBUTTONUP:
-        if (sw)
-            PostMessageW(GetParent(h), WM_COMMAND,
-                         MAKEWPARAM((WORD) GetDlgCtrlID(sw), BN_CLICKED),
-                         (LPARAM) sw);
-        return 0;
-    case WM_MOUSEWHEEL:
-        if (GetParent(h) == g_modArea)
-            return SendMessageW(g_modArea, msg, wp, lp);
-        break;
+/* the only real child window left on any page is the app folder EDIT,
+ * sunk into a well that we paint (focus glow the mockup does with
+ * box-shadow). Browse and Restore are owner-drawn like everything.    */
+static void settingsLayout(HWND h, int w, int hh)
+{
+    int colGap = U(12);
+    int leftW  = (w - 2 * PAGE_PAD - colGap) * 58 / 100;
+    int rx, rcw, y;
+    HDC dc;
+
+    (void) h;
+    if (!g_edApp)
+        return;
+    if (leftW < U(300))
+        leftW = U(300);
+    rx  = PAGE_PAD + leftW + colGap;
+    rcw = w - PAGE_PAD - rx;
+
+    /* left column: application folder card on top, manager behavior
+     * card below (the mockup's second left card) */
+    SetRect(&g_setC[0], PAGE_PAD, KPI_TOP, PAGE_PAD + leftW,
+            KPI_TOP + U(214));
+    if (g_setC[0].bottom > hh - U(16) - (U(160) + colGap))
+        g_setC[0].bottom = hh - U(16) - (U(160) + colGap);
+    if (g_setC[0].bottom < KPI_TOP + U(150))
+        g_setC[0].bottom = KPI_TOP + U(150);
+    SetRect(&g_setC[3], PAGE_PAD, g_setC[0].bottom + colGap,
+            PAGE_PAD + leftW, g_setC[0].bottom + colGap + U(160));
+    if (g_setC[3].bottom > hh - U(16))
+        g_setC[3].bottom = hh - U(16);
+
+    /* right: about + danger zone */
+    SetRect(&g_setC[1], rx, KPI_TOP, rx + rcw, KPI_TOP + U(124));
+    SetRect(&g_setC[2], rx, g_setC[1].bottom + colGap, rx + rcw,
+            g_setC[1].bottom + colGap + U(188));
+    if (g_setC[2].bottom > hh - U(16))
+        g_setC[2].bottom = hh - U(16);
+
+    /* field well + the EDIT inside + Browse to its right */
+    {   int bh;
+
+        dc = GetDC(g_pageArea[PAGE_ST]);
+        SelectObject(dc, g_font);
+        bh = textMeasW(dc, L"Browse") + U(15) + U(8) + U(30);
+        ReleaseDC(g_pageArea[PAGE_ST], dc);
+        if (bh < U(86))
+            bh = U(86);
+        SetRect(&g_setBtn[0], g_setC[0].right - U(20) - bh,
+                g_setC[0].bottom - U(66) - U(4), g_setC[0].right - U(20),
+                g_setC[0].bottom - U(66) + U(40) - U(4));
+        SetRect(&g_setField, g_setC[0].left + U(20),
+                g_setC[0].bottom - U(70), g_setBtn[0].left - U(10),
+                g_setC[0].bottom - U(26));
     }
-    return DefSubclassProc(h, msg, wp, lp);
+    MoveWindow(g_edApp, g_setField.left + U(12), g_setField.top + U(8),
+               g_setField.right - g_setField.left - U(24),
+               g_setField.bottom - g_setField.top - U(14), TRUE);
+
+    /* Restore: full width of the danger card footer */
+    SetRect(&g_setBtn[1], g_setC[2].left + U(20),
+            g_setC[2].bottom - U(20) - U(40), g_setC[2].right - U(20),
+            g_setC[2].bottom - U(20));
+
+    /* behavior card: journal switch on the label line, zoom slider low */
+    SetRect(&g_setSwR, g_setC[3].right - U(20) - CD_SW_W,
+            g_setC[3].top + U(62), g_setC[3].right - U(20),
+            g_setC[3].top + U(62) + CD_SW_H);
+    SetRect(&g_setZoomR, g_setC[3].left + U(20), g_setC[3].bottom - U(52),
+            g_setC[3].right - U(20), g_setC[3].bottom - U(16));
 }
 
-/* ------------------------------------------------------------------ */
-/* modules scroll area                                                  */
-/*                                                                      */
-/* the card rows are children of this one child window; it shows a      */
-/* vertical scrollbar only when the cards no longer fit the window.     */
-/* WM_COMMAND and WM_CTLCOLOR* notifications of the cards are forwarded */
-/* back to the main window, which owns their handlers.                  */
-/* ------------------------------------------------------------------ */
-
-static void areaLayoutRows(HWND a, int w)
+static void setCardHead(HDC dc, RECT *c, const wchar_t *title)
 {
+    RECT r;
+
+    SetBkMode(dc, TRANSPARENT);
+    SelectObject(dc, g_fontB);
+    SetTextColor(dc, FK(C_TEXT));
+    SetRect(&r, c->left + U(20), c->top + U(16),
+            c->right - U(16), c->top + U(38));
+    DrawTextW(dc, title, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+}
+
+static void settingsPaint(HWND h, HDC dc, RECT *rc)
+{
+    static const wchar_t *const CAP1 =
+        L"Where EXStar Hub is installed. Everything the manager places is "
+        L"recorded in exstar_mods.state, so Restore stock removes exactly "
+        L"its own files.";
+    static const wchar_t *const CAP2 =
+        L"Removes all files placed by the manager and returns EXStar Hub "
+        L"to its original state. A foreign winmm.dll is never touched.";
+    static const wchar_t *const CAP3 =
+        L"vendor binaries are never patched - proxy + in-memory hooks "
+        L"only. Unofficial research project, MIT licensed.";
+    wchar_t about[96], line[160];
     int i;
 
-    for (i = 0; i < g_modCount; i++) {
-        const ModDef *m = &g_mods[i];
-        int y  = g_rowYrel[i] - g_scroll;   /* current on-screen top      */
-        int wd = w - 2 * LMARG - U(90);
-        int s2;
+    (void) h;
+    g_fade = g_pgAlpha.cur;
+    washBlit(dc, rc, SB_W, PAGE_TOP);
+    SetBkMode(dc, TRANSPARENT);
 
-        SetRect(&g_cardR[i], LMARG, g_rowYrel[i], w - LMARG,
-                g_rowYrel[i] + cardHeightOf(m));
-        MoveWindow(g_name[i], LMARG + U(16), y + U(10), wd, U(17), TRUE);
-        MoveWindow(g_desc[i], LMARG + U(16), y + U(31), wd, U(15), TRUE);
-        MoveWindow(g_check[i], w - LMARG - U(16) - U(46), y + U(17),
-                   U(46), U(24), TRUE);
-        for (s2 = 0; s2 < m->nSliders; s2++)
-            if (g_slider[i][s2])
-                MoveWindow(g_slider[i][s2], LMARG + U(16),
-                           y + U(52) + s2 * U(30), U(470), U(24), TRUE);
-        for (s2 = 0; s2 < m->nPresets; s2++)
-            if (g_preset[i][s2])
-                MoveWindow(g_preset[i][s2],
-                           LMARG + U(16) + s2 * (U(110) + U(8)),
-                           y + U(50), U(110), U(46), TRUE);
-        if (g_pcap[i])
-            MoveWindow(g_pcap[i], LMARG + U(16), y + U(99),
-                       U(360), U(15), TRUE);
-        if (m->hasFileBtn)
-            for (s2 = 0; s2 < MAX_FILEBTNS; s2++)
-                if (g_fileBtn[i][s2])
-                    MoveWindow(g_fileBtn[i][s2],
-                               LMARG + U(16) + s2 * (U(170) + U(8)),
-                               y + U(50), U(170), U(26), TRUE);
+    /* the four cards: shadow, surface, (danger gets a red edge) */
+    gpBegin(dc);
+    for (i = 0; i < 4; i++) {
+        RECT sh = g_setC[i];
+
+        OffsetRect(&sh, 0, U(2));
+        gpShadow(&sh, U(12), (Gdiplus::REAL) U(10), 0, AK(90));
     }
-    InvalidateRect(a, NULL, TRUE);
+    gpEnd();
+    for (i = 0; i < 4; i++) {
+        gpBegin(dc);
+        gpRR(&g_setC[i], U(12), C_CARD, AK(255),
+             i == 2 ? mix(C_CARDLN, RGB(98, 52, 52), 0.75f) : C_CARDLN,
+             AK(255), 1.0f);
+        gpEnd();
+    }
+
+    /* --- application folder ---------------------------------------- */
+    setCardHead(dc, &g_setC[0], L"Application folder");
+    {   RECT r;
+
+        SelectObject(dc, g_fontS);
+        SetTextColor(dc, FK(C_TEXT2));
+        SetRect(&r, g_setC[0].left + U(20), g_setC[0].top + U(46),
+                g_setC[0].right - U(20), g_setC[0].bottom - U(84));
+        DrawTextW(dc, CAP1, -1, &r, DT_LEFT | DT_WORDBREAK);
+    }
+    /* field well: darker than the card, focus = accent border + halo */
+    gpBegin(dc);
+    {   float f = g_focusA.cur;
+
+        if (f > 0.02f)
+            gpHalo(&g_setField, U(9), C_ACCENT, (Gdiplus::REAL) U(9),
+                   AK((int) (60 * f)));
+        gpRR(&g_setField, U(9), C_FIELD, AK(255),
+             mix(RGB(52, 52, 52), C_ACCENT, f), AK((int) (255 - 150 * f)),
+             1.0f);
+        if (f > 0.02f)
+            gpRR(&g_setField, U(9), 0, 0, C_ACCENT, AK((int) (200 * f)),
+                 1.4f);
+    }
+    gpEnd();
+
+    /* detected-application infoline: LED + stamp */
+    {   COLORREF led = g_verTone == 0 ? C_OK : (g_verTone == 1 ? C_WARN
+                                                               : C_ERR);
+        RECT r, d;
+
+        if (g_prod[0])
+            swprintf(line, 160, g_verTone == 1
+                     ? L"detected %ls - stamp %ls, not on the tested list"
+                     : L"detected %ls - build stamp %ls", g_prod, g_stamp);
+        else
+            wcsncpy(line, L"no EXStar Hub installation detected here", 159);
+        line[159] = 0;
+        SetRect(&d, g_setC[0].left + U(21), g_setBtn[0].bottom + U(12),
+                g_setC[0].left + U(21) + U(6), g_setBtn[0].bottom + U(18));
+        gpBegin(dc);
+        gpHalo(&d, U(3), led, (Gdiplus::REAL) U(6), AK(170));
+        gpDot(&d, led, AK(255));
+        gpEnd();
+        SelectObject(dc, g_fontM);
+        SetTextColor(dc, FK(C_TEXT3));
+        SetRect(&r, d.right + U(8), g_setBtn[0].bottom + U(6),
+                g_setC[0].right - U(18), d.bottom + U(8));
+        DrawTextW(dc, line, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE
+                  | DT_END_ELLIPSIS);
+    }
+
+    /* --- manager behavior -------------------------------------------- */
+    setCardHead(dc, &g_setC[3], L"Manager behavior");
+    {   RECT r;
+        wchar_t jp[MAX_PATH + 24], cap2[MAX_PATH + 40];
+
+        SelectObject(dc, g_fontS);
+        SetTextColor(dc, FK(C_TEXT2));
+        SetRect(&r, g_setC[3].left + U(20), g_setC[3].top + U(46),
+                g_setC[3].right - U(20), g_setC[3].top + U(62));
+        DrawTextW(dc, L"Preferences of the mod host and of this window.",
+                  -1, &r, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+        SelectObject(dc, g_fontB);
+        SetTextColor(dc, FK(C_TEXT));
+        SetRect(&r, g_setC[3].left + U(20), g_setC[3].top + U(64),
+                g_setSwR.left - U(12), g_setSwR.bottom);
+        DrawTextW(dc, L"Root journal", -1, &r, DT_LEFT | DT_VCENTER
+                  | DT_SINGLELINE);
+        cfgPathW(jp, MAX_PATH, L"journal.log");
+        swprintf(cap2, MAX_PATH + 40, L"journal to %ls", jp);
+        SelectObject(dc, g_fontM);
+        SetTextColor(dc, FK(C_TEXT3));
+        SetRect(&r, g_setC[3].left + U(20), g_setC[3].top + U(88),
+                g_setC[3].right - U(20), g_setC[3].top + U(104));
+        DrawTextW(dc, cap2, -1, &r, DT_LEFT | DT_SINGLELINE
+                  | DT_END_ELLIPSIS);
+    }
+    gpBegin(dc);
+    paintSwitch(&g_setSwR, &g_journalCtl, g_uiOn);
+    paintSlider(dc, &g_setZoomR, &g_zoomCtl, g_uiOn);
+    gpEnd();
+
+    /* --- about ------------------------------------------------------- */
+    setCardHead(dc, &g_setC[1], L"About");
+    swprintf(about, 96, L"EXStar Mod Manager " MANAGER_VERSION L", pure Win32");
+    {   RECT r;
+
+        SelectObject(dc, g_font);
+        SetTextColor(dc, FK(C_TEXT));
+        SetRect(&r, g_setC[1].left + U(20), g_setC[1].top + U(46),
+                g_setC[1].right - U(18), g_setC[1].top + U(64));
+        DrawTextW(dc, about, -1, &r, DT_LEFT | DT_SINGLELINE);
+        SelectObject(dc, g_fontS);
+        SetTextColor(dc, FK(C_TEXT2));
+        SetRect(&r, g_setC[1].left + U(20), g_setC[1].top + U(68),
+                g_setC[1].right - U(18), g_setC[1].bottom - U(14));
+        DrawTextW(dc, CAP3, -1, &r, DT_LEFT | DT_WORDBREAK);
+    }
+
+    /* --- danger zone -------------------------------------------------- */
+    setCardHead(dc, &g_setC[2], L"Danger zone");
+    {   RECT r;
+
+        SelectObject(dc, g_fontS);
+        SetTextColor(dc, FK(C_TEXT2));
+        SetRect(&r, g_setC[2].left + U(20), g_setC[2].top + U(46),
+                g_setC[2].right - U(18), g_setBtn[1].top - U(12));
+        DrawTextW(dc, CAP2, -1, &r, DT_LEFT | DT_WORDBREAK);
+    }
+
+    /* buttons (hover/press floats ride on the shared ExCtrl entries) */
+    {   ExCtrl *bc = &g_ctrls[g_modCount], *rc2 = &g_ctrls[g_modCount + 1];
+
+        gpBegin(dc);
+        paintButton(dc, &g_setBtn[0], L"Browse",
+                    bc->ha.cur, bc->pa.cur, FALSE, g_uiOn, U(9));
+        paintButton(dc, &g_setBtn[1], L"Restore stock",
+                    rc2->ha.cur, rc2->pa.cur, TRUE, g_uiOn, U(9));
+        gpEnd();
+    }
+    g_fade = 1.0f;
 }
 
-/* scrollbar range/visibility vs. the current area height */
-static void areaUpdateScroll(HWND a)
+static int settingsHit(HWND h, POINT pt)
 {
-    RECT rc;
-    SCROLLINFO si;
-    BOOL need;
+    (void) h;
+    if (PtInRect(&g_setSwR, pt))
+        return 2;                                  /* journal switch     */
+    {   RECT z = g_setZoomR;
 
-    GetClientRect(a, &rc);
-    need = g_contentH > rc.bottom;
-    ShowScrollBar(a, SB_VERT, need);
-    g_scrollMax = need ? g_contentH - rc.bottom : 0;
-    if (g_scroll > g_scrollMax)
-        g_scroll = g_scrollMax;
-    if (g_scroll < 0)
-        g_scroll = 0;
-
-    memset(&si, 0, sizeof si);
-    si.cbSize = sizeof si;
-    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
-    si.nMin   = 0;
-    si.nMax   = g_contentH;   /* pixel range: pos maps 1:1                */
-    si.nPage  = rc.bottom;
-    si.nPos   = g_scroll;
-    SetScrollInfo(a, SB_VERT, &si, TRUE);
+        InflateRect(&z, 0, U(6));
+        if (PtInRect(&z, pt))
+            return 3;                              /* zoom slider      */
+    }
+    if (PtInRect(&g_setBtn[0], pt))
+        return 0;
+    if (PtInRect(&g_setBtn[1], pt))
+        return 1;
+    return -1;
 }
 
-static void areaScrollTo(HWND a, int v)
-{
-    RECT rc;
-    SCROLLINFO si;
-
-    if (v > g_scrollMax)
-        v = g_scrollMax;
-    if (v < 0)
-        v = 0;
-    if (v == g_scroll)
-        return;
-    g_scroll = v;
-    memset(&si, 0, sizeof si);
-    si.cbSize = sizeof si;
-    si.fMask  = SIF_POS;
-    si.nPos   = v;
-    SetScrollInfo(a, SB_VERT, &si, TRUE);
-    GetClientRect(a, &rc);
-    areaLayoutRows(a, rc.right);
-}
-
-static LRESULT CALLBACK areaProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+static LRESULT CALLBACK pageProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
-    case WM_ERASEBKGND: {
-        HDC dc = (HDC) wp;
-        RECT rc, cr;
-        int i;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        RECT rc;
+        HDC mem;
+        HBITMAP bmp, obmp;
+        float a = g_pgAlpha.cur, sl = g_pgSlide.cur;
 
         GetClientRect(h, &rc);
-        FillRect(dc, &rc, g_brBg);
-        for (i = 0; i < g_modCount; i++) {
-            cr = g_cardR[i];
-            OffsetRect(&cr, 0, -g_scroll);
-            if (cr.bottom > 0 && cr.top < rc.bottom)
-                rr(dc, &cr, U(10), g_brCard, C_CARDLN);
+        mem = CreateCompatibleDC(dc);
+        bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
+        obmp = (HBITMAP) SelectObject(mem, bmp);
+        settingsPaint(h, mem, &rc);
+        if (a < 0.995f || sl > 0.005f) {
+            BLENDFUNCTION bf;
+
+            washBlit(dc, &rc, SB_W, PAGE_TOP);
+            memset(&bf, 0, sizeof bf);
+            bf.BlendOp = AC_SRC_OVER;
+            bf.SourceConstantAlpha = (BYTE) (255 * (a < 0 ? 0
+                                                          : (a > 1 ? 1 : a)));
+            AlphaBlend(dc, 0, (int) (U(12) * sl), rc.right, rc.bottom,
+                       mem, 0, 0, rc.right, rc.bottom, bf);
+        } else {
+            BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
         }
-        return TRUE;
+        SelectObject(mem, obmp);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        EndPaint(h, &ps);
+        return 0;
     }
     case WM_SIZE: {
         RECT rc;
 
-        areaUpdateScroll(h);
         GetClientRect(h, &rc);
-        areaLayoutRows(h, rc.right);
+        settingsLayout(h, rc.right, rc.bottom);
+        InvalidateRect(h, NULL, TRUE);
         return 0;
     }
-    case WM_VSCROLL: {
-        RECT rc;
-        SCROLLINFO si;
-        int v = g_scroll;
+    case WM_MOUSEMOVE: {
+        POINT pt;
+        int hit, i;
+        BOOL dirty = FALSE;
+        TRACKMOUSEEVENT tme = { sizeof tme, TME_LEAVE, h, 0 };
 
-        GetClientRect(h, &rc);
-        switch (LOWORD(wp)) {
-        case SB_LINEUP:     v -= U(48); break;
-        case SB_LINEDOWN:   v += U(48); break;
-        case SB_PAGEUP:     v -= rc.bottom; break;
-        case SB_PAGEDOWN:   v += rc.bottom; break;
-        case SB_TOP:        v = 0; break;
-        case SB_BOTTOM:     v = g_scrollMax; break;
-        case SB_THUMBTRACK:
-        case SB_THUMBPOSITION:
-            memset(&si, 0, sizeof si);
-            si.cbSize = sizeof si;
-            si.fMask  = SIF_TRACKPOS;
-            if (GetScrollInfo(h, SB_VERT, &si))
-                v = si.nTrackPos;
-            break;
+        pt.x = (short) LOWORD(lp);
+        pt.y = (short) HIWORD(lp);
+        hit = settingsHit(h, pt);
+        if (g_zoomDrag) {
+            sliderSetFromX(&g_setZoomR, &g_zoomCtl, pt.x);
+            dirty = TRUE;
         }
-        areaScrollTo(h, v);
+        for (i = 0; i < 2; i++) {
+            ExCtrl *c = &g_ctrls[g_modCount + i];
+            float want = (hit == i) ? 1.0f : 0.0f;
+
+            if (c->ha.cur != want) {
+                animTo(&c->ha, want, 140, EASE_OUT);
+                dirty = TRUE;
+            }
+        }
+        {   float w2 = (hit == 2 && g_uiOn) ? 1.0f : 0.0f;
+            float w3 = (hit == 3 && g_uiOn) ? 1.0f : 0.0f;
+
+            if (g_journalCtl.ha.cur != w2) {
+                animTo(&g_journalCtl.ha, w2, 140, EASE_OUT);
+                dirty = TRUE;
+            }
+            if (g_zoomCtl.ha.cur != w3) {
+                animTo(&g_zoomCtl.ha, w3, 140, EASE_OUT);
+                dirty = TRUE;
+            }
+        }
+        if (dirty)
+            InvalidateRect(h, NULL, FALSE);
+        TrackMouseEvent(&tme);
         return 0;
     }
-    case WM_MOUSEWHEEL:
-        areaScrollTo(h, g_scroll
-                     - GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA * U(96));
+    case WM_MOUSELEAVE: {
+        int i;
+
+        for (i = 0; i < 2; i++) {
+            ExCtrl *c = &g_ctrls[g_modCount + i];
+
+            if (c->ha.cur > 0.0f)
+                animTo(&c->ha, 0.0f, 180, EASE_OUT);
+        }
+        if (g_journalCtl.ha.cur > 0.0f)
+            animTo(&g_journalCtl.ha, 0.0f, 180, EASE_OUT);
+        if (g_zoomCtl.ha.cur > 0.0f)
+            animTo(&g_zoomCtl.ha, 0.0f, 180, EASE_OUT);
         return 0;
-    case WM_COMMAND:
-    case WM_CTLCOLORSTATIC:
+    }
+    case WM_SETCURSOR: {
+        POINT pt;
+
+        GetCursorPos(&pt);
+        ScreenToClient(h, &pt);
+        if (g_uiOn && settingsHit(h, pt) >= 0) {
+            SetCursor(LoadCursor(NULL, IDC_HAND));
+            return TRUE;
+        }
+        break;
+    }
+    case WM_LBUTTONDOWN: {
+        POINT pt;
+        int hit;
+
+        pt.x = (short) LOWORD(lp);
+        pt.y = (short) HIWORD(lp);
+        hit = settingsHit(h, pt);
+        if (hit >= 0 && g_uiOn) {
+            SetCapture(h);
+            if (hit == 3) {
+                g_zoomDrag = TRUE;
+                sliderSetFromX(&g_setZoomR, &g_zoomCtl, pt.x);
+                animTo(&g_zoomCtl.pa, 1.0f, 90, EASE_OUT);
+            } else if (hit == 2) {
+                animTo(&g_journalCtl.pa, 1.0f, 90, EASE_OUT);
+            } else {
+                animTo(&g_ctrls[g_modCount + hit].pa, 1.0f, 90, EASE_OUT);
+            }
+            InvalidateRect(h, NULL, FALSE);
+        }
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        POINT pt;
+        int hit;
+
+        pt.x = (short) LOWORD(lp);
+        pt.y = (short) HIWORD(lp);
+        hit = settingsHit(h, pt);
+        if (g_zoomDrag) {                 /* release the zoom knob      */
+            float v = g_zoomCtl.fval;
+
+            g_zoomDrag = FALSE;
+            ReleaseCapture();
+            animTo(&g_zoomCtl.pa, 0.0f, 150, EASE_OUT);
+            if (v != g_us && v != g_zoomSaved) {
+                g_zoomSaved = v;
+                cfgSaveZoom(v);
+                status(L"UI zoom set to %.1fx - applies next start",
+                       (double) v);
+            }
+            InvalidateRect(h, NULL, FALSE);
+            return 0;
+        }
+        ReleaseCapture();
+        if (hit == 2) {                   /* journal switch flip        */
+            animTo(&g_journalCtl.pa, 0.0f, 150, EASE_OUT);
+            if (g_uiOn) {
+                g_journalOn = !g_journalOn;
+                cfgSaveJournal(g_journalOn);
+                animTo(&g_journalSwA, g_journalOn ? 1.0f : 0.0f, 220,
+                       EASE_OUT);
+                status(g_journalOn
+                       ? L"Root journal enabled - events are logged again"
+                       : L"Root journal disabled - logging stopped");
+            }
+            InvalidateRect(h, NULL, FALSE);
+            return 0;
+        }
+        if (hit >= 0 && hit <= 1) {
+            ExCtrl *c = &g_ctrls[g_modCount + hit];
+
+            animTo(&c->pa, 0.0f, 150, EASE_OUT);
+            if (g_uiOn)
+                PostMessageW(g_mainHwnd, WM_COMMAND,
+                             MAKEWPARAM(hit == 0 ? IDC_BROWSE : IDC_RESTORE,
+                                        BN_CLICKED), 0);
+        }
+        return 0;
+    }
     case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORSTATIC:
+        if ((HWND) lp == g_edApp) {
+            SetTextColor((HDC) wp, C_TEXT);
+            SetBkColor((HDC) wp, C_FIELD);
+            {   static HBRUSH b;
+
+                if (!b)
+                    b = CreateSolidBrush(C_FIELD);
+                return (LRESULT) b;
+            }
+        }
+        break;
+    case WM_COMMAND:
+        switch (HIWORD(wp)) {
+        case EN_SETFOCUS:
+            if (LOWORD(wp) == IDC_APPEDIT) {
+                animTo(&g_focusA, 1.0f, 140, EASE_OUT);
+                animWake();
+            }
+            return 0;
+        case EN_KILLFOCUS:
+            if (LOWORD(wp) == IDC_APPEDIT) {
+                animTo(&g_focusA, 0.0f, 220, EASE_OUT);
+                animWake();
+            }
+            return 0;
+        }
         if (g_mainHwnd)
             return SendMessageW(g_mainHwnd, msg, wp, lp);
         break;
@@ -2039,6 +4282,190 @@ static LRESULT CALLBACK areaProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcW(h, msg, wp, lp);
 }
 
+/* ------------------------------------------------------------------ */
+/* page switching + the animator tick                                   */
+/* ------------------------------------------------------------------ */
+
+static void startIntro(void)
+{
+    int k;
+
+    for (k = 0; k < g_catCnt[PAGE_IF]; k++) {
+        int i = g_catMods[PAGE_IF][k];
+
+        animDelay(&g_introA[i], 0.0f, 1.0f, 520, EASE_OUT, 120 + k * 50);
+    }
+}
+/* the page transition lives entirely in the painter: the finished frame
+ * is blitted with a fading alpha and a 12px rise (the .pagein keyframes
+ * of the mockup). Nothing is moved with MoveWindow, so no child surface
+ * can tear or ghost.                                                   */
+static void applyPageFx(void)
+{
+    HWND pg = g_pageArea[g_curPage];
+
+    if (!pg)
+        return;
+    if (g_curPage == PAGE_IF && g_catCnt[PAGE_IF] > 0) {
+        RECT rc;
+
+        GetClientRect(pg, &rc);
+        areaLayoutRows(pg, rc.right);     /* re-flow: cards rise in      */
+    } else {
+        InvalidateRect(pg, NULL, TRUE);
+    }
+}
+static void invalidatePages(void)
+{
+    int i;
+
+    for (i = 0; i < 3; i++)
+        if (g_pageArea[i] && IsWindowVisible(g_pageArea[i]))
+            InvalidateRect(g_pageArea[i], NULL, TRUE);
+    if (g_nav)
+        InvalidateRect(g_nav, NULL, FALSE);
+}
+static void goPage(int p)
+{
+    int i;
+
+    if (p < 0 || p > 2 || !g_pageArea[p] || p == g_curPage)
+        return;
+    for (i = 0; i < g_modCount; i++)          /* drop stale card hover */
+        if (g_hovA[i].cur > 0.0f)
+            animAt(&g_hovA[i], 0.0f);
+    for (i = 0; i < 3; i++)
+        animAt(&g_kpiHov[i], 0.0f);
+    ShowWindow(g_pageArea[g_curPage], SW_HIDE);
+    g_curPage = p;
+    ShowWindow(g_pageArea[p], SW_SHOWNOACTIVATE);
+    if (p == PAGE_ST) {
+        RECT rc;
+
+        GetClientRect(g_pageArea[p], &rc);
+        settingsLayout(g_pageArea[p], rc.right, rc.bottom);
+    }
+    animAt(&g_pgAlpha, 0.0f);
+    animTo(&g_pgAlpha, 1.0f, 260, EASE_OUT);
+    animAt(&g_pgSlide, 1.0f);
+    animTo(&g_pgSlide, 0.0f, 320, EASE_OUT);
+    animAt(&g_navSelA, (float) p);
+    animAt(&g_navPop, 1.0f);                  /* indicator pops on glide */
+    animTo(&g_navPop, 0.0f, 420, EASE_BACK);
+    if (p != PAGE_ST)
+        kpiSync(p == PAGE_SC ? PAGE_SC : PAGE_IF);
+    if (p == PAGE_IF)
+        startIntro();
+    invalidatePages();
+    animWake();
+}
+/* one 8ms animator frame: step every animation, repaint what moved,
+ * retire the timer once everything settled                             */
+static void animTickAll(HWND hw)
+{
+    ULONGLONG now = GetTickCount64();
+    BOOL move = FALSE;
+    BOOL area = FALSE, nav = FALSE, kpi = FALSE, feed = FALSE, setp = FALSE;
+    int gi, i;
+
+    for (gi = 0; gi < (int) (sizeof g_ctrls / sizeof g_ctrls[0]); gi++) {
+        ExCtrl *c = &g_ctrls[gi];
+        BOOL m1 = animStep(&c->ha, now);
+        BOOL m2 = animStep(&c->pa, now);
+
+        if (!m1 && !m2)
+            continue;
+        move = TRUE;
+        if (c->kind == CKIND_BUTTON || c->kind == CKIND_DANGER)
+            setp = TRUE;
+        else
+            area = TRUE;
+    }
+    {   BOOL m1 = animStep(&g_zoomCtl.ha, now);
+        BOOL m2 = animStep(&g_zoomCtl.pa, now);
+        BOOL m3 = animStep(&g_journalCtl.ha, now);
+        BOOL m4 = animStep(&g_journalCtl.pa, now);
+        BOOL m5 = animStep(&g_journalSwA, now);
+
+        if (m1 || m2 || m3 || m4 || m5) {
+            move = TRUE;
+            setp = TRUE;
+        }
+    }
+    for (i = 0; i < g_modCount; i++) {
+        BOOL m1 = animStep(&g_swA[i], now);
+        BOOL m2 = animStep(&g_pulA[i], now);
+        BOOL m3 = animStep(&g_hovA[i], now);
+        BOOL m4 = animStep(&g_introA[i], now);
+        BOOL m5 = animStep(&g_extA[i], now);
+
+        if (m1 || m2 || m3 || m4)
+            area = TRUE;
+        if (m5) {
+            RECT rc;
+
+            area = TRUE;
+            if (g_modArea && g_curPage == PAGE_IF) {
+                GetClientRect(g_modArea, &rc); /* the band opens: re-flow */
+                areaLayoutRows(g_modArea, rc.right);
+            }
+        }
+        if (m1 || m2 || m3 || m4 || m5)
+            move = TRUE;
+    }
+    for (i = 0; i < 3; i++) {
+        if (animStep(&g_navHov[i], now))
+            nav = TRUE;
+        if (animStep(&g_kpiHov[i], now))
+            kpi = TRUE;
+    }
+    if (animStep(&g_navSelA, now) || animStep(&g_navPop, now))
+        nav = TRUE;
+    if (animStep(&g_kpiBar, now) || animStep(&g_kpiCnt, now))
+        kpi = TRUE;
+    if (animStep(&g_sbA, now))
+        area = TRUE;
+    if (animStep(&g_focusA, now))
+        setp = TRUE;
+    if (animStep(&g_pgSlide, now) || animStep(&g_pgAlpha, now)) {
+        applyPageFx();
+        move = TRUE;
+    }
+    for (i = 0; i < g_feedN; i++)
+        if (animStep(&g_feed[i].a, now)) {
+            feed = TRUE;
+            move = TRUE;
+        }
+    {   float d = g_scrollTgt - g_scrollF;
+        int before = g_scroll;
+
+        if (d > 0.4f || d < -0.4f) {
+            g_scrollF += d * 0.22f;
+            if ((g_scrollTgt - g_scrollF) * d <= 0.0f)
+                g_scrollF = g_scrollTgt;
+        } else if (g_scrollF != (float) g_scrollTgt)
+            g_scrollF = (float) g_scrollTgt;
+        g_scroll = (int) (g_scrollF + 0.5f);
+        if (g_scroll != before)
+            area = TRUE;
+    }
+    if (area && g_modArea && g_curPage == PAGE_IF)
+        InvalidateRect(g_modArea, NULL, TRUE);
+    if (kpi && g_curPage != PAGE_ST && g_pageArea[g_curPage])
+        InvalidateRect(g_pageArea[g_curPage], NULL, TRUE);
+    if (setp && g_pageArea[PAGE_ST] && IsWindowVisible(g_pageArea[PAGE_ST]))
+        InvalidateRect(g_pageArea[PAGE_ST], NULL, TRUE);
+    if (nav && g_nav)
+        InvalidateRect(g_nav, NULL, FALSE);
+    if (feed && g_mainHwnd)
+        InvalidateRect(g_mainHwnd, &g_rFeed, FALSE);
+    if (area || nav || kpi || setp)
+        move = TRUE;
+    if (!move) {
+        KillTimer(hw, ANIM_TIMER);
+        g_animOn = FALSE;
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* worker jobs                                                          */
@@ -2048,28 +4475,16 @@ typedef struct { UINT mask; int action; } Job;   /* 0 install,1 remove,2 restore
 
 static void readAppEdit(void);
 
+/* a job is running: the whole interface goes passive. Nothing has to be
+ * enabled window by window anymore (there are no child controls inside a
+ * card), the painters simply read g_uiOn and grey themselves out.        */
 static void uiEnable(BOOL on)
 {
-    int i;
-
-    EnableWindow(g_btnRestore, on);
-    EnableWindow(g_btnBrowse, on);
+    g_uiOn = on;
     EnableWindow(g_edApp, on);
-    for (i = 0; i < g_modCount; i++) {
-        int s;
-        EnableWindow(g_check[i], on);
-        InvalidateRect(g_check[i], NULL, TRUE);
-        for (s = 0; s < MAX_SLIDERS; s++)
-            if (g_slider[i][s]) {
-                EnableWindow(g_slider[i][s], on);
-                InvalidateRect(g_slider[i][s], NULL, TRUE);
-            }
-        for (s = 0; s < MAX_PRESETS; s++)
-            if (g_preset[i][s]) {
-                EnableWindow(g_preset[i][s], on);
-                InvalidateRect(g_preset[i][s], NULL, TRUE);
-            }
-    }
+    invalidatePages();
+    if (g_mainHwnd)
+        InvalidateRect(g_mainHwnd, NULL, FALSE);   /* the busy chip    */
 }
 
 static DWORD WINAPI jobThread(LPVOID param)
@@ -2108,6 +4523,58 @@ static BOOL startJob(int action, UINT mask)
     return TRUE;
 }
 
+/* The redesign removed the child controls that used to live inside a
+ * card, but the painters and hit tests still read the per-control state
+ * (labels, ranges, hover/press anims). Seed that state once from the
+ * module table; refreshChecks() then fills the values from the ini.    */
+static void uiSeedControls(void)
+{
+    int i, s;
+
+    for (i = 0; i < g_modCount; i++) {
+        for (s = 0; s < g_mods[i].nSliders; s++) {
+            const SliderDef *d = &g_mods[i].sliders[s];
+            ExCtrl *c = CTL_SLIDER(i, s);
+
+            memset(c, 0, sizeof *c);
+            c->kind = CKIND_SLIDER;
+            c->idx  = i;
+            c->sdef = d;
+            c->fmin = d->minV;
+            c->fmax = d->maxV;
+            c->fval = d->defV;
+            animAt(&c->ha, 0.0f);
+            animAt(&c->pa, 0.0f);
+        }
+        for (s = 0; s < g_mods[i].nPresets; s++) {
+            ExCtrl *c = CTL_PRESET(i, s);
+
+            memset(c, 0, sizeof *c);
+            c->kind = CKIND_PRESET;
+            c->idx  = i;
+            c->pi   = s;
+            c->pdef = &g_mods[i].presets[s];
+            animAt(&c->ha, 0.0f);
+            animAt(&c->pa, 0.0f);
+        }
+        if (g_mods[i].hasFileBtn) {
+            for (s = 0; s < MAX_FILEBTNS; s++) {
+                ExCtrl *c = CTL_FILEBTN(i, s);
+
+                memset(c, 0, sizeof *c);
+                c->kind = CKIND_FILEBTN;
+                c->idx  = i;
+                animAt(&c->ha, 0.0f);
+                animAt(&c->pa, 0.0f);
+            }
+        }
+        g_presetSel[i] = -1;
+    }
+}
+
+/* re-read every switch / knob / pill selection from disk and let the
+ * whole UI follow: the cards re-flow (the extras band follows the ON
+ * state), the KPI counters glide, the chips refresh.        */
 static void refreshChecks(void)
 {
     int i;
@@ -2118,6 +4585,7 @@ static void refreshChecks(void)
     iniPathFor(iniPath, sizeof iniPath, "modules.ini");
     iniLoad(&ini, iniPath);
 
+    g_installed = 0;
     for (i = 0; i < g_modCount; i++) {
         char rel[MAX_PATH];
         char rel2[MAX_PATH], abs2[MAX_PATH];
@@ -2128,6 +4596,8 @@ static void refreshChecks(void)
         snprintf(rel, sizeof rel, "modules\\%s.dll", g_mods[i].id);
         iniPathFor(abs, sizeof abs, rel);
         installed = pathExistsA(abs);
+        if (installed)
+            g_installed++;
         s = iniSec(&ini, g_mods[i].id);
         if (s) {
             int j;
@@ -2137,36 +4607,32 @@ static void refreshChecks(void)
         }
         checked = installed && (!en || atoi(en) != 0);
         g_modOn[i] = (BOOL) checked;
-        InvalidateRect(g_check[i], NULL, TRUE);
-        for (sl = 0; sl < MAX_SLIDERS; sl++) { /* re-read the knobs from disk */
-            const SliderDef *d;
-            ExCtrl *c;
+        animAt(&g_swA[i], checked ? 1.0f : 0.0f);
+        animAt(&g_extA[i],
+               checked && (g_mods[i].nSliders || g_mods[i].nPresets
+                           || g_mods[i].hasFileBtn) ? 1.0f : 0.0f);
+        for (sl = 0; sl < g_mods[i].nSliders; sl++) { /* knobs from disk */
+            const SliderDef *d = &g_mods[i].sliders[sl];
+            ExCtrl *c = CTL_SLIDER(i, sl);
             float v;
 
-            if (!g_slider[i][sl])
-                continue;
-            d = &g_mods[i].sliders[sl];
-            c = CTL_SLIDER(i, sl);
             snprintf(rel2, sizeof rel2, "modules\\%s.ini", g_mods[i].id);
             iniPathFor(abs2, sizeof abs2, rel2);
             v = iniGetKeyF(abs2, d->key,
                            c->fval * (d->iniMul ? d->iniMul : 1.0f));
             if (d->iniMul)
-                v /= d->iniMul;              /* stored µm -> shown mm    */
+                v /= d->iniMul;              /* stored um -> shown mm     */
             c->fval = v < d->minV ? d->minV
                       : (v > d->maxV ? d->maxV : v);
-            InvalidateRect(g_slider[i][sl], NULL, TRUE);
         }
         if (g_mods[i].nPresets) {      /* re-read the pill selection */
             snprintf(rel2, sizeof rel2, "modules\\%s.ini", g_mods[i].id);
             iniPathFor(abs2, sizeof abs2, rel2);
             g_presetSel[i] = nearestPreset(i, abs2);
-            presetSelRefresh(i);
         }
     }
 
-    {
-        wchar_t prod[64], stamp[64], text[220];
+    {   wchar_t stamp[64], prod[64];
         BOOL okStamp = FALSE;
 
         appVersion(g_appDir, stamp, 64);    /* file stamp, e.g. 3.1.49.x  */
@@ -2174,43 +4640,35 @@ static void refreshChecks(void)
         if (stamp[0])
             okStamp = wcsncmp(stamp, KNOWN_GOOD_STAMP,
                               (size_t) lstrlenW(KNOWN_GOOD_STAMP)) == 0;
-        if (!stamp[0] && !prod[0]) {
-            swprintf(text, 220, L"EXStar Hub not found in the selected folder");
+        wcsncpy(g_stamp, stamp, 63);
+        g_stamp[63] = 0;
+        wcsncpy(g_prod, prod, 63);
+        g_prod[63] = 0;
+        if (!stamp[0] && !prod[0])
             g_verTone = 2;
-        } else if (okStamp) {
-            swprintf(text, 220,
-                     prod[0]
-                     ? L"Your application - %ls (file stamp %ls) - tested family"
-                     : L"Your application - file stamp %ls - tested family",
-                     prod, stamp);
+        else if (okStamp)
             g_verTone = 0;
-        } else {
-            swprintf(text, 220,
-                     prod[0]
-                     ? L"Your application - %ls (file stamp %ls) - NOT tested, "
-                       L"compatibility unknown"
-                     : L"Your application - file stamp %ls - NOT tested, "
-                       L"compatibility unknown",
-                     prod, stamp);
+        else
             g_verTone = 1;
-        }
-        SetWindowTextW(g_ver, text);
     }
 
-    {   /* wallpaper file buttons follow the module + the file reality */
-        char rel[MAX_PATH], abs[MAX_PATH];
-        BOOL has = FALSE;
+    {   /* the wallpaper "Reset" button follows the file reality */
+        char rel[MAX_PATH], abs2[MAX_PATH];
 
         snprintf(rel, sizeof rel, "modules\\%ls", WALLPAPER_FILE);
-        iniPathFor(abs, sizeof abs, rel);
-        has = pathExistsA(abs);
-        for (i = 0; i < g_modCount; i++) {
-            if (!g_mods[i].hasFileBtn)
-                continue;
-            EnableWindow(g_fileBtn[i][0], g_modOn[i]);
-            EnableWindow(g_fileBtn[i][1], g_modOn[i] && has);
-        }
+        iniPathFor(abs2, sizeof abs2, rel);
+        g_fileHas = pathExistsA(abs2);
     }
+
+    if (g_modArea && g_curPage == PAGE_IF) { /* re-flow (band may close) */
+        RECT rc;
+        GetClientRect(g_modArea, &rc);
+        areaLayoutRows(g_modArea, rc.right);
+    }
+    kpiSync(g_curPage == PAGE_SC ? PAGE_SC : PAGE_IF);
+    invalidatePages();                     /* tiles, pills, cards       */
+    if (g_mainHwnd)
+        InvalidateRect(g_mainHwnd, NULL, FALSE);   /* header chips      */
 }
 
 /* ------------------------------------------------------------------ */
@@ -2465,28 +4923,198 @@ static void readAppEdit(void)
     }
 }
 
-/* width-dependent repositioning; the module cards live in the scroll
- * area (relaid out by its own WM_SIZE), while the header, the restore
- * button and the journal are re-anchored here                             */
+/* width-dependent layout: sidebar full height, header band on top,
+ * the three page containers share one rect, the journal feed below.
+ * Only one real child control exists anywhere (the app folder EDIT),
+ * so this is the only per-resize MoveWindow traffic the window sees.  */
 static void layoutMain(HWND hw, int cw, int ch)
 {
-    if (!g_edApp || !g_status || g_modCount <= 0)
+    int pw, ph, i;
+
+    if (g_modCount <= 0)
         return;
 
-    SetRect(&g_rEd, LMARG, U(100), cw - LMARG - U(104), U(130));
-    MoveWindow(g_edApp, LMARG + U(10), U(105),
-               cw - 2 * LMARG - U(104) - U(20), U(20), TRUE);
-    MoveWindow(g_btnBrowse, cw - LMARG - U(92), U(100), U(92), U(30), TRUE);
-    MoveWindow(g_ver, LMARG + U(2), U(138),
-               cw - 2 * LMARG - U(4), U(16), TRUE);
-    MoveWindow(g_modArea, 0, AREA_TOP, cw,
-               ch - AREA_TOP - FOOT_H, TRUE);
-    MoveWindow(g_btnRestore, LMARG, ch - FOOT_H + U(10), U(250), U(34), TRUE);
-    g_logTop = ch - FOOT_H + U(60);
-    SetRect(&g_rLog, LMARG, g_logTop, cw - LMARG, ch - U(16));
-    MoveWindow(g_status, LMARG + U(10), g_logTop + U(8),
-               cw - 2 * LMARG - U(20),
-               ch - U(16) - g_logTop - U(16), TRUE);
+    pw = cw - SB_W;
+    ph = ch - PAGE_TOP - FOOT2_H;
+    if (pw < U(320))
+        pw = U(320);
+    if (ph < PAGE_MIN_H)
+        ph = PAGE_MIN_H;
+
+    MoveWindow(g_nav, 0, 0, SB_W, ch, TRUE);
+    for (i = 0; i < 3; i++)
+        if (g_pageArea[i])
+            MoveWindow(g_pageArea[i], SB_W, PAGE_TOP, pw, ph, TRUE);
+
+    SetRect(&g_rFeed, SB_W + U(30), ch - FOOT2_H + U(8), cw - U(30),
+            ch - U(14));
+    SetRect(&g_rLog, g_rFeed.left, g_rFeed.top, g_rFeed.right,
+            g_rFeed.bottom);
+    washBuild(cw, ch);
+    (void) hw;
+}
+
+/* one header chip: rounded pill on the wash, right-aligned stack */
+static void paintChip(HDC dc, RECT *r, COLORREF led, const wchar_t *txt,
+                      int ledA)
+{
+    RECT tr;
+
+    gpBegin(dc);
+    gpRR(r, U(8), C_CHIP, AK(255), RGB(46, 46, 46), AK(255), 1.0f);
+    if (led) {
+        RECT d = { r->left + U(11), (r->top + r->bottom) / 2 - U(3),
+                   r->left + U(11) + U(7), (r->top + r->bottom) / 2 + U(4) };
+        if (ledA > 140)
+            gpHalo(&d, U(4), led, (Gdiplus::REAL) U(6), AK(150));
+        gpDot(&d, led, AK(ledA ? ledA : 255));
+    }
+    gpEnd();
+    SetBkMode(dc, TRANSPARENT);
+    SelectObject(dc, g_fontV);
+    SetTextColor(dc, FK(C_TEXT2));
+    SetRect(&tr, r->left + (led ? U(24) : U(12)), r->top,
+            r->right - U(12), r->bottom);
+    DrawTextW(dc, txt, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+}
+
+/* the .head of the mockup: h1 + sub left, three live chips right */
+static void paintHeader(HWND hw, HDC dc, RECT *rc)
+{
+    wchar_t txt[3][96];
+    RECT r;
+    int x, i, on = 0, cy = U(24), hh = U(27);
+    int chipW[3];
+    HDC m;
+    ULONGLONG tick = GetTickCount64();
+    static const COLORREF tone[3] = { C_OK, C_WARN, C_ERR };
+
+    for (i = 0; i < g_modCount; i++)
+        if (g_modOn[i])
+            on++;
+
+    /* chip texts measured with the same font the chip draws */
+    if (g_stamp[0])
+        swprintf(txt[0], 96, L"app %ls", g_stamp);
+    else if (g_prod[0])
+        swprintf(txt[0], 96, L"app %ls", g_prod);
+    else
+        wcsncpy(txt[0], L"app not found", 95);
+    swprintf(txt[1], 96, L"%d / %d active", on, g_modCount);
+    wcsncpy(txt[2], g_busy ? L"Working" : L"Ready", 95);
+
+    m = GetDC(hw);
+    SelectObject(m, g_fontV);
+    for (i = 0; i < 3; i++)   /* chips with a LED need its room as well */
+        chipW[i] = textMeasW(m, txt[i]) + U(24)
+                   + ((i == 0 || i == 2) ? U(14) : U(0));
+    ReleaseDC(hw, m);
+
+    x = rc->right - U(44);
+    for (i = 2; i >= 0; i--) {
+        SetRect(&r, x - chipW[i], cy, x, cy + hh);
+        g_chip[i] = r;
+        x = r.left - U(8);
+    }
+    paintChip(dc, &g_chip[0], tone[g_verTone % 3], txt[0], 255);
+    paintChip(dc, &g_chip[1], 0, txt[1], 0);
+    paintChip(dc, &g_chip[2], g_busy ? C_ACCENT : C_OK, txt[2],
+              g_busy ? (((tick / 400) % 2) ? 255 : 70) : 255);
+
+    /* h1: EXStar white + Hub accent, sub line below */
+    SetBkMode(dc, TRANSPARENT);
+    SelectObject(dc, g_fontT);
+    SetTextColor(dc, FK(C_TEXT));
+    SetRect(&r, SB_W + U(30), U(13), rc->right - U(400), U(13) + U(33));
+    DrawTextW(dc, L"EXStar ", -1, &r, DT_LEFT | DT_SINGLELINE);
+    {   int w1 = textMeasW(dc, L"EXStar ");
+
+        SetTextColor(dc, FK(C_ACCENT));
+        OffsetRect(&r, w1, 0);
+        DrawTextW(dc, L"Hub", -1, &r, DT_LEFT | DT_SINGLELINE);
+    }
+    SelectObject(dc, g_fontS);
+    SetTextColor(dc, FK(C_TEXT3));
+    SetRect(&r, SB_W + U(31), U(46), rc->right - U(400), U(62));
+    drawSpacedW(dc, L"MOD MANAGER", &r, U(1), 0, 1);
+}
+
+/* the journal: .feed - newest line first, timestamp + level dot + text,
+ * every arrival slides in from the right and fades up */
+static void paintFeed(HDC dc, RECT *box)
+{
+    static const COLORREF lvlCol[3] = { C_ACCENT, C_OK, C_WARN };
+    RECT r;
+    int y, lh = U(20), maxN, i;
+    ULONGLONG tick = GetTickCount64();
+
+    gpBegin(dc);
+    {   RECT sh = *box;
+
+        OffsetRect(&sh, 0, U(2));
+        gpShadow(&sh, U(10), (Gdiplus::REAL) U(10), 0, AK(70));
+    }
+    gpRR(box, U(10), C_LOG, AK(255), C_LOGLN, AK(255), 1.0f);
+    gpEnd();
+    SetBkMode(dc, TRANSPARENT);
+
+    SelectObject(dc, g_fontV);
+    SetTextColor(dc, FK(C_TEXT3));
+    SetRect(&r, box->left + U(14), box->top + U(8),
+            box->left + U(14) + U(140), box->top + U(24));
+    drawSpacedW(dc, L"ACTIVITY", &r, U(2), 0, 0);
+    {   RECT d = { box->right - U(14) - U(7), box->top + U(12),
+                   box->right - U(14), box->top + U(12) + U(7) };
+        float b = (float)((tick % 1600) < 800 ? 1.0 : 0.35);
+
+        gpBegin(dc);
+        gpDot(&d, C_OK, AK((int) (200 * b)));
+        gpEnd();
+        SelectObject(dc, g_fontV);
+        SetTextColor(dc, FK(C_TEXT3));
+        SetRect(&r, d.left - U(36), box->top + U(8), d.left - U(4),
+                box->top + U(24));
+        drawSpacedW(dc, L"LIVE", &r, U(1), 2, 1);
+    }
+
+    y = box->top + U(28);
+    maxN = (box->bottom - U(8) - y) / lh;
+    if (g_feedN == 0) {
+        SelectObject(dc, g_fontS);
+        SetTextColor(dc, FK(C_TEXT3));
+        SetRect(&r, box->left + U(14), y, box->right - U(14), y + lh);
+        DrawTextW(dc, L"-", -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        return;
+    }
+    for (i = 0; i < g_feedN && i < maxN; i++) {
+        Feed *f = &g_feed[i];
+        float a = f->a.cur;
+        wchar_t ts[16];
+        int xo = (int) ((1.0f - a) * U(14));
+
+        g_fade = a;
+        stampText(&f->t, ts);
+        SelectObject(dc, g_fontL);
+        SetTextColor(dc, FK(C_LOGTS));
+        SetRect(&r, box->left + U(14) + xo, y, box->left + U(14) + U(64),
+                y + lh);
+        DrawTextW(dc, ts, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        {   RECT d = { box->left + U(14) + U(66) + xo,
+                       y + lh / 2 - U(3), box->left + U(14) + U(66) + xo + U(6),
+                       y + lh / 2 + U(3) };
+            gpBegin(dc);
+            gpDot(&d, lvlCol[f->lvl % 3], AK(230));
+            gpEnd();
+        }
+        SelectObject(dc, g_fontL);
+        SetTextColor(dc, FK(C_LOGTX));
+        SetRect(&r, box->left + U(14) + U(80) + xo, y, box->right - U(14),
+                y + lh);
+        DrawTextW(dc, f->s, -1, &r,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        g_fade = 1.0f;
+        y += lh;
+    }
 }
 
 static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
@@ -2495,32 +5123,106 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CREATE: {
         INITCOMMONCONTROLSEX icc;
         RECT rc;
-        int i, y, cw, ch;
-        wchar_t buf[256];
+        int i, cw, ch;
 
         icc.dwSize = sizeof icc;
         icc.dwICC = ICC_STANDARD_CLASSES;
         InitCommonControlsEx(&icc);
+        g_mainHwnd = hw;              /* animator timer needs it already */
 
-        g_font  = mkFont(-12, FW_NORMAL, L"Segoe UI");
-        g_fontB = mkFont(-12, FW_BOLD,   L"Segoe UI");
-        g_fontT = mkFont(-19, FW_BOLD,   L"Segoe UI");
-        g_fontS = mkFont(-11, FW_NORMAL, L"Segoe UI");
-        g_fontL = mkFont(-11, FW_NORMAL, L"Consolas");
+        g_font   = mkFont(-12,   FW_NORMAL,    L"Segoe UI");
+        g_fontB  = mkFont(-14,   FW_SEMIBOLD,  L"Segoe UI");
+        g_fontT  = mkFont(-26,   FW_SEMIBOLD,  L"Segoe UI");
+        g_fontS  = mkFont(-12,   FW_NORMAL,    L"Segoe UI");
+        g_fontL  = mkFont(-11,   FW_NORMAL,    L"Consolas");
+        g_fontV  = mkFont(-11,   FW_SEMIBOLD,  L"Segoe UI");
+        g_fontK  = mkFont(-23,   FW_SEMIBOLD,  L"Segoe UI");
+        g_fontK2 = mkFont(-15,   FW_NORMAL,    L"Segoe UI");
+        g_fontM  = mkFont(-10,   FW_NORMAL,    L"Segoe UI");
+        g_fontN  = mkFont(-13,   FW_NORMAL,    L"Segoe UI");
+        g_fontNB = mkFont(-13,   FW_SEMIBOLD,  L"Segoe UI");
 
         GetClientRect(hw, &rc);
         cw = rc.right;
         ch = rc.bottom;
 
-        mkStatic(&g_title,   L"EXStar Hub",        LMARG, U(12), U(400), U(30), g_fontT, hw);
-        mkStatic(&g_sub,     L"Mod Manager",       LMARG + U(2), U(46), U(400), U(16), g_fontS, hw);
-        mkStatic(&g_lblPath, L"APP FOLDER",        LMARG + U(2), U(80), U(300), U(14), g_fontS, hw);
+        /* module -> sidebar section lists + animation seeds; every
+         * registry row is Interface until a scanner one joins (cat=1) */
+        g_catCnt[0] = g_catCnt[1] = 0;
+        for (i = 0; i < g_modCount; i++) {
+            int c2 = (g_mods[i].cat == 1) ? 1 : 0;
 
-        SetRect(&g_rEd, LMARG, U(100), cw - LMARG - U(104), U(130));
+            g_catMods[c2][g_catCnt[c2]++] = i;
+            animAt(&g_swA[i],    0.0f);
+            animAt(&g_pulA[i],   0.0f);
+            animAt(&g_hovA[i],   0.0f);
+            animAt(&g_introA[i], 1.0f);
+            animAt(&g_extA[i],   0.0f);
+            g_ctrls[i].kind = CKIND_SWITCH;
+            g_ctrls[i].idx  = i;
+        }
+        g_ctrls[g_modCount].kind = CKIND_BUTTON;
+        g_ctrls[g_modCount].idx  = g_modCount;
+        g_ctrls[g_modCount + 1].kind = CKIND_DANGER;
+        g_ctrls[g_modCount + 1].idx  = g_modCount + 1;
+        {   float z = g_us;
+
+            if (z < g_zoomDef.minV) z = g_zoomDef.minV;
+            if (z > g_zoomDef.maxV) z = g_zoomDef.maxV;
+            memset(&g_zoomCtl, 0, sizeof g_zoomCtl);
+            g_zoomCtl.kind = CKIND_SLIDER;
+            g_zoomCtl.idx  = -1;
+            g_zoomCtl.sdef = &g_zoomDef;
+            g_zoomCtl.fmin = g_zoomDef.minV;
+            g_zoomCtl.fmax = g_zoomDef.maxV;
+            g_zoomCtl.fval = z;
+            animAt(&g_zoomCtl.ha, 0.0f);
+            animAt(&g_zoomCtl.pa, 0.0f);
+            memset(&g_journalCtl, 0, sizeof g_journalCtl);
+            g_journalCtl.kind = CKIND_SWITCH;
+            g_journalCtl.idx  = JSW_IDX;
+            animAt(&g_journalCtl.ha, 0.0f);
+            animAt(&g_journalCtl.pa, 0.0f);
+            animAt(&g_journalSwA, g_journalOn ? 1.0f : 0.0f);
+        }
+        for (i = 0; i < 3; i++) {
+            animAt(&g_navHov[i], 0.0f);
+            animAt(&g_kpiHov[i], 0.0f);
+        }
+        animAt(&g_navSelA, 0.0f);
+        animAt(&g_navPop,  0.0f);
+        animAt(&g_pgSlide, 0.0f);
+        animAt(&g_pgAlpha, 1.0f);
+        animAt(&g_kpiBar,  0.0f);
+        animAt(&g_kpiCnt,  0.0f);
+        animAt(&g_sbA,     0.0f);
+        animAt(&g_focusA,  0.0f);
+        g_scrollF = g_scrollTgt = 0.0f;
+        g_scroll = 0;
+
+        g_nav = CreateWindowExW(0, L"ExSmNav", L"", WS_CHILD | WS_VISIBLE,
+                                0, 0, SB_W, ch, hw, NULL, g_hInst, NULL);
+
+        /* the three pages share one rect; the transition is painted in
+         * each page's WM_PAINT (DIB + AlphaBlend), no layered windows */
+        g_modArea = CreateWindowExW(0, L"ExSmArea", L"",
+                    WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+                    SB_W, PAGE_TOP, cw - SB_W, ch - PAGE_TOP - FOOT2_H,
+                    hw, NULL, g_hInst, NULL);
+        g_pageArea[PAGE_IF] = g_modArea;
+        g_pageArea[PAGE_SC] = CreateWindowExW(0,
+                    L"ExSmEmpty", L"", WS_CHILD,
+                    SB_W, PAGE_TOP, cw - SB_W, ch - PAGE_TOP - FOOT2_H,
+                    hw, NULL, g_hInst, NULL);
+        g_pageArea[PAGE_ST] = CreateWindowExW(0,
+                    L"ExSmPage", L"", WS_CHILD,
+                    SB_W, PAGE_TOP, cw - SB_W, ch - PAGE_TOP - FOOT2_H,
+                    hw, NULL, g_hInst, NULL);
+
+        /* the single real child control on any page */
         g_edApp = CreateWindowExW(0, L"EDIT", L"",
                     WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                    g_rEd.left + U(10), g_rEd.top + U(5),
-                    g_rEd.right - g_rEd.left - U(20), U(20), hw,
+                    U(42), U(42), U(200), U(22), g_pageArea[PAGE_ST],
                     (HMENU) IDC_APPEDIT, g_hInst, NULL);
         SendMessageW(g_edApp, WM_SETFONT, (WPARAM) g_font, TRUE);
         {
@@ -2528,158 +5230,21 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
             a2w(DEFAULT_APP_DIR, d, MAX_PATH);
             SetWindowTextW(g_edApp, d);
         }
-        g_btnBrowse = CreateWindowExW(0, L"ExSmCtrl", L"Browse",
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                    cw - LMARG - U(92), U(100), U(92), U(30), hw,
-                    (HMENU) IDC_BROWSE, g_hInst, &g_ctrls[g_modCount]);
 
-        mkStatic(&g_ver, L"", LMARG + U(2), U(138), cw - 2 * LMARG - U(4), U(16), g_fontS, hw);
-        mkStatic(&g_hdr, L"MODULES", LMARG + U(2), U(168), U(300), U(16), g_fontS, hw);
-
-        g_modArea = CreateWindowExW(0, L"ExSmArea", L"",
-                    WS_CHILD | WS_VISIBLE | WS_VSCROLL,
-                    0, AREA_TOP, cw, ch - AREA_TOP - FOOT_H, hw,
-                    NULL, g_hInst, NULL);
-
-        y = U(192);
-        for (i = 0; i < g_modCount; i++) {
-            g_ctrls[i].kind = CKIND_SWITCH;
-            g_ctrls[i].idx = i;
+        layoutMain(hw, cw, ch);
+        {
+            RECT pr;
+            GetClientRect(g_pageArea[PAGE_ST], &pr);
+            settingsLayout(g_pageArea[PAGE_ST], pr.right, pr.bottom);
         }
-        g_ctrls[g_modCount].kind = CKIND_BUTTON;
-        g_ctrls[g_modCount + 1].kind = CKIND_DANGER;
-
-        for (i = 0; i < g_modCount; i++) {
-            HWND nm, ds;
-            int nSl = g_mods[i].nSliders;
-            int nPr = g_mods[i].nPresets;
-            int s2, p2, yr;
-            int cardH = cardHeightOf(&g_mods[i]);
-
-            yr = g_rowYrel[i] = y - AREA_TOP;  /* content coordinates     */
-            SetRect(&g_cardR[i], LMARG, g_rowYrel[i], cw - LMARG,
-                    g_rowYrel[i] + cardH);
-            swprintf(buf, 256, L"%ls  %hs", g_mods[i].title, g_mods[i].version);
-            nm = mkStatic(&g_name[i], buf, LMARG + U(16), yr + U(10),
-                          cw - 2 * LMARG - U(90), U(17), g_fontB, g_modArea);
-            ds = mkStatic(&g_desc[i], g_mods[i].desc, LMARG + U(16), yr + U(31),
-                          cw - 2 * LMARG - U(90), U(15), g_fontS, g_modArea);
-            g_check[i] = CreateWindowExW(0, L"ExSmCtrl", L"",
-                        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                        cw - LMARG - U(16) - U(46), yr + U(17), U(46), U(24),
-                        g_modArea,
-                        (HMENU) (UINT_PTR) (IDC_MODBASE + i), g_hInst,
-                        &g_ctrls[i]);
-            SetWindowSubclass(nm, rowSub, (UINT_PTR) (1000 + i),
-                              (DWORD_PTR) g_check[i]);
-            SetWindowSubclass(ds, rowSub, (UINT_PTR) (1100 + i),
-                              (DWORD_PTR) g_check[i]);
-            for (s2 = 0; s2 < MAX_SLIDERS; s2++)
-                g_slider[i][s2] = NULL;
-            if (nSl) {
-                char iniRel[MAX_PATH], iniAbs[MAX_PATH];
-
-                snprintf(iniRel, sizeof iniRel, "modules\\%s.ini",
-                         g_mods[i].id);
-                iniPathFor(iniAbs, sizeof iniAbs, iniRel);
-                for (s2 = 0; s2 < nSl; s2++) {
-                    const SliderDef *d = &g_mods[i].sliders[s2];
-                    ExCtrl *sc = CTL_SLIDER(i, s2);
-                    float v;
-
-                    sc->kind = CKIND_SLIDER;
-                    sc->idx  = i;
-                    sc->sdef = d;
-                    sc->fmin = d->minV;
-                    sc->fmax = d->maxV;
-                    v = iniGetKeyF(iniAbs, d->key,
-                                   d->defV * (d->iniMul ? d->iniMul : 1.0f));
-                    if (d->iniMul)
-                        v /= d->iniMul;      /* stored µm -> shown mm    */
-                    sc->fval = v < d->minV ? d->minV
-                               : (v > d->maxV ? d->maxV : v);
-                    g_slider[i][s2] = CreateWindowExW(0, L"ExSmCtrl", L"",
-                            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                            LMARG + U(16), yr + U(52) + s2 * U(30),
-                            U(470), U(24), g_modArea,
-                            (HMENU) (UINT_PTR) (IDC_SCBASE + i * MAX_SLIDERS
-                                                + s2),
-                            g_hInst, sc);
-                }
-            }
-            for (p2 = 0; p2 < MAX_PRESETS; p2++)
-                g_preset[i][p2] = NULL;
-            g_pcap[i] = NULL;
-            g_presetSel[i] = -1;
-            if (nPr) {
-                char iniRel[MAX_PATH], iniAbs[MAX_PATH];
-                int pw = U(110), pg = U(8);
-
-                snprintf(iniRel, sizeof iniRel, "modules\\%s.ini",
-                         g_mods[i].id);
-                iniPathFor(iniAbs, sizeof iniAbs, iniRel);
-                g_presetSel[i] = nearestPreset(i, iniAbs);
-                for (p2 = 0; p2 < nPr; p2++) {
-                    ExCtrl *pc = CTL_PRESET(i, p2);
-
-                    pc->kind = CKIND_PRESET;
-                    pc->idx  = i;
-                    pc->pi   = p2;
-                    pc->pdef = &g_mods[i].presets[p2];
-                    g_preset[i][p2] = CreateWindowExW(0, L"ExSmCtrl", L"",
-                            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                            LMARG + U(16) + p2 * (pw + pg), yr + U(50),
-                            pw, U(46), g_modArea,
-                            (HMENU) (UINT_PTR) (IDC_PRBASE + i * MAX_PRESETS
-                                                + p2),
-                            g_hInst, pc);
-                }
-                /* caption under the pill row: the row itself is the
-                 * control, the line only names what it tunes */
-                g_pcap[i] = mkStatic(&g_pcap[i], g_mods[i].presetCap,
-                          LMARG + U(16), yr + U(99), U(360), U(15),
-                          g_fontS, g_modArea);
-            }
-            if (g_mods[i].hasFileBtn) {
-                static const wchar_t *wpNames[MAX_FILEBTNS] =
-                    { L"Choose file…", L"Reset" };
-                for (s2 = 0; s2 < MAX_FILEBTNS; s2++) {
-                    ExCtrl *fc = CTL_FILEBTN(i, s2);
-
-                    fc->kind = CKIND_FILEBTN;
-                    fc->idx  = i;
-                    g_fileBtn[i][s2] = CreateWindowExW(0, L"ExSmCtrl",
-                            wpNames[s2],
-                            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                            LMARG + U(16) + s2 * (U(170) + U(8)),
-                            yr + U(50), U(170), U(26), g_modArea,
-                            (HMENU) (UINT_PTR) (IDC_WPBASE
-                                                + i * MAX_FILEBTNS + s2),
-                            g_hInst, fc);
-                }
-            }
-            y += cardH + U(8);
-        }
-        g_contentH = y + U(8) - AREA_TOP;   /* full scrollable height      */
-
-        g_btnRestore = CreateWindowExW(0, L"ExSmCtrl", L"Restore stock",
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                    LMARG, ch - FOOT_H + U(10), U(250), U(34), hw,
-                    (HMENU) IDC_RESTORE, g_hInst, &g_ctrls[g_modCount + 1]);
-
-        g_logTop = ch - FOOT_H + U(60);
-        SetRect(&g_rLog, LMARG, g_logTop, cw - LMARG, ch - U(16));
-        g_status = CreateWindowExW(0, L"EDIT", L"",
-                    WS_CHILD | WS_VISIBLE
-                    | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-                    g_rLog.left + U(10), g_rLog.top + U(8),
-                    g_rLog.right - g_rLog.left - U(20),
-                    g_rLog.bottom - g_rLog.top - U(16),
-                    hw, (HMENU) IDC_STATUS, g_hInst, NULL);
-        SendMessageW(g_status, WM_SETFONT, (WPARAM) g_fontL, TRUE);
-
-        areaUpdateScroll(g_modArea);
+        uiSeedControls();
         refreshChecks();
+        kpiSync(PAGE_IF);
+        SetFocus(g_modArea);          /* arrow keys / wheel scroll work  */
+        SetTimer(hw, AMBIENT_TIMER, AMBIENT_MS, NULL);
+        g_ambientOn = TRUE;
+        startIntro();
+        animWake();
         return 0;
     }
     case WM_GETMINMAXINFO: {
@@ -2690,8 +5255,8 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
             ncW = (wr.right - wr.left) - (cr.right - cr.left);
             ncH = (wr.bottom - wr.top) - (cr.bottom - cr.top);
         }
-        mm->ptMinTrackSize.x = U(600) + ncW;
-        mm->ptMinTrackSize.y = AREA_TOP + AREA_MIN_H + FOOT_H + ncH;
+        mm->ptMinTrackSize.x = SB_W + U(560) + ncW;
+        mm->ptMinTrackSize.y = PAGE_TOP + PAGE_MIN_H + FOOT2_H + ncH;
         return 0;
     }
     case WM_SIZE:
@@ -2702,94 +5267,89 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
             InvalidateRect(hw, NULL, TRUE);
         }
         return 0;
-    case WM_ERASEBKGND: {
-        HDC dc = (HDC) wp;
+    case WM_ERASEBKGND:
+        return TRUE;                  /* WM_PAINT blits the whole band  */
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hw, &ps);
         RECT rc;
+        HDC mem;
+        HBITMAP bmp, obmp;
 
         GetClientRect(hw, &rc);
-        FillRect(dc, &rc, g_brBg);
-        rr(dc, &g_rEd, U(8), g_brBg, RGB(64, 64, 64));
-        rr(dc, &g_rLog, U(8), g_brLog, C_CARDLN);
-        return TRUE;
-    }
-    case WM_CTLCOLORSTATIC: {
-        HDC dc = (HDC) wp;
-        HWND h = (HWND) lp;
-        int i;
-
-        if (h == g_status) {                 /* the journal */
-            SetTextColor(dc, C_LOGTX);
-            SetBkColor(dc, C_LOG);
-            return (LRESULT) g_brLog;
+        mem = CreateCompatibleDC(dc);
+        bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
+        obmp = (HBITMAP) SelectObject(mem, bmp);
+        washBlit(mem, &rc, 0, 0);
+        g_fade = 1.0f;
+        gpBegin(mem);
+        {   RECT ln = { SB_W, PAGE_TOP - 1, rc.right, PAGE_TOP };
+            gpRule(&ln, RGB(60, 60, 60), 120, 40);
         }
-        for (i = 0; i < g_modCount; i++) {
-            if (h == g_name[i]) {            /* module row, on a card */
-                SetTextColor(dc, C_TEXT);
-                SetBkColor(dc, C_CARD);
-                return (LRESULT) g_brCard;
-            }
-            if (h == g_desc[i]) {
-                SetTextColor(dc, C_TEXT2);
-                SetBkColor(dc, C_CARD);
-                return (LRESULT) g_brCard;
-            }
-            if (h == g_pcap[i]) {              /* preset row caption      */
-                SetTextColor(dc, C_TEXT2);
-                SetBkColor(dc, C_CARD);
-                return (LRESULT) g_brCard;
-            }
-        }
-        SetBkColor(dc, C_BG);
-        if (h == g_ver) {
-            static const COLORREF tone[3] = { C_OK, C_WARN, C_ERR };
-            SetTextColor(dc, tone[g_verTone % 3]);
-        } else if (h == g_title) {
-            SetTextColor(dc, RGB(250, 250, 250));
-        } else if (h == g_sub || h == g_lblPath || h == g_hdr) {
-            SetTextColor(dc, C_TEXT2);
-        } else {
-            SetTextColor(dc, C_TEXT);
-        }
-        return (LRESULT) g_brBg;
+        gpEnd();
+        paintHeader(hw, mem, &rc);
+        paintFeed(mem, &g_rFeed);
+        BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, obmp);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        EndPaint(hw, &ps);
+        return 0;
     }
-    case WM_CTLCOLOREDIT: {
-        HDC dc = (HDC) wp;
-
-        SetTextColor(dc, C_TEXT);
-        SetBkColor(dc, C_BG);
-        return (LRESULT) g_brBg;
-    }
-    case WM_DRAWITEM:
-        break;               /* no owner-drawn system controls anymore */
     case WM_COMMAND: {
         int id = LOWORD(wp);
+
+        if (id >= IDC_NAVBASE && id < IDC_NAVBASE + 3) {
+            goPage(id - IDC_NAVBASE);
+            return 0;
+        }
         if (id >= IDC_MODBASE && id < IDC_MODBASE + g_modCount
             && HIWORD(wp) == BN_CLICKED) {
             int idx = id - IDC_MODBASE;
             BOOL on = !g_modOn[idx];       /* the click means: flip */
+            int extW = g_mods[idx].nSliders || g_mods[idx].nPresets
+                       || g_mods[idx].hasFileBtn;
 
             g_modOn[idx] = on;
-            InvalidateRect(g_check[idx], NULL, TRUE);
+            animTo(&g_swA[idx], on ? 1.0f : 0.0f, 260, EASE_BACK);
+            animAt(&g_pulA[idx], 0.0f);
+            animTo(&g_pulA[idx], 1.0f, 480, EASE_OUT);
+            animTo(&g_extA[idx], on && extW ? 1.0f : 0.0f, 350, EASE_OUT);
+            if (g_modArea) {
+                RECT rc;
+                GetClientRect(g_modArea, &rc);
+                areaLayoutRows(g_modArea, rc.right);
+            }
+            kpiSync(PAGE_IF);
+            InvalidateRect(g_nav, NULL, FALSE);
             if (on)
                 status(L"Installing and enabling: %ls...", g_mods[idx].title);
             else
                 status(L"Disabling and removing: %ls...", g_mods[idx].title);
             if (!startJob(on ? 0 : 1, 1u << idx)) {
                 g_modOn[idx] = !on;        /* job refused: flip back */
-                InvalidateRect(g_check[idx], NULL, TRUE);
+                animTo(&g_swA[idx], on ? 0.0f : 1.0f, 180, EASE_OUT);
+                animTo(&g_extA[idx], on && extW ? 1.0f : 0.0f, 180,
+                       EASE_OUT);
+                InvalidateRect(g_nav, NULL, FALSE);
             }
+            animWake();
             return 0;
         }
         if (id >= IDC_SCBASE && id < IDC_SCBASE + g_modCount * MAX_SLIDERS
             && HIWORD(wp) == BN_CLICKED) {
             int t = id - IDC_SCBASE;
             applySliderSetting(t / MAX_SLIDERS, t % MAX_SLIDERS);
+            if (g_modArea)
+                InvalidateRect(g_modArea, NULL, TRUE);
             return 0;
         }
         if (id >= IDC_PRBASE && id < IDC_PRBASE + g_modCount * MAX_PRESETS
             && HIWORD(wp) == BN_CLICKED) {
             int t = id - IDC_PRBASE;
             applyPreset(t / MAX_PRESETS, t % MAX_PRESETS);
+            if (g_modArea)
+                InvalidateRect(g_modArea, NULL, TRUE);
             return 0;
         }
         if (id >= IDC_WPBASE && id < IDC_WPBASE + g_modCount * MAX_FILEBTNS
@@ -2799,6 +5359,8 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
                 wallpaperPick(t / MAX_FILEBTNS);
             else
                 wallpaperReset(t / MAX_FILEBTNS);
+            if (g_modArea)
+                InvalidateRect(g_modArea, NULL, TRUE);
             return 0;
         }
         switch (id) {
@@ -2824,9 +5386,32 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP + 1:
         uiEnable(TRUE);
         refreshChecks();
-        if (!wp)
-            status(L"Operation not completed - see the dialog for details.");
+        if (g_warnPend) {
+            g_warnPend = FALSE;
+            MessageBoxW(hw, g_warnTxt, L"ExStarModManager",
+                        MB_OK | MB_ICONWARNING);
+            status(L"%ls", g_warnTxt);
+        } else if (!wp) {
+            status(L"Operation not completed - see the activity line.");
+        }
         return 0;
+    case WM_APP + 3: {          /* warning; queued while a job is running */
+        wchar_t *t = (wchar_t *) lp;
+
+        if (t) {
+            if (g_busy) {
+                wcsncpy(g_warnTxt, t, 1023);
+                g_warnTxt[1023] = 0;
+                g_warnPend = TRUE;
+            } else {
+                MessageBoxW(hw, t, L"ExStarModManager",
+                            MB_OK | MB_ICONWARNING);
+                status(L"%ls", t);
+            }
+            HeapFree(GetProcessHeap(), 0, t);
+        }
+        return 0;
+    }
     case WM_APP + 2: {          /* progress line from a worker thread */
         wchar_t *t = (wchar_t *) lp;
         if (t) {
@@ -2835,11 +5420,1531 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
     }
+    case WM_TIMER:
+        if (wp == ANIM_TIMER) {
+            animTickAll(hw);
+            return 0;
+        }
+        if (wp == AMBIENT_TIMER) {
+            /* LED blink, KPI shimmer, busy chip, scanner dots */
+            InvalidateRect(hw, NULL, FALSE);
+            InvalidateRect(g_nav, NULL, FALSE);
+            if (g_curPage != PAGE_ST && g_pageArea[g_curPage])
+                InvalidateRect(g_pageArea[g_curPage], NULL, TRUE);
+            return 0;
+        }
+        break;
+    case WM_SETFOCUS:
+        if (g_modArea && g_curPage == PAGE_IF)
+            SetFocus(g_modArea);
+        return 0;
     case WM_DESTROY:
+        KillTimer(hw, ANIM_TIMER);
+        KillTimer(hw, AMBIENT_TIMER);
+        g_ambientOn = FALSE;
         PostQuitMessage(0);
         return 0;
     }
     return DefWindowProcW(hw, msg, wp, lp);
+}
+
+/* ------------------------------------------------------------------ */
+/* Scanner Wi-Fi channel tool  (--scanner-wifi)                        */
+/* ------------------------------------------------------------------ */
+/*
+ * The scanner picks its own AP channel from a regulatory table kept
+ * on the device (country_code.db). That table optimistically allows
+ * the 5.8 GHz band (channels 149..161) for most countries, while
+ * phones legally sold e.g. in Kazakhstan are not allowed to scan
+ * there - such a phone then simply never sees the AP. The tool
+ * narrows the device's own country row to the non-DFS low 5 GHz
+ * channels (36..48) that local phones are guaranteed to see,
+ * restarts the AP through the vendor's own init script and verifies
+ * the result over a fresh connection.
+ *
+ * Device side the tool writes exactly one line of the regulatory
+ * table (plus files under /tmp, which is RAM). The factory table is
+ * saved to %LOCALAPPDATA%\ExStarHubMods\scanner\ on first use, so
+ * --scanner-wifi rollback restores the original state.
+ *
+ * Transport is the built-in Windows OpenSSH client; the login is
+ * the vendor's factory-default account that the vendor's own PC
+ * software also uses (documented, user-owned device). Password is
+ * passed through a temp askpass helper file (user-profile temp,
+ * deleted right after) so it never appears on any command line.
+ */
+
+#define SCAN_DB      "/shining3d/country_code.db"
+#define SCAN_CCF     "/backup/country_code"
+#define SCAN_USER    "root"
+/* vendor factory-default SSH password, also present in the vendor's
+ * own PC plugin; override with --scanner-pass */
+#define SCAN_PASS_DFL "sn3d"
+
+static char g_scanIp[64]      = "192.168.42.3";
+static char g_scanPass[64]    = SCAN_PASS_DFL;
+static char g_scanChan[129]   = "36,40,44,48"; /* fallback row value */
+
+/* remote snippets: single quotes only - the whole command is wrapped
+ * in double quotes on the ssh command line, double quotes inside are
+ * deliberately avoided (with cc/rows validated to [A-Z0-9,:-]) */
+static const char SCAN_STATUS_CMD[] =
+    "cc=$(tr -d '\\040\\011\\012\\015' < " SCAN_CCF "); "
+    "echo CC=$cc; grep ^$cc: " SCAN_DB "; "
+    "iw dev wlan0 info 2>/dev/null | grep -E 'channel|width'; "
+    "hostapd_cli status 2>/dev/null | grep state=";
+
+static const char SCAN_B64DB_CMD[] = "base64 " SCAN_DB;
+
+/* write AP restart helper to /tmp (RAM) and run it detached, so the
+ * restart outlives this ssh session (which dies with the AP) */
+static const char SCAN_RESTART_CMD[] =
+    "printf '%s\\n' '#!/bin/sh' "
+    "'/etc/init.d/S99softap.sh stop' 'sleep 2' "
+    "'/etc/init.d/S99softap.sh start' > /tmp/exstar_ap.sh && "
+    "chmod +x /tmp/exstar_ap.sh && "
+    "setsid nohup /tmp/exstar_ap.sh >/tmp/exstar_ap.log 2>&1 "
+    "</dev/null & echo AP_RESTART_SCHEDULED";
+
+static char g_scanFactory[240];          /* local factory db backup  */
+
+static BOOL okIpChars(const char *s)
+{
+    int i, n = (int) strlen(s);
+    if (n < 7 || n > 45) return FALSE;
+    for (i = 0; s[i]; i++)
+        if (!((s[i] >= '0' && s[i] <= '9') || s[i] == '.')) return FALSE;
+    return TRUE;
+}
+static BOOL okRowChars(const char *s)     /* digits and commas only */
+{
+    int i;
+    if (!s[0]) return FALSE;
+    for (i = 0; s[i]; i++)
+        if (!(s[i] >= '0' && s[i] <= '9') && s[i] != ',') return FALSE;
+    return TRUE;
+}
+static BOOL okCcChars(const char *s)      /* exactly two letters    */
+{
+    return (s[0] >= 'A' && s[0] <= 'Z' && s[1] >= 'A' && s[1] <= 'Z'
+            && !s[2]);
+}
+
+static void scanDataDir(wchar_t *dir, size_t cap)
+{
+    wchar_t base[MAX_PATH];
+    if (FAILED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, base)))
+        lstrcpynW(base, L".", MAX_PATH);
+    wsprintfW(dir, L"%s\\ExStarHubMods\\scanner", base);
+    CreateDirectoryW(dir, NULL);
+    {   /* parent may not exist yet */
+        wchar_t *sep = wcsrchr(dir, '\\');
+        if (sep) { wchar_t save = *sep; *sep = 0;
+                   CreateDirectoryW(dir, NULL); *sep = save; }
+        CreateDirectoryW(dir, NULL);
+    }
+    (void) cap;
+}
+
+static int b64Decode(const char *in, unsigned char *out, int cap)
+{
+    static const char *T =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    int n = 0, val = 0, bits = 0;
+    for (; *in; in++) {
+        const char *p = (*in == '=') ? NULL : strchr(T, *in);
+        if (!p) continue;
+        val = (val << 6) | (int) (p - T);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (n >= cap) return -1;
+            out[n++] = (unsigned char) ((val >> bits) & 0xFF);
+        }
+    }
+    return n;
+}
+static int b64Encode(const unsigned char *in, int len, char *out, int cap)
+{
+    static const char *T =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    int o = 0, i;
+    for (i = 0; i < len; i += 3) {
+        DWORD v = ((DWORD) in[i]) << 16;
+        int j;
+        for (j = 1; j < 3; j++)
+            v |= (i + j < len) ? ((DWORD) in[i + j]) << (16 - 8 * j) : 0;
+        for (j = 0; j < 4; j++) {
+            if (i + (j * 3 / 4) >= len) { if (o + 1 >= cap) return -1;
+                                          out[o++] = '='; continue; }
+            if (o + 1 >= cap) return -1;
+            out[o++] = T[(v >> (18 - 6 * j)) & 0x3F];
+        }
+    }
+    out[o] = 0;
+    return o;
+}
+
+/* stdin feeder: ssh's stdin pipe is small, so payloads larger than
+ * the pipe buffer (fan scripts, base64 of app_tx2) must be written
+ * while the child runs, otherwise both sides block forever */
+typedef struct { HANDLE h; char *buf; size_t len; volatile size_t wrO; } SshInArgs;
+
+static DWORD WINAPI sshStdinWriter(void *p)
+{
+    SshInArgs *a = (SshInArgs *) p;
+    size_t done = 0;
+    while (done < a->len) {
+        DWORD w = 0;
+        if (!WriteFile(a->h, a->buf + done, (DWORD) (a->len - done), &w, NULL))
+            break;
+        done += w;
+        a->wrO = done;
+    }
+    return 0;
+}
+
+/* run one remote command over ssh; capture stdout+stderr (cap bytes);
+ * stdinData (optional) is fed to stdin (any length, feeder thread);
+ * returns exit code, -1 on timeout/pipe trouble, -2 when ssh.exe
+ * cannot be started */
+static int runSsh(const wchar_t *askPath, const wchar_t *khPath,
+                  const char *remote, const char *stdinData,
+                  char *out, int cap, DWORD timeoutMs)
+{
+    wchar_t cmd[2048], remoteW[3200], khEsc[600];
+    STARTUPINFOW si = { sizeof si };
+    PROCESS_INFORMATION pi;
+    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+    HANDLE rdOut, wrOut, rdIn, wrIn, wrThread = NULL;
+    SshInArgs ia;
+    DWORD rc = 0, rd = 0, n = 0, t0;
+    int ret;
+
+    lstrcpynW(khEsc, khPath, 590);
+    a2w(remote, remoteW, 3200);
+    wsprintfW(cmd,
+        L"ssh.exe -o StrictHostKeyChecking=accept-new "
+        L"-o UserKnownHostsFile=\"%s\" -o ConnectTimeout=8 "
+        L"-o LogLevel=ERROR " SCAN_USER L"@%S \"%s\"",
+        khEsc, g_scanIp, remoteW);
+
+    if (!CreatePipe(&rdOut, &wrOut, &sa, 0)) return -1;
+    if (!CreatePipe(&rdIn, &wrIn, &sa, 0)) { CloseHandle(rdOut); return -1; }
+    SetHandleInformation(rdOut, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(wrIn,  HANDLE_FLAG_INHERIT, 0);
+
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdInput  = rdIn;
+    si.hStdOutput = wrOut;
+    si.hStdError  = wrOut;
+
+    if (!CreateProcessW(NULL, cmd, NULL, NULL, TRUE,
+                        CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        CloseHandle(rdOut); CloseHandle(wrOut);
+        CloseHandle(rdIn);  CloseHandle(wrIn);
+        return -2;
+    }
+    CloseHandle(rdIn); CloseHandle(wrOut);
+    if (stdinData && *stdinData) {
+        ia.h = wrIn; ia.buf = (char *) stdinData;
+        ia.len = strlen(stdinData); ia.wrO = 0;
+        wrThread = CreateThread(NULL, 0, sshStdinWriter, &ia, 0, NULL);
+        if (wrThread) {
+            /* give the feeder generous room; abort only if it stalls */
+            DWORD t1 = GetTickCount();
+            while (ia.wrO < ia.len &&
+                   GetTickCount() - t1 < timeoutMs &&
+                   WaitForSingleObject(pi.hProcess, 50) == WAIT_TIMEOUT)
+                ;
+            if (ia.wrO < ia.len) {
+                TerminateThread(wrThread, 1);
+                CloseHandle(wrThread);
+                CloseHandle(wrIn);
+                TerminateProcess(pi.hProcess, 1);
+                WaitForSingleObject(pi.hProcess, 2000);
+                CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+                CloseHandle(rdOut);
+                return -1;
+            }
+            CloseHandle(wrThread);
+        }
+    }
+    CloseHandle(wrIn);
+
+    t0 = GetTickCount();
+    for (;;) {
+        HANDLE hs = pi.hProcess;
+        DWORD left = timeoutMs - (GetTickCount() - t0);
+        if (left > 15000) left = 15000;
+        if (WaitForSingleObject(hs, left) == WAIT_OBJECT_0)
+            break;
+        if (GetTickCount() - t0 >= timeoutMs) {
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 2000);
+            break;
+        }
+    }
+    while (n + 1 < (DWORD) cap &&
+           ReadFile(rdOut, out + n, cap - 1 - (int) n, &rd, NULL) && rd)
+        n += rd;
+    out[n] = 0;
+
+    GetExitCodeProcess(pi.hProcess, &rc);
+    CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+    CloseHandle(rdOut);
+    ret = (rc == STILL_ACTIVE) ? -1 : (int) rc;
+    return ret;
+}
+
+static BOOL sshPrep(wchar_t *askPath, wchar_t *khPath)
+{
+    wchar_t base[MAX_PATH];
+    char    a[192];
+    FILE    *f;
+
+    GetTempPathW(MAX_PATH, base);
+    wsprintfW(askPath, L"%s" L"exsm_askpass_%lu.cmd", base, GetCurrentProcessId());
+    wsprintfW(khPath,  L"%s" L"exsm_known_hosts", base);
+    w2a(askPath, a, sizeof a);
+    f = fopen(a, "wb");
+    if (!f) return FALSE;
+    fprintf(f, "@echo off\r\necho %s\r\n", g_scanPass);
+    fclose(f);
+    SetEnvironmentVariableW(L"SSH_ASKPASS", askPath);
+    SetEnvironmentVariableW(L"SSH_ASKPASS_REQUIRE", L"force");
+    return TRUE;
+}
+static void sshDone(const wchar_t *askPath)
+{
+    SetEnvironmentVariableW(L"SSH_ASKPASS", NULL);
+    SetEnvironmentVariableW(L"SSH_ASKPASS_REQUIRE", NULL);
+    DeleteFileW(askPath);
+}
+
+static void scanShow(const char *out)
+{
+    const char *p = out, *q;
+    while (*p) {
+        q = strpbrk(p, "\r\n");
+        if (!q) q = p + strlen(p);
+        if (q > p) { char line[256]; int n = (int) (q - p);
+                     if (n > 250) n = 250;
+                     memcpy(line, p, n); line[n] = 0;
+                     printf("  %s\n", line); }
+        p = *q ? q + 1 : q;
+        if (p > out && p[-1] == 0) break;
+    }
+}
+
+/* parse "CC=XX", the row "XX:a,b,c" and "channel N" from status out;
+ * any output may be NULL */
+static void scanParse(const char *out, char *cc, char *row, int *chan)
+{
+    const char *p;
+    if (cc) cc[0] = 0;
+    if (row) row[0] = 0;
+    if (chan) *chan = -1;
+    p = strstr(out, "CC=");
+    if (p && cc) { int n = 0;
+             p += 3;
+             while (*p && *p != '\r' && *p != '\n' && n < 8) cc[n++] = *p++;
+             cc[n] = 0; }
+    if (cc && row && cc[0]) {
+        char key[16];
+        wsprintfA(key, "%s:", cc);
+        p = strstr(out, key);
+        if (p) { int n = 0; p += strlen(key);
+                 while (*p && *p != '\r' && *p != '\n' && n < 120)
+                     row[n++] = *p++;
+                 row[n] = 0; }
+    }
+    p = strstr(out, "channel ");
+    if (p && chan) *chan = atoi(p + 8);
+}
+
+/* channels <= 64 keep visibility for every locally sold phone;
+ * compute the narrowed row from the current one (keeps vendor's own
+ * ordering, falls back to --scanner-channels when nothing remains) */
+static void scanNarrow(const char *row, char *keep, int cap)
+{
+    const char *p = row;
+    int o = 0;
+    while (*p) {
+        int v = atoi(p), len;
+        if (v >= 1 && v <= 64) {
+            const char *e = strchr(p, ',');
+            if (!e) e = p + strlen(p);
+            len = (int) (e - p);
+            if (o + len + 2 >= cap) break;
+            if (o) keep[o++] = ',';
+            memcpy(keep + o, p, len); o += len; keep[o] = 0;
+        }
+        p = strchr(p, ',');
+        if (!p) break;
+        p++;
+    }
+    keep[o] = 0;
+    if (!keep[0]) lstrcpynA(keep, g_scanChan, cap);
+}
+
+/* schedule AP restart, wait, re-read state; TRUE when channel is back
+ * and visible (<= 64) */
+static BOOL scanRestartAndVerify(const wchar_t *ask, const wchar_t *kh,
+                                 int *finalChan)
+{
+    char out[2048];
+    int  i;
+
+    runSsh(ask, kh, SCAN_RESTART_CMD, NULL, out, sizeof out, 8000);
+    printf("  AP restart scheduled, waiting 12 s...\n");
+    for (i = 0; i < 12; i++) Sleep(1000);
+    if (runSsh(ask, kh, SCAN_STATUS_CMD, NULL, out, sizeof out, 12000) != 0) {
+        printf("  scanner not reachable yet after the restart\n");
+        *finalChan = -1;
+        return FALSE;
+    }
+    scanParse(out, NULL, NULL, finalChan);
+    return (*finalChan >= 1 && *finalChan <= 64);
+}
+
+static int scannerWifi(const char *mode)
+{
+    wchar_t ask[MAX_PATH], kh[MAX_PATH], dir[MAX_PATH], facW[MAX_PATH + 80];
+    char    facA[MAX_PATH + 80];
+    char    out[4096], cc[16], row[200], keep[200], remote[512];
+    int     rc, chan = -1, i = -1;
+    BOOL    haveFactory;
+
+    if (!okIpChars(g_scanIp))      { printf("bad --scanner-ip\n");      return 2; }
+    if (!okRowChars(g_scanChan))   { printf("bad --scanner-channels\n");return 2; }
+
+    scanDataDir(dir, MAX_PATH);
+    wcscpy(facW, dir);
+    lstrcatW(facW, L"\\country_code.db.factory");
+    w2a(facW, facA, sizeof facA);
+    haveFactory = (GetFileAttributesA(facA) != INVALID_FILE_ATTRIBUTES);
+
+    if (!sshPrep(ask, kh)) { printf("cannot write temp askpass file\n"); return 1; }
+
+    printf("scanner %s @ %s\n", mode, g_scanIp);
+    rc = runSsh(ask, kh, SCAN_STATUS_CMD, NULL, out, sizeof out, 12000);
+    if (rc == -2) { printf("ssh.exe not found (optional Windows feature "
+                           "'OpenSSH Client')\n"); sshDone(ask); return 1; }
+    if (rc != 0 && !*out) {
+        printf("cannot reach the scanner over ssh - is it on and paired "
+               "to this PC (Wi-Fi or USB 192.168.40.3)?\n");
+        sshDone(ask); return 1;
+    }
+    scanParse(out, cc, row, &chan);
+    printf("  country=%s row=%s ap_channel=%d\n", cc, row, chan);
+
+    if (!okCcChars(cc) || !row[0]) {
+        printf("unexpected status output:\n"); scanShow(out);
+        sshDone(ask); return 1;
+    }
+
+    if (_stricmp(mode, "status") == 0) {
+        BOOL risky = FALSE;
+        const char *r = row;
+        while (*r) {
+            int v = atoi(r);
+            if (v > 64) risky = TRUE;
+            r = strchr(r, ',');
+            if (!r) break;
+            r++;
+        }
+        printf("  verdict: %s\n",
+               risky ? "row contains 5.8 GHz channels - phones with local "
+                       "regulation may not see the AP; run --scanner-wifi fix"
+                     : (chan >= 1 && chan <= 64)
+                     ? "OK - AP is on a locally visible channel"
+                     : "AP is currently on a high channel");
+        sshDone(ask); return 0;
+    }
+
+    if (_stricmp(mode, "fix") == 0) {
+        scanNarrow(row, keep, sizeof keep);
+        if (strcmp(keep, row) == 0) {
+            printf("  already narrowed to %s - nothing to do\n", keep);
+            sshDone(ask); return 0;
+        }
+        /* one-time factory backup is mandatory before any write */
+        if (!haveFactory) {
+            unsigned char db[8192];
+            int n;
+            rc = runSsh(ask, kh, SCAN_B64DB_CMD, NULL, out, sizeof out, 15000);
+            n = (rc == 0) ? b64Decode(out, db, sizeof db) : -1;
+            if (n < 100 || memcmp((char *) db, "AD:", 3) != 0) {
+                printf("  could not fetch a factory backup - refusing to "
+                       "patch\n");
+                sshDone(ask); return 1;
+            }
+            { FILE *f = fopen(facA, "wb");
+              if (!f) { printf("  cannot write %s\n", facA);
+                        sshDone(ask); return 1; }
+              fwrite(db, 1, n, f); fclose(f); }
+            printf("  factory table saved: %s\n", facA);
+        }
+        wsprintfA(remote,
+            "sed -i 's|^%s:.*|%s:%s|' " SCAN_DB " && sync && echo PATCHED",
+            cc, cc, keep);
+        if (!okRowChars(keep)) { printf("internal row check failed\n");
+                                 sshDone(ask); return 1; }
+        rc = runSsh(ask, kh, remote, NULL, out, sizeof out, 10000);
+        if (rc != 0 || !strstr(out, "PATCHED")) {
+            printf("  patch failed:\n"); scanShow(out);
+            sshDone(ask); return 1;
+        }
+        printf("  row %s: %s -> %s\n", cc, row, keep);
+        if (!scanRestartAndVerify(ask, kh, &i)) {
+            printf("  RESULT: restarted, but verification did not confirm a "
+                   "visible channel (channel=%d)\n", i);
+            sshDone(ask); return 1;
+        }
+        printf("  RESULT: OK - AP now on channel %d (visible to phones "
+               "with local regulation)\n", i);
+        sshDone(ask); return 0;
+    }
+
+    if (_stricmp(mode, "rollback") == 0) {
+        FILE  *f;
+        long   sz;
+        unsigned char *buf;
+        char  *b64;
+        if (!haveFactory) {
+            printf("no factory backup in %s\n", facA);
+            sshDone(ask); return 1;
+        }
+        f = fopen(facA, "rb");
+        if (!f) { printf("cannot read backup\n"); sshDone(ask); return 1; }
+        fseek(f, 0, SEEK_END); sz = ftell(f); fseek(f, 0, SEEK_SET);
+        if (sz < 100 || sz > 200000) { fclose(f);
+            printf("backup file looks wrong (%ld bytes)\n", sz);
+            sshDone(ask); return 1; }
+        buf = (unsigned char *) malloc(sz); b64 = (char *) malloc(sz * 4 / 3 + 8);
+        if (!buf || !b64) { free(buf); free(b64); fclose(f);
+            printf("out of memory\n"); sshDone(ask); return 1; }
+        fread(buf, 1, sz, f); fclose(f);
+        b64Encode(buf, (int) sz, b64, (int) (sz * 4 / 3 + 8));
+        free(buf);
+        rc = runSsh(ask, kh,
+                    "base64 -d > " SCAN_DB " && sync && echo RESTORED",
+                    b64, out, sizeof out, 15000);
+        free(b64);
+        if (rc != 0 || !strstr(out, "RESTORED")) {
+            printf("  restore failed:\n"); scanShow(out);
+            sshDone(ask); return 1;
+        }
+        printf("  factory table restored\n");
+        scanRestartAndVerify(ask, kh, &i);
+        printf("  RESULT: AP channel %d (factory behaviour is back)\n", i);
+        sshDone(ask); return 0;
+    }
+
+    printf("mode must be status | fix | rollback\n");
+    sshDone(ask);
+    return 2;
+}
+
+/* ------------------------------------------------------------------ */
+/* Scanner fan control  (--scanner-fan)                                */
+/* ------------------------------------------------------------------ */
+/*
+ * The vendor fan curve lives inside the scanner app (app_tx2): duty
+ * goes to /dev/hwmon/pwm1, RPM comes from /dev/hwmon/fan1_input, the
+ * SoC temperature from /sys/class/thermal. Community patches replace
+ * that curve with a closed control loop. We provide two forms, both
+ * memory-only (reboot always restores factory behaviour):
+ *
+ *  shell-pid (default): a small PID loop running as a shell script
+ *      in RAM (/tmp), reading the temperature node and writing the
+ *      PWM node. Works on every firmware build, writes nothing to
+ *      flash outside /tmp, stop = `--scanner-fan stop`.
+ *
+ *  memhook: the in-process A64 control loop designed for the factory
+ *      EXStar 2.1.0-10 app_tx2 (a hook over the vendor curve branch
+ *      plus a code cave in the second PT_LOAD segment). Applied by
+ *      writing to /proc/<pid>/mem only - the binary on disk is never
+ *      modified; restore = write back the saved snapshot. Refused
+ *      unless the strict profile gate passes (file size + factory
+ *      anchor words + code segment mapped writable).
+ *
+ * Transport reuses the ssh helpers of the Wi-Fi tool; scripts and
+ * blobs arrive base64'd through stdin, so no quoting applies.
+ */
+
+/* ---- A64 encoders: exact replicas of the instruction words used
+ * ---- by the field-tested community patch (see research-fan doc) -- */
+static DWORD a64Movz(int rd, DWORD imm) { return 0x52800000u | ((imm & 0xFFFF) << 5) | (rd & 31); }
+static DWORD a64CmpW1(int rn, DWORD imm)
+    { return 0x7100001Fu | ((imm & 0xFFF) << 10) | ((rn & 31) << 5); }
+static DWORD a64Cmp(int rn, int rm)  { return 0x6B00001Fu | ((rm & 31) << 16) | ((rn & 31) << 5); }
+static DWORD a64CmpR(int rn, int rm) { return 0x6A00001Fu | ((rm & 31) << 16) | ((rn & 31) << 5); }
+static DWORD a64Sub(int rd, int rn, DWORD imm)
+    { return 0x51000000u | ((imm & 0xFFF) << 10) | ((rn & 31) << 5) | (rd & 31); }
+static DWORD a64SubR(int rd, int rn, int rm)
+    { return 0x4B000000u | ((rm & 31) << 16) | ((rn & 31) << 5) | (rd & 31); }
+static DWORD a64AddR(int rd, int rn, int rm)
+    { return 0x0B000000u | ((rm & 31) << 16) | ((rn & 31) << 5) | (rd & 31); }
+static DWORD a64Madd(int rd, int rn, int rm, int ra)
+    { return 0x1B000000u | ((rm & 31) << 16) | ((ra & 31) << 10) | ((rn & 31) << 5) | (rd & 31); }
+static DWORD a64Csel(int rd, int rn, int rm, int cond)
+    { return 0x1A800000u | ((rm & 31) << 16) | ((cond & 15) << 12) | ((rn & 31) << 5) | (rd & 31); }
+static DWORD a64LdrW(int rt, int rn, DWORD imm12)
+    { return 0xB9400000u | ((imm12 & 0xFFF) << 10) | ((rn & 31) << 5) | (rt & 31); }
+static DWORD a64StrW(int rt, int rn, DWORD imm12)
+    { return 0xB9000000u | ((imm12 & 0xFFF) << 10) | ((rn & 31) << 5) | (rt & 31); }
+static DWORD a64Asr(int rd, int rn, int amt)
+    { return 0x13000800u | ((amt & 63) << 16) | 0x7C00u | ((rn & 31) << 5) | (rd & 31); }
+static DWORD a64MovR(int rd, int rn) { return 0x2A0003E0u | ((rn & 31) << 16) | (rd & 31); }
+static DWORD a64B(DWORD from, DWORD to)
+    { return 0x14000000u | (((to - from) / 4) & 0x03FFFFFFu); }
+static DWORD a64Bcond(DWORD from, DWORD to, int cond)
+    { return 0x54000000u | ((((to - from) / 4) & 0x7FFFF) << 5) | (cond & 15); }
+static DWORD a64AddImm(int rd, int rn, DWORD imm12)
+    { return 0x11000000u | ((imm12 & 0xFFF) << 10) | ((rn & 31) << 5) | (rd & 31); }
+static DWORD a64Adrp(int rd, DWORD pc, DWORD target)
+{
+    long long d = (long long) (target & ~0xFFFu) - (long long) (pc & ~0xFFFu);
+    DWORD imm = (DWORD) (d >> 12);
+    return 0x90000000u | ((imm & 3) << 29) | (((imm >> 2) & 0x7FFFF) << 5) | (rd & 31);
+}
+#define FAN_COND_LE 13
+#define FAN_COND_GE 10
+
+/* anchor profile of the factory EXStar 2.1.0-10 app_tx2 (file
+ * offsets). Verified against the community tool's own checks: file
+ * size 282624, factory anchor words cmp w12,#41 (0x7100a43f) at the
+ * hook and immediates 6/40, 44/10/40 around it. apply refuses
+ * anything that does not match this profile exactly. */
+#define SCAN_APP       "/shining3d/app_tx2"
+#define FAN_F_SIZE     282624
+#define FAN_F_HOOK     151088   /* vendor: cmp w1,#41 = 0x7100a43f   */
+#define FAN_F_HOOK_W0  0x7100A43Fu
+#define FAN_F_HOOK_W1  0x7100001Fu /* factory word at hook+4         */
+#define FAN_F_BASE1    151104   /* factory u32 6                     */
+#define FAN_F_STEP1    151112   /* factory u32 40                    */
+#define FAN_F_CMP2     151136   /* factory u32 44                    */
+#define FAN_F_BASE2    151152   /* factory u32 10                    */
+#define FAN_F_STEP2    151160   /* factory u32 40                    */
+#define FAN_F_TEMP     151216   /* u32: temperature global           */
+#define FAN_F_OUT      260512   /* u32: vendor PWM output variable   */
+#define FAN_F_CAVE     260424   /* start of the 2nd PT_LOAD (code)   */
+/* in-cave layout used by the loop: 0..127 = code (<=32 words),
+ * 128 integral(duty), 136 gain(Kp), 144 unused, 152 STATE=duty.
+ * The workspace must stay behind the code: the loop stores duty into
+ * the integral word every tick, so any overlap would corrupt itself. */
+#define FAN_C_CODE     128                    /* code budget, words=32 */
+#define FAN_C_INTEG    (FAN_F_CAVE + 128)
+#define FAN_C_KP       (FAN_F_CAVE + 136)
+#define FAN_C_KD       (FAN_F_CAVE + 144)
+#define FAN_C_STATE    (FAN_F_CAVE + 152)
+#define FAN_STATE_MAGIC 0x31465845u /* 'E''X''F''1' - loop armed, no tick yet */
+#define FAN_LOAD_REG   12       /* register the vendor code expects */
+
+static int g_fanGain   = 8;     /* loop rate, x1000                 */
+static int g_fanTarget = 450;   /* target temperature, deci-deg C   */
+static int g_fanMin    = 80, g_fanMax = 255;
+static int g_fanPoll   = 2000;  /* ms (shell mode)                  */
+static const char *g_fanMode = "shell";
+
+/* remote one-liners (single quotes only inside, wrapped in double
+ * quotes by runSsh) */
+static const char FAN_GETPID_CMD[] = "pidof app_tx2";
+static const char FAN_MAPS_CMD[]   = "cat /proc/$(pidof app_tx2)/maps";
+static const char FAN_HW_CMD[]     =
+    "echo PWM=$(cat /dev/hwmon/pwm1 2>/dev/null); "
+    "echo RPM=$(cat /dev/hwmon/fan1_input 2>/dev/null); "
+    "echo T=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)";
+static const char FAN_INFO_CMD[]   =
+    "echo PID=$(pidof app_tx2); "
+    "echo SZ=$(wc -c < " SCAN_APP " 2>/dev/null); "
+    "echo SHA=$(sha256sum " SCAN_APP " 2>/dev/null | cut -d\\  -f1); "
+    "echo PWM=$(cat /dev/hwmon/pwm1 2>/dev/null); "
+    "echo RPM=$(cat /dev/hwmon/fan1_input 2>/dev/null); "
+    "echo T=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null); "
+    "echo LOOP=$(if [ -f /tmp/exstar_fan.pid ] && "
+    "kill -0 $(cat /tmp/exstar_fan.pid) 2>/dev/null; "
+    "then echo on; else echo off; fi)";
+static const char FAN_PULL_CMD[]      = "base64 " SCAN_APP;
+static const char FAN_WRITE_TMPL[]    =
+    "base64 -d > /tmp/exstar_mem.bin && dd if=/tmp/exstar_mem.bin "
+    "of=/proc/%s/mem bs=1 seek=%llu conv=notrunc 2>&1 && "
+    "rm -f /tmp/exstar_mem.bin && echo WR";
+static const char FAN_READ_TMPL[]     =
+    "dd if=/proc/%s/mem bs=1 skip=%llu count=%d 2>/dev/null "
+    "| od -An -v -tx1";
+static const char FAN_LOOP_STAT_CMD[] =
+    "if [ -f /tmp/exstar_fan.pid ] && "
+    "kill -0 $(cat /tmp/exstar_fan.pid) 2>/dev/null; "
+    "then echo LOOP=on; else echo LOOP=off; fi; "
+    "cat /tmp/exstar_fan.state 2>/dev/null";
+static const char FAN_LOOP_STOP_CMD[] =
+    "if [ -f /tmp/exstar_fan.pid ]; then "
+    "kill $(cat /tmp/exstar_fan.pid) 2>/dev/null; "
+    "rm -f /tmp/exstar_fan.pid; fi; echo STOPPED";
+static const char FAN_WPIPE_CMD[]     =
+    "base64 -d > /tmp/exstar_fan.sh && chmod +x /tmp/exstar_fan.sh "
+    "&& echo WROTE";
+static const char FAN_LAUNCH_CMD[]    =
+    "(setsid nohup /tmp/exstar_fan.sh >/dev/null 2>&1 </dev/null & "
+    "echo LAUNCHED) || (nohup /tmp/exstar_fan.sh >/dev/null 2>&1 "
+    "</dev/null & echo LAUNCHED)";
+static const char FAN_SET_PWM_TMPL[]  = "echo %d > /dev/hwmon/pwm1 && "
+    "cat /dev/hwmon/pwm1";
+
+/* ---- shell PID loop script (default mode; RAM only) -------------- */
+static int fanBuildPidScript(char *buf, int cap)
+{
+    char slp[32];
+    const char *su;
+    int poll = g_fanPoll;
+    if (poll < 250) poll = 250;
+    if (poll % 10 == 0) wsprintfA(slp, "%d.%02d", poll / 100, (poll / 10) % 10);
+    else                wsprintfA(slp, "%.1f", poll / 100.0);
+    su = slp;
+    /* busybox `sleep 0.2` may be integer-only -> fall back to usleep
+     * (microseconds); the loop uses $SI $SLP or usleep $USLP */
+    return _snprintf(buf, cap,
+        "#!/bin/sh\n"
+        "# ExStar Mod Manager fan PID loop (RAM only, reboot restores)\n"
+        "PWM=/dev/hwmon/pwm1\n"
+        "TEMP=/sys/class/thermal/thermal_zone0/temp\n"
+        "STATE=/tmp/exstar_fan.state\n"
+        "PIDF=/tmp/exstar_fan.pid\n"
+        "TGT=%d\nMIN=%d\nMAX=%d\nG=%d\nSLP=%s\nUSLP=%d\n"
+        "SI=sleep; $SI $SLP 2>/dev/null || SI=usleep\n"
+        "echo $$ > \"$PIDF\"\n"
+        "I=$(cat \"$STATE\" 2>/dev/null)\n"
+        "case \"$I\" in ''|*[!0-9]*) I=100 ;; esac\n"
+        "while :; do\n"
+        "  T=$(cat \"$TEMP\" 2>/dev/null)\n"
+        "  case \"$T\" in ''|*[!0-9]*) T= ;; esac\n"
+        "  if [ -n \"$T\" ]; then\n"
+        "    E=$((TGT - T / 100))\n"
+        "    if [ \"$E\" -gt 0 ]; then I=$((I + G * E / 1000)); "
+        "else I=$((I + G * E / 500)); fi\n"
+        "    [ \"$I\" -lt \"$MIN\" ] && I=$MIN\n"
+        "    [ \"$I\" -gt \"$MAX\" ] && I=$MAX\n"
+        "    echo \"$I\" > \"$PWM\" 2>/dev/null\n"
+        "    echo \"$I\" > \"$STATE\" 2>/dev/null\n"
+        "  fi\n"
+        "  if [ \"$SI\" = usleep ]; then usleep \"$USLP\"; "
+        "else sleep \"$SLP\"; fi\n"
+        "done\n",
+        g_fanTarget, g_fanMin, g_fanMax, g_fanGain, su, g_fanPoll * 1000);}
+
+/* ---- in-process A64 loop (memhook mode) --------------------------
+ * Port of the field-tested community recipe (see artifacts/
+ * research-fan-patch-re-2026-11-21.md). Per vendor fan tick:
+ *   T = temp_global >> 10; if (T > target) duty += Kp*(T-target);
+ *   duty = clamp(duty, min, max); vendor PWM variable = duty;
+ *   reload the register the hooked instruction compared, resume.
+ * Hook = ONE word at FAN_F_HOOK: b cave (the factory word at hook+4
+ * stays, so the loop returns to hook+4 and the app re-executes it).
+ * Still open for the live probe (flagged, applied gate refuses any
+ * build that does not match the factory profile): the >>10 scale of
+ * the temperature global and the reload register. */
+static int fanBuildPidBlob(DWORD *w, DWORD off, DWORD minV, DWORD maxV,
+                           DWORD targetDeci)
+{
+    const int X = 9, T = 10, DUTY = 11, ERR = 12, KP = 13, TMP = 14;
+    DWORD n = 0, cmpImm;
+    /* the temp global holds milli-deg C; >>10 puts T in units of
+     * 1024 mC (~1 C), so target [deci] -> (deci*100)>>10. PROBE item. */
+    cmpImm = (targetDeci * 25) / 256;
+    if (cmpImm > 0xFFF || minV > 0xFFF || maxV > 0xFFF) return -1;
+    w[n++] = a64Adrp(X,   off +  0, FAN_F_TEMP);
+    w[n++] = a64LdrW(T,   X, FAN_F_TEMP & 0xFFF);   /* raw temp global */
+    w[n++] = a64Asr (T,   T, 10);                   /* T (scale: PROBE)*/
+    w[n++] = a64Adrp(X,   off + 12, FAN_C_INTEG);
+    w[n++] = a64AddImm(X, X, FAN_C_INTEG & 0xFFF);  /* x9 = &duty      */
+    w[n++] = a64LdrW(DUTY, X, 0);                   /* duty = integral */
+    w[n++] = a64CmpW1(T, cmpImm);
+    w[n++] = a64Bcond(off + 28, off + 92, FAN_COND_LE); /* T<=t: keep  */
+    w[n++] = a64Sub(ERR, T, cmpImm);                /* err = T - target*/
+    w[n++] = a64LdrW(KP,  X, 8);                    /* Kp word         */
+    w[n++] = a64Madd(DUTY, ERR, KP, DUTY);          /* duty += Kp*err  */
+    w[n++] = a64CmpW1(DUTY, minV);
+    w[n++] = a64Movz(TMP, minV);
+    w[n++] = a64Csel(DUTY, DUTY, TMP, FAN_COND_GE);
+    w[n++] = a64CmpW1(DUTY, maxV);
+    w[n++] = a64Movz(TMP, maxV);
+    w[n++] = a64Csel(DUTY, DUTY, TMP, FAN_COND_LE);
+    w[n++] = a64StrW(DUTY, X, 0);                   /* store clamped   */
+    w[n++] = a64Adrp(X,   off + 72, FAN_F_OUT);
+    w[n++] = a64StrW(DUTY, X, FAN_F_OUT & 0xFFF);   /* -> vendor PWM   */
+    w[n++] = a64Adrp(X,   off + 80, FAN_C_STATE);
+    w[n++] = a64StrW(DUTY, X, FAN_C_STATE & 0xFFF); /* status word     */
+    w[n++] = a64B   (off + 88, off + 92);           /* -> reload       */
+    w[n++] = a64Movz(FAN_LOAD_REG, 0);              /* reload (PROBE)  */
+    w[n++] = a64B   (off + 96, FAN_F_HOOK + 4);     /* back to the app */
+    if (n > FAN_C_CODE / 4) return -1;              /* code budget     */
+    return (int) n;
+}
+
+static void fanPutLE32(unsigned char *p, DWORD v)
+{
+    p[0] = (unsigned char) (v);        p[1] = (unsigned char) (v >> 8);
+    p[2] = (unsigned char) (v >> 16);  p[3] = (unsigned char) (v >> 24);
+}
+static DWORD fanGetLE32(const unsigned char *p)
+{
+    return (DWORD) p[0] | ((DWORD) p[1] << 8) | ((DWORD) p[2] << 16)
+           | ((DWORD) p[3] << 24);
+}
+static DWORD fanGetLE64(const unsigned char *p)
+{
+    return (DWORD) p[4] | ((DWORD) p[5] << 8) | ((DWORD) p[6] << 16)
+           | ((DWORD) p[7] << 24); /* low half of a 64-bit value  */
+}
+
+/* hex helpers for od output (" 71 a4 00 71\n") */
+static const char *fanHexTok(const char *p, DWORD *v)
+{
+    while (*p && *p != ' ' && *p != '\r' && *p != '\n') p++;
+    while (*p == ' ' || *p == '\r' || *p == '\n') p++;
+    if (!*p) return NULL;
+    *v = (DWORD) strtoul(p, NULL, 16);
+    while (*p && *p != ' ' && *p != '\r' && *p != '\n') p++;
+    return p;
+}
+static int fanParseHexAll(const char *s, DWORD *v, int max)
+{
+    int n = 0;
+    DWORD x = 0;
+    const char *p = s;
+    while (*p == ' ' || *p == '\r' || *p == '\n') p++;
+    while (n < max && *p && *p != ' ' && *p != '\r' && *p != '\n') {
+        char c = *p;
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+              || (c >= 'A' && c <= 'F'))) { p++; continue; }
+        x = 0;
+        p = fanHexTok(p - 1, &x);
+        if (!p) break;
+        v[n++] = x;
+    }
+    return n;
+}
+static int fanHexBytes(const unsigned char *b, int len, char *hex, int cap)
+{
+    static const char *T = "0123456789abcdef";
+    int i, o = 0;
+    for (i = 0; i < len; i++) {
+        if (o + 3 > cap) return -1;
+        hex[o++] = T[b[i] >> 4]; hex[o++] = T[b[i] & 15]; hex[o++] = ' ';
+    }
+    hex[o] = 0;
+    return o;
+}
+
+/* extract "KEY=value" value from command output into val */
+static BOOL fanVal(const char *out, const char *key, char *val, int cap)
+{
+    char k[24];
+    const char *p;
+    int n = 0;
+    wsprintfA(k, "%s=", key);
+    p = strstr(out, k);
+    if (!p) { val[0] = 0; return FALSE; }
+    p += strlen(k);
+    while (*p && *p != '\r' && *p != '\n' && n < cap - 1) val[n++] = *p++;
+    val[n] = 0;
+    return TRUE;
+}
+
+/* first executable segment base from /proc/maps text (app_tx2) */
+static unsigned long long fanMapsBase(const char *maps)
+{
+    const char *p = maps;
+    while (p && *p) {
+        const char *nl = strpbrk(p, "\r\n");
+        if (strstr(p, "r-xp") && strstr(p, SCAN_APP) && !strstr(p, ".orig")) {
+            char tok[32];
+            int n = 0;
+            const char *q = p;
+            while (*q && *q != '-' && n < 31) tok[n++] = *q++;
+            tok[n] = 0;
+            return strtoull(tok, NULL, 16);
+        }
+        if (!nl) break;
+        p = nl + 1;
+        while (*p == '\r' || *p == '\n') p++;
+    }
+    return 0;
+}
+/* find the mapping containing va; returns perms string, FALSE if none */
+static BOOL fanMapAt(const char *maps, unsigned long long va, char *perm, int cap)
+{
+    const char *p = maps;
+    if (perm) perm[0] = 0;
+    while (p && *p) {
+        char tok[32];
+        int n = 0;
+        const char *q = p, *sp;
+        unsigned long long lo, hi;
+        while (*q && *q != '-' && n < 31) tok[n++] = *q++;
+        tok[n] = 0;
+        lo = strtoull(tok, NULL, 16);
+        n = 0;
+        while (*q && *q != '-' && *q != ' ') q++;      /* pass '-'   */
+        if (*q == '-') q++;
+        while (*q && *q != ' ' && n < 31) tok[n++] = *q++;
+        tok[n] = 0;
+        hi = strtoull(tok, NULL, 16);
+        if (lo && hi && va >= lo && va < hi) {
+            sp = q;
+            while (*sp == ' ') sp++;
+            n = 0;
+            while (*sp && *sp != ' ' && n < cap - 1) perm[n++] = *sp++;
+            perm[n] = 0;
+            return TRUE;
+        }
+        p = strpbrk(p, "\r\n");
+        if (!p) break;
+        while (*p == '\r' || *p == '\n') p++;
+    }
+    return FALSE;
+}
+
+/* file offset -> virtual address via ELF64 program headers */
+static BOOL fanMap2Va(const unsigned char *elf, int len, unsigned long long off,
+                      unsigned long long *va)
+{
+    unsigned long long phoff;
+    unsigned short phentsize, phnum, i;
+    if (len < 64 || memcmp(elf, "\x7F" "ELF", 4) != 0 || elf[4] != 2) return FALSE;
+    memcpy(&phoff, elf + 32, 8);
+    memcpy(&phentsize, elf + 54, 2);
+    memcpy(&phnum, elf + 56, 2);
+    if (phentsize < 56 || !phnum) return FALSE;
+    for (i = 0; i < phnum; i++) {
+        const unsigned char *e = elf + phoff + (size_t) i * phentsize;
+        unsigned int type;
+        unsigned long long o, v;
+        if (e + 56 > elf + len) return FALSE;
+        memcpy(&type, e, 4);
+        memcpy(&o, e + 8, 8);
+        memcpy(&v, e + 16, 8);
+        if (type == 1 /* PT_LOAD */ && off >= o && off < o + 0x40000000ULL) {
+            /* p_filesz boundary check needs p_filesz (offset 32) */
+            unsigned long long fsz;
+            memcpy(&fsz, e + 32, 8);
+            if (off < o + fsz) { *va = v + (off - o); return TRUE; }
+        }
+    }
+    (void) len;
+    return FALSE;
+}
+
+/* snapshot file: "<8hex fileoff> <len> <hex bytes>" per line, one
+ * per saved RAM region (local only, next to the tool's state)     */
+static BOOL fanSnapPath(char *path, int cap, const char *verb)
+{
+    wchar_t dir[MAX_PATH], wpath[MAX_PATH + 64];
+    char ipSafe[64];
+    int i;
+    scanDataDir(dir, MAX_PATH);
+    lstrcpynA(ipSafe, g_scanIp, sizeof ipSafe);
+    for (i = 0; ipSafe[i]; i++)
+        if (!(ipSafe[i] >= '0' && ipSafe[i] <= '9')) ipSafe[i] = '_';
+    wsprintfW(wpath, L"%s\\fan-snap-%S.%s", dir, ipSafe,
+              _stricmp(verb, "read") == 0 ? L"tmp" : L"txt");
+    w2a(wpath, path, cap);
+    return TRUE;
+}
+static BOOL fanSnapSave(const char *offs[3], const int lens[3],
+                        const unsigned char *const bufs[3])
+{
+    char path[MAX_PATH];
+    FILE *f;
+    int i;
+    fanSnapPath(path, sizeof path, "write");
+    f = fopen(path, "wb");
+    if (!f) return FALSE;
+    for (i = 0; i < 3; i++) {
+        char hex[1024];
+        fanHexBytes(bufs[i], lens[i], hex, sizeof hex);
+        fprintf(f, "%s %d %s\n", offs[i], lens[i], hex);
+    }
+    fclose(f);
+    printf("  snapshot saved: %s\n", path);
+    return TRUE;
+}
+static int fanSnapLoad(char offs[3][16], int lens[3],
+                       unsigned char bufs[3][512])
+{
+    char path[MAX_PATH], line[1200];
+    FILE *f;
+    int n = 0;
+    fanSnapPath(path, sizeof path, "write");
+    f = fopen(path, "rb");
+    if (!f) return -1;
+    while (n < 3 && fgets(line, sizeof line, f)) {
+        unsigned long offv;
+        int lenv, i;
+        char *p = line, *end;
+        offv = strtoul(p, &end, 16);
+        if (end == p) continue;
+        p = end; lenv = (int) strtol(p, &end, 10);
+        if (end == p || lenv <= 0 || lenv > 512) continue;
+        wsprintfA(offs[n], "%08llx", (unsigned long long) offv);
+        lens[n] = lenv;
+        for (i = 0; i < lenv; i++) {
+            char *q;
+            while (*p && (*p == ' ' || *p == '\r' || *p == '\n'
+                          || (*p < '0') || (*p > 'f'))) p++;
+            bufs[n][i] = (unsigned char) strtoul(p, &q, 16);
+            p = q;
+        }
+        n++;
+    }
+    fclose(f);
+    return n;
+}
+
+/* read `count` bytes of process RAM at file offset `foff`; needs the
+ * app base; returns byte count or -1 */
+static int fanReadRam(const wchar_t *ask, const wchar_t *kh, const char *pid,
+                      unsigned long long base, unsigned long long foff,
+                      unsigned char *outb, int count)
+{
+    char cmd[512], rout[4096];
+    DWORD words[128];
+    int i, n;
+    unsigned long long va = base + foff;
+    if (count % 4 || count > 512 || !base) return -1;
+    wsprintfA(cmd, FAN_READ_TMPL, pid, va, count);
+    if (runSsh(ask, kh, cmd, NULL, rout, sizeof rout, 10000) != 0) return -1;
+    n = fanParseHexAll(rout, words, count / 4);
+    if (n * 4 != count) {
+        /* od may split words differently; fall back to byte parse  */
+        n = fanParseHexAll(rout, words, 128);
+        if (n * 4 != count) return -2;
+    }
+    for (i = 0; i < count / 4; i++) fanPutLE32(outb + i * 4, words[i]);
+    return count;
+}
+static BOOL fanWriteRam(const wchar_t *ask, const wchar_t *kh, const char *pid,
+                        unsigned long long base, unsigned long long foff,
+                        const unsigned char *data, int len)
+{
+    char cmd[2048], rout[512];
+    char *b64;
+    unsigned long long va = base + foff;
+    int rc;
+    if (len > 512 || !base) return FALSE;
+    b64 = (char *) malloc(len * 4 / 3 + 8);
+    if (!b64) return FALSE;
+    b64Encode(data, len, b64, len * 4 / 3 + 8);
+    wsprintfA(cmd, FAN_WRITE_TMPL, pid, va);
+    rc = runSsh(ask, kh, cmd, b64, rout, sizeof rout, 15000);
+    free(b64);
+    return rc == 0 && strstr(rout, "WR") != NULL;
+}
+
+/* classify hook words (file offsets are RAM-relative here):
+ * 0 = original, 1 = memhook, 2 = already patched unknown, -1 bad */
+static int fanClassify(DWORD w0, DWORD w1)
+{
+    (void) w1;
+    if (w0 == FAN_F_HOOK_W0) return 0;
+    if ((w0 & ~0x1FFFFFFFu) == 0x14000000u) return 1;   /* b: our hook */
+    if ((w0 & 0xFFE00000u) == 0x52800000u)  return 2;   /* movz: fixed */
+    if ((w0 & 0xFFE0FC1Fu) == 0x7100001Fu)  return 3;   /* cmp: curve  */
+    return -1;
+}
+
+static void fanShowHw(const char *out)
+{
+    char v[32];
+    if (fanVal(out, "PWM", v, sizeof v)) printf("  pwm=%s", v);
+    if (fanVal(out, "RPM", v, sizeof v)) printf(" rpm=%s", v);
+    if (fanVal(out, "T",   v, sizeof v)) printf(" temp=%s", v);
+    printf("\n");
+}
+
+/* ---- apply: shell-pid -------------------------------------------- */
+static int fanApplyShell(const wchar_t *ask, const wchar_t *kh)
+{
+    char script[2048], b64[4096], rout[1024], out[1024];
+    int n;
+
+    /* replace an existing loop (its state file keeps continuity) */
+    runSsh(ask, kh, FAN_LOOP_STOP_CMD, NULL, rout, sizeof rout, 8000);
+
+    n = fanBuildPidScript(script, sizeof script);
+    b64Encode((unsigned char *) script, n, b64, sizeof b64);
+    if (runSsh(ask, kh, FAN_WPIPE_CMD, b64, rout, sizeof rout, 10000) != 0
+        || !strstr(rout, "WROTE")) {
+        printf("  could not upload the loop script\n");
+        return 1;
+    }
+    if (runSsh(ask, kh, FAN_LAUNCH_CMD, NULL, rout, sizeof rout, 8000) != 0
+        || !strstr(rout, "LAUNCHED")) {
+        printf("  could not launch the loop\n");
+        return 1;
+    }
+    printf("  loop launched (target %.1f C, duty %d..%d, rate %.3f/s"
+           ", poll %d ms)\n",
+           g_fanTarget / 10.0, g_fanMin, g_fanMax, g_fanGain / 1000.0,
+           g_fanPoll);
+    Sleep(3000);
+    runSsh(ask, kh, FAN_LOOP_STAT_CMD, NULL, out, sizeof out, 8000);
+    printf("  %s\n", out);
+    runSsh(ask, kh, FAN_HW_CMD, NULL, out, sizeof out, 8000);
+    fanShowHw(out);
+    printf("  stop: --scanner-fan stop   (rollback = reboot)\n");
+    return 0;
+}
+
+/* first token of `s` into `tok` (pids, addresses) */
+static void fanTok(const char *s, char *tok, int cap)
+{
+    int n = 0;
+    while (*s == ' ') s++;
+    while (*s && *s != ' ' && *s != '\r' && *s != '\n' && n < cap - 1)
+        tok[n++] = *s++;
+    tok[n] = 0;
+}
+
+/* ---- apply: memhook ---------------------------------------------- */
+static int fanApplyMemhook(const wchar_t *ask, const wchar_t *kh)
+{
+    char out[1024], info[2048], pid[32], pidTok[32];
+    unsigned char *elf = NULL, *blob;
+    unsigned long long base;
+    DWORD w[32];
+    unsigned char buf[512];
+    int n, rc, i, bl = 0;
+    unsigned char *snapB[3];
+    const char *snapO[3];
+    int snapL[3];
+    char offStr[3][16];
+    int ok;
+
+    /* 1. info */
+    if (runSsh(ask, kh, FAN_INFO_CMD, NULL, info, sizeof info, 15000) != 0) {
+        printf("  scanner not reachable\n");
+        return 1;
+    }
+    fanVal(info, "PID", pid, sizeof pid);
+    fanTok(pid, pidTok, sizeof pidTok);
+    if (!pidTok[0] || !isdigit(pidTok[0])) {
+        printf("  app_tx2 is not running - memhook applies to a live"
+               " process; start the scanner app first\n");
+        return 1;
+    }
+    printf("  app_tx2 pid=%s\n", pidTok);
+
+    /* 2. binary + profile gate */
+    {
+        char *b64out = (char *) malloc(700 * 1024);
+        if (!b64out) return 1;
+        rc = runSsh(ask, kh, FAN_PULL_CMD, NULL, b64out, 700 * 1024, 60000);
+        if (rc != 0) { free(b64out); printf("  cannot read " SCAN_APP "\n");
+                       return 1; }
+        elf = (unsigned char *) malloc(400 * 1024);
+        if (!elf) { free(b64out); return 1; }
+        bl = b64Decode(b64out, elf, 400 * 1024);
+        free(b64out);
+        if (bl < 64) { free(elf); printf("  bad binary read\n"); return 1; }
+    }
+    if (bl != FAN_F_SIZE) {
+        char hv[80];
+        fanVal(info, "SHA", hv, sizeof hv);
+        printf("  profile gate: file size %d != %d (sha %s)\n"
+               "  this build is not the factory 2.1.0-10 image - memhook"
+               " refused.\n  Use the default shell loop instead"
+               " (drop --fan-mode memhook).\n", bl, FAN_F_SIZE, hv);
+        free(elf);
+        return 2;
+    }    {
+        struct { unsigned long long off; DWORD want; const char *name; }
+        gate[] = {
+            { FAN_F_HOOK,  FAN_F_HOOK_W0, "hook cmp w1,#41" },
+            { FAN_F_HOOK + 4, FAN_F_HOOK_W1, "hook word2" },
+            { FAN_F_BASE1, 6,  "base1==6"  },
+            { FAN_F_STEP1, 40, "step1==40" },
+            { FAN_F_CMP2,  44, "cmp2==44"  },
+            { FAN_F_BASE2, 10, "base2==10" },
+            { FAN_F_STEP2, 40, "step2==40" },
+        };
+        for (i = 0; i < (int) (sizeof gate / sizeof gate[0]); i++) {
+            DWORD v = fanGetLE32(elf + gate[i].off);
+            if (v != gate[i].want) {
+                printf("  profile gate: %s FAILED (found 0x%08x at %llu,"
+                       " want 0x%08x)\n",
+                       gate[i].name, v, gate[i].off, gate[i].want);
+                printf("  memhook refused - use the shell loop mode\n");
+                free(elf);
+                return 2;
+            }
+        }
+    }
+    printf("  profile gate OK (factory 2.1.0-10 anchors)\n");
+
+    /* 3. base + writability */
+    if (runSsh(ask, kh, FAN_MAPS_CMD, NULL, out, sizeof out, 10000) != 0) {
+        free(elf);
+        printf("  cannot read /proc/pid/maps\n");
+        return 1;
+    }
+    base = fanMapsBase(out);
+    if (!base) { free(elf); printf("  cannot find the app_tx2 code mapping\n");
+                 return 1; }
+    printf("  code base 0x%llx\n", base);
+    {
+        char perm[8];
+        if (!fanMapAt(out, base + FAN_F_CAVE, perm, sizeof perm)
+            || perm[1] != 'w') {
+            printf("  segment at the cave is '%s' (not writable) - this"
+                   " kernel forbids RAM text patching via /proc/mem.\n"
+                   "  Use the shell loop mode instead.\n",
+                   perm[0] ? perm : "???");
+            free(elf);
+            return 2;
+        }
+    }
+
+    /* 4. current hook state */
+    if (fanReadRam(ask, kh, pidTok, base, FAN_F_HOOK, buf, 8) != 8) {
+        free(elf);
+        printf("  cannot read the hook site (EIO means this build"
+               " forbids RAM patching - use the shell loop)\n");
+        return 1;
+    }
+    {
+        int cls = fanClassify(fanGetLE32(buf), fanGetLE32(buf + 4));
+        if (cls == 1) {
+            printf("  memhook already active\n");
+            free(elf);
+            return 0;
+        }
+        if (cls != 0) {
+            printf("  hook site is neither factory nor our patch"
+                   " (w0=0x%08x) - refusing\n", fanGetLE32(buf));
+            free(elf);
+            return 2;
+        }
+    }
+
+    /* 5. snapshot hook(8) + cave(256) + state(4) from RAM */
+    snapB[0] = (unsigned char *) malloc(8);
+    snapB[1] = (unsigned char *) malloc(256);
+    snapB[2] = (unsigned char *) malloc(4);
+    if (!snapB[0] || !snapB[1] || !snapB[2]) { free(elf); return 1; }
+    ok = fanReadRam(ask, kh, pidTok, base, FAN_F_HOOK, snapB[0], 8) == 8
+      && fanReadRam(ask, kh, pidTok, base, FAN_F_CAVE, snapB[1], 256) == 256
+      && fanReadRam(ask, kh, pidTok, base, FAN_C_STATE, snapB[2], 4) == 4;
+    if (!ok) {
+        printf("  cannot snapshot the target regions\n");
+        free(snapB[0]); free(snapB[1]); free(snapB[2]); free(elf);
+        return 1;
+    }
+    wsprintfA(offStr[0], "%08llx", (unsigned long long) FAN_F_HOOK);
+    wsprintfA(offStr[1], "%08llx", (unsigned long long) FAN_F_CAVE);
+    wsprintfA(offStr[2], "%08llx", (unsigned long long) FAN_C_STATE);
+    for (i = 0; i < 3; i++) snapO[i] = offStr[i];
+    snapL[0] = 8; snapL[1] = 256; snapL[2] = 4;
+    fanSnapSave(snapO, snapL, (const unsigned char *const *) snapB);
+
+    /* 6. build + write cave (code, gain word, magic state) */
+    blob = (unsigned char *) malloc(512);
+    if (!blob) { free(elf); return 1; }
+    n = fanBuildPidBlob(w, FAN_F_CAVE, (DWORD) g_fanMin, (DWORD) g_fanMax,
+                        (DWORD) g_fanTarget);
+    if (n < 0) { free(elf); free(blob); return 1; }
+    memset(blob, 0, 256);
+    for (i = 0; i < n; i++) fanPutLE32(blob + i * 4, w[i]);
+    fanPutLE32(blob + (FAN_C_KP    - FAN_F_CAVE), (DWORD) g_fanGain);
+    fanPutLE32(blob + (FAN_C_KD    - FAN_F_CAVE), 0);
+    fanPutLE32(blob + (FAN_C_STATE - FAN_F_CAVE), FAN_STATE_MAGIC);
+    /* integral init = current duty (keep the fan where it is) */
+    {
+        char hw[512], v[24];
+        DWORD init = 100;
+        runSsh(ask, kh, FAN_HW_CMD, NULL, hw, sizeof hw, 8000);
+        if (fanVal(hw, "PWM", v, sizeof v) && v[0]) init = (DWORD) atoi(v);
+        fanPutLE32(blob + (FAN_C_INTEG - FAN_F_CAVE), init);
+        printf("  loop armed: integral=%lu, gain=%d, target=%.1f C,"
+               " clamp %d..%d\n", init, g_fanGain, g_fanTarget / 10.0,
+               g_fanMin, g_fanMax);
+    }
+    if (!fanWriteRam(ask, kh, pidTok, base, FAN_F_CAVE, blob, 256)) {
+        printf("  cave write failed (EIO -> this build forbids RAM"
+               " patching; use the shell loop)\n");
+        free(elf); free(blob);
+        return 1;
+    }
+
+    /* 7. hook word: one b into the cave; the factory word at hook+4
+     * stays untouched (the loop returns to it and the app re-executes) */
+    {
+        unsigned char hook[8];
+        fanPutLE32(hook, a64B(FAN_F_HOOK, FAN_F_CAVE));
+        if (!fanWriteRam(ask, kh, pidTok, base, FAN_F_HOOK, hook, 4)) {
+            printf("  hook write failed - restoring cave\n");
+            fanWriteRam(ask, kh, pidTok, base, FAN_F_CAVE, snapB[1], 256);
+            free(elf); free(blob);
+            return 1;
+        }
+    }
+
+    /* 8. verify read-back + first tick */
+    if (fanReadRam(ask, kh, pidTok, base, FAN_F_HOOK, buf, 8) != 8
+        || fanGetLE32(buf) != a64B(FAN_F_HOOK, FAN_F_CAVE)
+        || fanGetLE32(buf + 4) != FAN_F_HOOK_W1) {
+        printf("  verification FAILED - rolling back now\n");
+        fanWriteRam(ask, kh, pidTok, base, FAN_F_HOOK, snapB[0], 8);
+        fanWriteRam(ask, kh, pidTok, base, FAN_F_CAVE, snapB[1], 256);
+        free(elf); free(blob);
+        return 1;
+    }
+    printf("  hook verified in RAM (file on disk untouched)\n");
+    Sleep(4000);
+    if (fanReadRam(ask, kh, pidTok, base, FAN_C_STATE, buf, 4) == 4) {
+        DWORD st = fanGetLE32(buf);
+        if (st == FAN_STATE_MAGIC)
+            printf("  state: armed (no vendor tick yet - duty updates"
+                   " appear when the fan task runs)\n");
+        else if (st <= 255)
+            printf("  state: loop alive, duty=%lu\n", st);
+        else
+            printf("  state: unexpected value 0x%08x - check duty/RPM\n", st);
+    }
+    runSsh(ask, kh, FAN_HW_CMD, NULL, out, sizeof out, 8000);
+    fanShowHw(out);
+    printf("  restore: --scanner-fan restore   (rollback = reboot)\n");
+    free(elf); free(blob);
+    free(snapB[0]); free(snapB[1]); free(snapB[2]);
+    return 0;
+}
+
+/* ---- restore ------------------------------------------------------ */
+static int fanRestore(const wchar_t *ask, const wchar_t *kh)
+{
+    char offs[3][16];
+    int lens[3];
+    unsigned char bufs[3][512];
+    char pid[32], out[1024];
+    unsigned long long base;
+    int n, i;
+
+    runSsh(ask, kh, FAN_LOOP_STOP_CMD, NULL, out, sizeof out, 8000);
+    n = fanSnapLoad(offs, lens, bufs);
+    if (n < 0) {
+        printf("  no RAM snapshot on this PC - nothing to restore"
+               " (a reboot always restores the factory curve)\n");
+        return 0;
+    }
+    runSsh(ask, kh, FAN_GETPID_CMD, NULL, out, sizeof out, 8000);
+    fanTok(out, pid, sizeof pid);
+    if (!pid[0] || !isdigit(pid[0])) {
+        printf("  app_tx2 is not running - factory state is back anyway\n");
+        return 0;
+    }
+    if (runSsh(ask, kh, FAN_MAPS_CMD, NULL, out, sizeof out, 10000) != 0)
+        return 1;
+    base = fanMapsBase(out);
+    if (!base) { printf("  cannot find the code mapping\n"); return 1; }
+    for (i = 0; i < n; i++) {
+        unsigned long long foff = strtoull(offs[i], NULL, 16);
+        if (!fanWriteRam(ask, kh, pid, base, foff, bufs[i], lens[i])) {
+            printf("  restore write failed at %s\n", offs[i]);
+            return 1;
+        }
+    }
+    if (fanReadRam(ask, kh, pid, base, FAN_F_HOOK, bufs[0], 8) == 8
+        && fanClassify(fanGetLE32(bufs[0]), fanGetLE32(bufs[0] + 4)) == 0)
+        printf("  hook site verified as factory\n");
+    else
+        printf("  WARNING: hook site did not verify as factory"
+               " - reboot to be safe\n");
+    printf("  restore done\n");
+    return 0;
+}
+
+/* ---- probe (profile research, read-only) -------------------------- */
+static int fanProbe(const wchar_t *ask, const wchar_t *kh)
+{
+    char info[2048], out[1024], maps[4096];
+    char v[80];
+    unsigned char *elf = NULL;
+    int bl = 0, i;
+    char path[MAX_PATH];
+    FILE *f;
+
+    if (runSsh(ask, kh, FAN_INFO_CMD, NULL, info, sizeof info, 15000) != 0) {
+        printf("  scanner not reachable\n");
+        return 1;
+    }
+    printf("  %s", info);
+    fanVal(info, "PID", v, sizeof v);
+    if (!v[0] || !isdigit(v[0])) {
+        printf("  app_tx2 not running - probing the on-disk binary only\n");
+    } else {
+        runSsh(ask, kh, FAN_MAPS_CMD, NULL, maps, sizeof maps, 10000);
+    }
+    {
+        char *b64out = (char *) malloc(700 * 1024);
+        int rc;
+        if (!b64out) return 1;
+        rc = runSsh(ask, kh, FAN_PULL_CMD, NULL, b64out, 700 * 1024, 60000);
+        if (rc == 0) {
+            elf = (unsigned char *) malloc(400 * 1024);
+            if (elf) bl = b64Decode(b64out, elf, 400 * 1024);
+        }
+        free(b64out);
+    }
+    if (bl < 64 || !elf) { printf("  cannot read " SCAN_APP "\n"); return 1; }
+    printf("  binary: %d bytes\n", bl);
+    fanSnapPath(path, sizeof path, "write");
+    {   /* probe report next to the snapshot */
+        char *dot = strrchr(path, '.');
+        if (dot) lstrcpynA(dot, "-probe.txt", 12);
+    }
+    f = fopen(path, "wb");
+    if (f) {
+        fprintf(f, "scanner fan probe %s\nIP %s\nbinary bytes %d\n",
+                "report", g_scanIp, bl);
+        fprintf(f, "info:\n%s\n", info);
+        fprintf(f, "maps:\n%s\n", maps);
+    }
+    /* ELF layout */
+    {
+        unsigned long long phoff;
+        unsigned short phentsize, phnum;
+        memcpy(&phoff, elf + 32, 8);
+        memcpy(&phentsize, elf + 54, 2);
+        memcpy(&phnum, elf + 56, 2);
+        printf("  ELF64 phnum=%u\n", phnum);
+        if (f) fprintf(f, "program headers (%u):\n", phnum);
+        for (i = 0; i < phnum; i++) {
+            const unsigned char *e = elf + phoff + (size_t) i * phentsize;
+            unsigned int type, flags;
+            unsigned long long o, v, fsz, msz;
+            if (e + 56 > elf + bl) break;
+            memcpy(&type, e, 4); memcpy(&flags, e + 4, 4);
+            memcpy(&o, e + 8, 8); memcpy(&v, e + 16, 8);
+            memcpy(&fsz, e + 32, 8); memcpy(&msz, e + 40, 8);
+            if (type == 1) {
+                printf("   PT_LOAD%d off=0x%llx va=0x%llx filesz=0x%llx"
+                       " flags=%c%c%c\n", i, o, v, fsz,
+                       (flags & 4) ? 'x' : '-', (flags & 2) ? 'w' : '-',
+                       (flags & 1) ? 'r' : '-');
+                if (f) fprintf(f, "PT_LOAD %d off=0x%llx va=0x%llx"
+                                  " filesz=0x%llx flags=%x\n",
+                                  i, o, v, fsz, flags);
+            }
+        }
+    }
+    /* factory anchor window */
+    if (bl > FAN_F_TEMP + 8) {
+        static const struct { unsigned int off; const char *name; }
+        probeAt[] = {
+            { FAN_F_HOOK - 16, "hook-16" }, { FAN_F_HOOK - 12, "hook-12" },
+            { FAN_F_HOOK - 8,  "hook-8"  }, { FAN_F_HOOK - 4,  "hook-4"  },
+            { FAN_F_HOOK,      "HOOK"    }, { FAN_F_HOOK + 4,  "hook+4"  },
+            { FAN_F_HOOK + 8,  "hook+8"  }, { FAN_F_HOOK + 12, "hook+12" },
+            { FAN_F_HOOK + 16, "hook+16" },
+            { FAN_F_BASE1, "base1" }, { FAN_F_STEP1, "step1" },
+            { FAN_F_CMP2,  "cmp2"  }, { FAN_F_BASE2, "base2" },
+            { FAN_F_STEP2, "step2" }, { FAN_F_TEMP,  "TEMP"  },
+            { FAN_F_TEMP + 4, "temp+4" },
+            { FAN_F_CAVE,  "CAVE"  }, { FAN_F_OUT,   "OUT"   },
+            { FAN_F_OUT + 4, "out+4" },
+        };
+        printf("  anchor window:\n");
+        if (f) fprintf(f, "anchor window:\n");
+        for (i = 0; i < (int) (sizeof probeAt / sizeof probeAt[0]); i++) {
+            unsigned int o = probeAt[i].off;
+            if (o + 4 <= (unsigned) bl) {
+                DWORD wv = fanGetLE32(elf + o);
+                printf("   %-8s @%8u = 0x%08x\n", probeAt[i].name, o, wv);
+                if (f) fprintf(f, "%-8s %u 0x%08x\n",
+                                  probeAt[i].name, o, wv);
+            }
+        }
+    }
+    /* candidate fan-curve blocks: the factory "cmp w12,#41" word */
+    {
+        int found0 = 0;
+        printf("  cmp w1,#41 candidates (0x%08x):\n", FAN_F_HOOK_W0);
+        for (i = 0; i + 4 <= bl; i += 4) {
+            DWORD wv = fanGetLE32(elf + i);
+            if (wv == FAN_F_HOOK_W0) {
+                printf("   0x%06x\n", (unsigned) i);
+                if (f) fprintf(f, "cand41 %d\n", i);
+                found0++;
+                if (found0 > 8) break;
+            }
+        }
+        if (!found0) printf("   none\n");
+    }
+    if (f) {
+        fprintf(f, "raw hook window bytes (151040..151288):\n");
+        for (i = 151040; i + 16 <= bl && i < 151288; i += 16) {
+            char hex[128];
+            fanHexBytes(elf + i, 16, hex, sizeof hex);
+            fprintf(f, "%06x: %s\n", i, hex);
+        }
+        fclose(f);
+        printf("  report saved: %s\n", path);
+    }
+    free(elf);
+    return 0;
+}
+
+/* ---- entry -------------------------------------------------------- */
+static int scannerFan(const char *mode)
+{
+    wchar_t ask[MAX_PATH], kh[MAX_PATH];
+    char out[2048];
+    int r = 1;
+
+    if (!okIpChars(g_scanIp)) { printf("bad --scanner-ip\n"); return 2; }
+    if (g_fanTarget < 0 || g_fanTarget > 1200 || g_fanMin < 0
+        || g_fanMax > 255 || g_fanMin > g_fanMax || g_fanGain < 1
+        || g_fanGain > 500 || g_fanPoll < 250 || g_fanPoll > 60000) {
+        printf("fan parameters out of range\n");
+        return 2;
+    }
+    if (!sshPrep(ask, kh)) { printf("cannot write temp askpass file\n");
+                             return 1; }
+    printf("scanner fan %s (%s) @ %s\n", mode, g_fanMode, g_scanIp);
+
+    if (_stricmp(mode, "status") == 0) {
+        if (runSsh(ask, kh, FAN_INFO_CMD, NULL, out, sizeof out, 15000) != 0)
+            printf("  scanner not reachable\n");
+        else
+            printf("  %s", out);
+        runSsh(ask, kh, FAN_HW_CMD, NULL, out, sizeof out, 8000);
+        fanShowHw(out);
+        r = 0;
+    } else if (_stricmp(mode, "apply") == 0) {
+        if (_stricmp(g_fanMode, "memhook") == 0)
+            r = fanApplyMemhook(ask, kh);
+        else if (_stricmp(g_fanMode, "shell") == 0)
+            r = fanApplyShell(ask, kh);
+        else
+            { printf("fan mode must be shell or memhook\n"); r = 2; }
+    } else if (_stricmp(mode, "stop") == 0) {
+        runSsh(ask, kh, FAN_LOOP_STOP_CMD, NULL, out, sizeof out, 8000);
+        printf("  %s\n", out);
+        r = 0;
+    } else if (_stricmp(mode, "restore") == 0) {
+        r = fanRestore(ask, kh);
+    } else if (_stricmp(mode, "probe") == 0) {
+        r = fanProbe(ask, kh);
+    } else {
+        printf("mode must be status | apply | stop | restore | probe\n");
+        r = 2;
+    }
+    sshDone(ask);
+    return r;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2850,8 +6955,11 @@ static int runCli(int argc, wchar_t **argv)
 {
     UINT mask = 0;
     int i, rc = 1;
-    int action = -1;               /* 0 install, 1 remove, 2 restore, 3 list */
+    int action = -1;               /* 0 install, 1 remove, 2 restore, 3 list,
+                                      4 scanner-wifi, 5 scanner-fan           */
     int modGiven = 0;
+    char scanMode[16] = "status";
+    char fanMode2[16] = "status";
 
     g_report = stdout;
     for (i = 1; i < argc; i++) {
@@ -2863,6 +6971,38 @@ static int runCli(int argc, wchar_t **argv)
             action = 2;
         else if (!_wcsicmp(argv[i], L"--list"))
             action = 3;
+        else if (!_wcsicmp(argv[i], L"--scanner-wifi") && i + 1 < argc) {
+            action = 4;
+            w2a(argv[++i], scanMode, sizeof scanMode);
+        }
+        else if (!_wcsicmp(argv[i], L"--scanner-fan") && i + 1 < argc) {
+            action = 5;
+            w2a(argv[++i], fanMode2, sizeof fanMode2);
+        }
+        else if (!_wcsicmp(argv[i], L"--fan-mode") && i + 1 < argc) {
+            static char fm[16];
+            w2a(argv[++i], fm, sizeof fm);
+            g_fanMode = fm;
+        }
+        else if (!_wcsicmp(argv[i], L"--fan-gain") && i + 1 < argc)
+            g_fanGain = (int) wcstod(argv[++i], NULL);
+        else if (!_wcsicmp(argv[i], L"--fan-target") && i + 1 < argc)
+            g_fanTarget = (int) (wcstod(argv[++i], NULL) * 10.0 + 0.5);
+        else if (!_wcsicmp(argv[i], L"--fan-min") && i + 1 < argc)
+            g_fanMin = (int) wcstod(argv[++i], NULL);
+        else if (!_wcsicmp(argv[i], L"--fan-max") && i + 1 < argc)
+            g_fanMax = (int) wcstod(argv[++i], NULL);
+        else if (!_wcsicmp(argv[i], L"--fan-poll") && i + 1 < argc)
+            g_fanPoll = (int) wcstod(argv[++i], NULL);
+        else if (!_wcsicmp(argv[i], L"--scanner-ip") && i + 1 < argc) {
+            w2a(argv[++i], g_scanIp, sizeof g_scanIp);
+        }
+        else if (!_wcsicmp(argv[i], L"--scanner-channels") && i + 1 < argc) {
+            w2a(argv[++i], g_scanChan, sizeof g_scanChan);
+        }
+        else if (!_wcsicmp(argv[i], L"--scanner-pass") && i + 1 < argc) {
+            w2a(argv[++i], g_scanPass, sizeof g_scanPass);
+        }
         else if (!_wcsicmp(argv[i], L"--modules") && i + 1 < argc) {
             char list[512];
             char *tok, *ctx;
@@ -2916,7 +7056,20 @@ static int runCli(int argc, wchar_t **argv)
                " [--scale 1.0..2.0] [--dim 0..100] [--app path]\n"
                "       ExStarModManager --restore [--app path]\n"
                "       ExStarModManager --list\n"
-               "       (install/remove without --modules = all bundled modules)\n");
+               "       (install/remove without --modules = all bundled modules)\n"
+               "       ExStarModManager --scanner-wifi status|fix|rollback\n"
+               "           [--scanner-ip 192.168.42.3] [--scanner-channels"
+               " 36,40,44,48] [--scanner-pass ...]\n"
+               "           (keeps the scanner AP visible to phones whose\n"
+               "            region blocks 5.8 GHz; see docs/scanner-wifi"
+               "-channel-fix.md)\n"
+               "       ExStarModManager --scanner-fan status|apply|stop|restore|probe\n"
+               "           [--fan-mode shell|memhook] [--fan-target 45.0]"
+               " [--fan-min 80]\n"
+               "           [--fan-max 255] [--fan-gain 8] [--fan-poll 2000]"
+               " [--scanner-ip ...]\n"
+               "           (memory-only fan control, reboot restores; see"
+               " docs/scanner-fan-control.md)\n");
         return 2;
     }
     /* full automation: --install / --remove without --modules act on
@@ -2927,6 +7080,8 @@ static int runCli(int argc, wchar_t **argv)
     case 0:  rc = doInstall(mask) ? 0 : 1; break;
     case 1:  rc = doRemove(mask) ? 0 : 1;  break;
     case 2:  rc = doRestore() ? 0 : 1;     break;
+    case 4:  rc = scannerWifi(scanMode);   break;
+    case 5:  rc = scannerFan(fanMode2);    break;
     default: doList(); rc = 0;             break;
     }
     return rc;
@@ -2944,6 +7099,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmdLine, int show)
     g_hInst = hInst;
 
     argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    cfgLoad();
     {   /* --zoom <f>: force the UI scale; the rest goes to the CLI */
         int i;
 
@@ -2959,6 +7115,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmdLine, int show)
                 break;
             }
         }
+        if (g_usForce <= 0.0f && g_zoomSaved >= 0.5f && g_zoomSaved <= 4.0f)
+            g_usForce = g_zoomSaved;     /* the settings page stored one */
     }
     if (argc > 1) {
         HANDLE oh;
@@ -2997,14 +7155,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmdLine, int show)
 
     memset(&wc, 0, sizeof wc);
     wc.cbSize        = sizeof wc;
-    wc.lpfnWndProc   = ctrlProc;
-    wc.hInstance     = hInst;
-    wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
-    wc.lpszClassName = L"ExSmCtrl";
-    RegisterClassExW(&wc);
-
-    memset(&wc, 0, sizeof wc);
-    wc.cbSize        = sizeof wc;
     wc.lpfnWndProc   = areaProc;
     wc.hInstance     = hInst;
     wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
@@ -3012,16 +7162,68 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmdLine, int show)
     wc.lpszClassName = L"ExSmArea";
     RegisterClassExW(&wc);
 
-    {   /* the design grid is 96 dpi; U() scales everything by g_us */
-        int h = U(542) + (g_modCount - 1) * U(66), i;
+    memset(&wc, 0, sizeof wc);
+    wc.cbSize        = sizeof wc;
+    wc.lpfnWndProc   = navProc;
+    wc.hInstance     = hInst;
+    wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
+    wc.lpszClassName = L"ExSmNav";
+    RegisterClassExW(&wc);
 
-        for (i = 0; i < g_modCount; i++)
-            h += cardHeightOf(&g_mods[i]) - U(58);
+    memset(&wc, 0, sizeof wc);
+    wc.cbSize        = sizeof wc;
+    wc.lpfnWndProc   = pageProc;
+    wc.hInstance     = hInst;
+    wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
+    wc.lpszClassName = L"ExSmPage";
+    RegisterClassExW(&wc);
+
+    memset(&wc, 0, sizeof wc);
+    wc.cbSize        = sizeof wc;
+    wc.lpfnWndProc   = emptyProc;
+    wc.hInstance     = hInst;
+    wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
+    wc.lpszClassName = L"ExSmEmpty";
+    RegisterClassExW(&wc);
+
+    {   /* dashboard footprint: sidebar + two-column card grid; the
+         * design size is clamped to the work area so a big --zoom
+         * never pushes a corner of the window off screen.
+         * NOTE: no WS_EX_COMPOSITED - double-buffering already lives in
+         * the child painters, and compositing a tree that contains
+         * WS_EX_LAYERED pages leaves the whole client black on Win11 */
+        int ww = U(1340), wh = U(800);
+        RECT wa;
+
+        if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) {
+            if (ww > (wa.right - wa.left) - U(24))
+                ww = (wa.right - wa.left) - U(24);
+            if (wh > (wa.bottom - wa.top) - U(24))
+                wh = (wa.bottom - wa.top) - U(24);
+        }
         hw = CreateWindowExW(0, L"ExStarModManagerWnd",
                              L"EXStar Hub Mod Manager " MANAGER_VERSION,
                              WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                             CW_USEDEFAULT, CW_USEDEFAULT, U(656), h,
+                             CW_USEDEFAULT, CW_USEDEFAULT, ww, wh,
                              NULL, NULL, hInst, NULL);
+        if (hw && SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) {
+            RECT r;
+
+            /* the CW_USEDEFAULT cascade ignores size - pull the window
+             * back until every corner sits inside the work area */
+            GetWindowRect(hw, &r);
+            if (r.left < wa.left || r.top < wa.top ||
+                r.right > wa.right || r.bottom > wa.bottom) {
+                int x = r.left, y = r.top;
+
+                if (r.right > wa.right)  x = wa.right  - (r.right - r.left);
+                if (r.bottom > wa.bottom) y = wa.bottom - (r.bottom - r.top);
+                if (x < wa.left)  x = wa.left;
+                if (y < wa.top)   y = wa.top;
+                SetWindowPos(hw, NULL, x, y, 0, 0,
+                             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+        }
     }
     g_mainHwnd = hw;
     {   /* dark title bar (Win10 1809+ / Win11); harmless if unavailable */
@@ -3038,7 +7240,4 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmdLine, int show)
     CoUninitialize();
     return 0;
 }
-
-
-
 

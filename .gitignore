@@ -14,6 +14,7 @@ release/*.exe
 
 # session reports and user screenshots (personal content, keep local)
 MORNING_REPORT.md
+OVERNIGHT_REPORT.md
 Screenshot_*.png
 Artboard 1.jpg
 
