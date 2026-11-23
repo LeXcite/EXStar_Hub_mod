@@ -26,8 +26,9 @@ verification and failure modes - readable cold, no external context needed.
 | [laser50](modules/laser50/README.md) | the complete 50-line feature, one switch: detours the exported `set_match_plane_id_vulkan` (by name) to widen the plane-id tuple `(3,21,3,21)` → `(0,24,0,24)` so all 25+25 lines reach the cloud, **and** rewrites only the label's argument (`.arg(50)`, translated qsTr source kept) so the Light Source Mode button reads `50 lines`; `7 lines` stays stock | ✅ live-verified on 2.x (file stamp 3.1.x, v1.1.0: 25×25 lines in a real scan + `50 lines` button, EN UI intact) |
 | [fitfill](modules/fitfill/README.md) | Ctrl+D / *Zoom to Fit* frames the model into the viewport: forces the manipulator's `setIsZoomOptimization` export off (the same switch the friend's version-bound byte patch cleared - semantics now RE'd: pinned camera distance mode); from 2.1.0-10 additionally forces `setEnableScanScale(true)` at its single call site (in-memory, import-anchored) | ⚠️ hook mechanism verified on 2.0.0-45; on 2.1.0-10 the flag became dead code (analysis: [zoom-fit-optimization.md §6](docs/research/zoom-fit-optimization.md)) - v1.1.0 adds the new anchor (§7), **live test pending** |
 | [gpu_gate](modules/gpu_gate/README.md) | run EXStar Hub on integrated GPUs (e.g. a Radeon 780M): the vendor startup gate refuses every non-discrete GPU with a "requires NVIDIA RTX 3060" dialog before the pipeline - pure Vulkan behind it - ever runs; one in-memory byte (`jne`→`ja`) found by a unique instruction pattern lets INTEGRATED/OTHER devices reach the vendor's *own* AMD/NVIDIA checks (which pass them), while VIRTUAL/CPU stay refused; behavior-neutral on machines that already pass | ✅ live-verified on 2.1.0-10 (v1.0.0, 2026-11-19 NVIDIA self-test; the relaxed AMD branch field-verified on 2.0.0-45 on a Radeon 780M) |
+| [merge_select](modules/merge_select/README.md) | pick which scans feed the **common mesh**: one in-memory detour on the single exported question `HandlePrjFile::isGenerateCloud` (only Sn3DMultiProjects.dll imports it), steered by a plain per-scan `included = 0` section in `merge-select.ini`; the answer changes only for Sn3DMultiProjects callers and only towards "exclude", so stored data, display and per-scan export stay stock; a `merge-select.map.txt` roster makes the exclusion copy-paste | 🆕 new in manager 1.5.0 (2026-11-23): vendor merge path static-verified on 2.1.0-10, detour self-tested in the running hub; mesh exclusion pending a live multi-scan test |
 
-All seven modules above (except gpu_gate) were re-verified live against the
+All modules except merge_select (and gpu_gate) were re-verified live against the
 vendor update **2.1.0-10 (file stamp 3.1.49)** on 2026-11-18 with zero code
 changes - migration evidence:
 [update-2.1.0-10-migration.md](docs/research/update-2.1.0-10-migration.md).
@@ -39,6 +40,10 @@ live verification pending.
 **gpu_gate** joined the set with manager 1.3.9 (2026-11-19); its full
 startup-gate research:
 [gpu-gate-amd-support.md](docs/research/gpu-gate-amd-support.md).
+**merge_select** joined with manager 1.5.0 (2026-11-23); the common-mesh
+selection research (vendor call sites, folder-key design, community
+patchset comparison):
+[merge-common-mesh.md](docs/research/merge-common-mesh.md).
 
 ## Mod Manager
 

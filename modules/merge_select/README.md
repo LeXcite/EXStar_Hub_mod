@@ -1,0 +1,82 @@
+# Merge Selection (`merge_select`)
+
+**Version 1.0.0 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
+
+## What it does
+
+A project can hold several scans. Stock EXStar Hub feeds **every** scan
+that has "generate a point cloud" enabled into the single common mesh;
+the only stock way to drop one scan from that merge is to delete it,
+which also throws away its stored data.
+
+`merge_select` adds the missing switch. For any scan listed in
+
+```
+C:\Users\Public\Shining3d\EXStar Hub\merge-select.ini
+```
+
+with
+
+```ini
+[Project_1\Scan_2]
+included = 0
+```
+
+the hub is told that this one scan has no cloud, so the vendor's own
+merge code skips it - the same path a scan with cloud generation turned
+off already takes. Everything else about that scan (its data, display,
+individual export) is untouched. Scans that are not listed behave
+exactly like stock.
+
+## How to use it
+
+1. Install/enable the module in the Mod Manager and start a common-mesh
+   run once so the hub sees each scan.
+2. Open `merge-select.map.txt` (same folder): the module records each
+   scan with its ready-to-copy section name.
+3. Add the scan you want to drop to `merge-select.ini`, e.g.
+   `[Project_1\Scan_2]` / `included = 0`.
+4. Re-generate the common mesh. The scan is left out. Delete the section
+   (or the file) to bring it back.
+
+Section names are matched as `<parent folder>\<leaf folder>`; a scan's
+full folder path also works and is checked first.
+
+## How it works
+
+The whole product asks one exported question to decide whether a scan's
+cloud participates in the merge: `HandlePrjFile::isGenerateCloud`
+(exported by `Sn3DFile.dll`, imported only by `Sn3DMultiProjects.dll`).
+The module places one in-memory detour on that export and answers "no
+cloud" for scans listed as excluded.
+
+To keep the change contained, the detour only answers differently when
+the **caller** is inside `Sn3DMultiProjects.dll` (a return-address
+check); any other caller, including `Sn3DFile.dll` itself, gets the pure
+vendor answer back. If an export cannot be resolved in some future build
+the module logs that once and stays out of the way.
+
+Every risky step (folder query, `QString` reads) runs under SEH and
+falls back to the vendor's own answer; the module can only turn "yes"
+into "no" for an explicitly excluded scan, so live scanning and
+unlisted scans are provably unaffected.
+
+## Configuration (`modules\merge_select.ini`)
+
+| key | default | meaning |
+|-----|---------|---------|
+| `verbose` | `1` | log each scan decision to the mod log (needs `[host] log = 1`) |
+| `file` | stock path | full path to the selection `.ini` (the `.map.txt` sits next to it) |
+
+## Relationship to a community patchset
+
+A shared community patchset implements a similar per-scan feature driven
+by `mesh-selection.ini` with UUID section names in the same folder. The
+two are independent and simply AND together: either mechanism excluding
+a scan takes it out of the merge. This module never reads or writes the
+UUID sections.
+
+## Files created at runtime (user-owned, safe to delete)
+
+- `...\EXStar Hub\merge-select.ini` - the selection (created with a header on first use)
+- `...\EXStar Hub\merge-select.map.txt` - the scan list seen during common-mesh runs

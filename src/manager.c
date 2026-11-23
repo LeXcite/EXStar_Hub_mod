@@ -50,7 +50,7 @@
 
 #define APP_EXE_NAME     L"EXStar Hub.exe"
 #define APP_EXE_A        "EXStar Hub.exe"
-#define MANAGER_VERSION  L"1.4.0"   /* keep in sync with $version in build.ps1 */
+#define MANAGER_VERSION  L"1.5.0"   /* keep in sync with $version in build.ps1 */
 #define PROXY_MARKER     L"ExStarMod.winmm.dll"   /* OriginalFilename of our proxy */
 #define DEFAULT_APP_DIR  "C:\\Program Files\\Shining3d\\EXStar Hub"
 /* The vendor freezes the exe ProductVersion (the "file stamp", still
@@ -61,7 +61,7 @@
 #define KNOWN_GOOD_STAMP   L"3.1."   /* tested file stamp prefix */
 #define KNOWN_GOOD_PRODUCT L"2."     /* tested product family    */
 
-#define MAX_MODS         8
+#define MAX_MODS         9
 #define MAX_SLIDERS      6   /* slider rows per module card               */
 #define MAX_PRESETS      4   /* preset pills per module card              */
 #define MAX_FILEBTNS     2   /* file buttons per module card (pick/reset) */
@@ -171,8 +171,12 @@ static const ModDef g_mods[MAX_MODS] = {
       L"integrated GPUs (e.g. Radeon 780M) pass the startup GPU check - one memory byte, files untouched",
       L"MOD_GPU_GATE", L"MOD_GPU_GATE_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
+    { "merge_select", L"Merge Selection", "1.0.0",
+      L"pick which scans feed the common mesh; excluded scans keep their data",
+      L"MOD_MERGE_SELECT", L"MOD_MERGE_SELECT_INI",
+      NULL, 0, NULL, 0, NULL, FALSE },
 };
-static const int g_modCount = 8;
+static const int g_modCount = 9;
 
 /* modules shipped by older manager builds and no longer bundled; their
  * files and modules.ini sections are removed on the next install so a
