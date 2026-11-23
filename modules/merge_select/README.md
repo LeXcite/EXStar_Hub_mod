@@ -1,6 +1,6 @@
 # Merge Selection (`merge_select`)
 
-**Version 1.0.0 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
+**Version 1.2.0 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
 
 ## What it does
 
@@ -40,7 +40,20 @@ exactly like stock.
    (or the file) to bring it back.
 
 Section names are matched as `<parent folder>\<leaf folder>`; a scan's
-full folder path also works and is checked first.
+full folder path also works and is checked first. Since 1.1.4 the scan
+name is also read the way the vendor itself reads it inside
+`HandlePrjFile::getProjInfo` - an embedded string in the object behind
+`self+0x18` - so live session scans get an identity even while the
+exported folder/name getters return empty (a one-shot `idmap` object
+dump lands in the mod log if even that ever goes blank).
+
+Since 1.2.0 the module additionally **watches the eye icons** of the
+project list (the vendor slot `ProjectListControllerE7::setNodeVisible`,
+located at runtime through its Qt meta-object - no RVAs). It records
+`uuid -> visible` plus the caller of each meta-call into the mod log.
+This is pure observation and feeds the upcoming "hidden eye = not in
+the common mesh" behaviour; it changes nothing by itself and can be
+switched off with `eyewatch = 0`.
 
 ## How it works
 
@@ -66,6 +79,7 @@ unlisted scans are provably unaffected.
 | key | default | meaning |
 |-----|---------|---------|
 | `verbose` | `1` | log each scan decision to the mod log (needs `[host] log = 1`) |
+| `eyewatch` | `1` | record project-list eye show/hide events (observation only) |
 | `file` | stock path | full path to the selection `.ini` (the `.map.txt` sits next to it) |
 
 ## Relationship to a community patchset

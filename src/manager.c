@@ -50,7 +50,7 @@
 
 #define APP_EXE_NAME     L"EXStar Hub.exe"
 #define APP_EXE_A        "EXStar Hub.exe"
-#define MANAGER_VERSION  L"1.5.0"   /* keep in sync with $version in build.ps1 */
+#define MANAGER_VERSION  L"1.6.1"   /* keep in sync with $version in build.ps1 */
 #define PROXY_MARKER     L"ExStarMod.winmm.dll"   /* OriginalFilename of our proxy */
 #define DEFAULT_APP_DIR  "C:\\Program Files\\Shining3d\\EXStar Hub"
 /* The vendor freezes the exe ProductVersion (the "file stamp", still
@@ -109,6 +109,9 @@ typedef struct {
                                  * modules\ (see the wallpaper module)   */
     int            cat;         /* sidebar section: 0 = Interface,
                                  * 1 = Scanner (rows omit it -> 0)        */
+    const wchar_t *const *fbtnNames; /* custom captions for the file
+                                      * button pair (NULL = wallpaper's
+                                      * default "Choose file"/"Reset")   */
 } ModDef;
 
 /* ---- adjustable knobs -------------------------------------------------- */
@@ -135,6 +138,11 @@ static const PresetDef g_prQuality[] = {
     { L"Fine",        L"0.05 mm",  50, 30, 5 },
     { L"Ultra",       L"0.02 mm",  20, 45, 7 },
 };
+
+/* Merge Selection card buttons: the roster window and the folder that
+ * holds merge-select.ini / merge-select.map.txt                     */
+static const wchar_t *const g_fbtnMerge[2] = { L"Scan roster",
+                                               L"Open folder" };
 
 /* ---- module registry of this build (kept in sync with build.ps1) ---- */
 static const ModDef g_mods[MAX_MODS] = {
@@ -171,10 +179,10 @@ static const ModDef g_mods[MAX_MODS] = {
       L"integrated GPUs (e.g. Radeon 780M) pass the startup GPU check - one memory byte, files untouched",
       L"MOD_GPU_GATE", L"MOD_GPU_GATE_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
-    { "merge_select", L"Merge Selection", "1.0.0",
+    { "merge_select", L"Merge Selection", "1.2.0",
       L"pick which scans feed the common mesh; excluded scans keep their data",
       L"MOD_MERGE_SELECT", L"MOD_MERGE_SELECT_INI",
-      NULL, 0, NULL, 0, NULL, FALSE },
+      NULL, 0, NULL, 0, NULL, FALSE, TRUE, 0, g_fbtnMerge },
 };
 static const int g_modCount = 9;
 
@@ -1149,6 +1157,15 @@ static void applyPreset(int idx, int p)
  * host load in sibling processes (scanservice.exe etc.) and receive their
  * frames.  The legacy developer keys (dev_all/dev_modules) are untouched:
  * the host prefers those when dev_all=1. */
+/* Sibling exes (scanservice.exe etc.) only ever carry module code that
+ * modules explicitly declare with needsSiblings.  Observed 2026-11-24:
+ * with the six currently-declared modules live inside scanservice.exe,
+ * it aborted (0xc0000409 in ucrtbase) and the app reported "Software
+ * error code: 0x00000012" on project open.  Until every sibling module
+ * is proven stable there, running modules in sibling processes stays
+ * globally off; the host keys and this writer stay in place. */
+static const int g_siblingsProven = 0;
+
 static void syncSiblings(IniDoc *ini)
 {
     Sec *hs = iniSec(ini, "host");
@@ -1158,6 +1175,11 @@ static void syncSiblings(IniDoc *ini)
 
     if (!hs)
         return;
+    if (!g_siblingsProven) {
+        iniSet(hs, "sibling_all", "0");
+        iniSet(hs, "sibling_modules", "");
+        return;
+    }
     list[0] = '\0';
     for (i = 0; i < g_modCount; i++) {
         char rel[MAX_PATH], abs[MAX_PATH];
@@ -2605,13 +2627,14 @@ static void cardGeoBuild(int i, int x, int yTop, int colw, HDC dc)
     } else if (m->hasFileBtn) {
         static const wchar_t *const names[MAX_FILEBTNS] =
             { L"Choose file", L"Reset" };
+        const wchar_t *const *nm = m->fbtnNames ? m->fbtnNames : names;
         int bx = x + CD_PAD_L;
 
         for (s = 0; s < MAX_FILEBTNS; s++) {
             int w2;
 
             SelectObject(dc, g_font);
-            w2 = textMeasW(dc, names[s]) + U(30);
+            w2 = textMeasW(dc, nm[s]) + U(30);
             SetRect(&g->fbtn[s], bx, bandTop, bx + w2, bandTop + CD_FBTN_H);
             bx += w2 + U(8);
         }
@@ -2971,14 +2994,16 @@ static void paintCard(HDC dc, int i)
         } else if (m->hasFileBtn) {
             static const wchar_t *const names[MAX_FILEBTNS] =
                 { L"Choose file", L"Reset" };
+            const wchar_t *const *nm = m->fbtnNames ? m->fbtnNames : names;
 
             for (s = 0; s < MAX_FILEBTNS; s++) {
                 ExCtrl *fc = CTL_FILEBTN(i, s);
+                BOOL on = g_uiOn && (m->fbtnNames || s == 0 || g_fileHas);
 
                 r = rOff(G->fbtn[s], dy);
                 OffsetRect(&r, 0, -slide);
-                paintButton(dc, &r, names[s], fc->ha.cur, fc->pa.cur,
-                            FALSE, g_uiOn && (s == 0 || g_fileHas), U(8));
+                paintButton(dc, &r, nm[s], fc->ha.cur, fc->pa.cur,
+                            FALSE, on, U(8));
             }
         }
         RestoreDC(dc, save);
@@ -3231,8 +3256,9 @@ static void areaActivate(HWND h, int what, int mod, int sub)
         status(L"Wait for the current operation to finish.");
         return;
     }
-    if (what == HIT_FBTN && sub == 1 && !g_fileHas)
-        return;
+    if (what == HIT_FBTN && sub == 1 && !g_mods[mod].fbtnNames
+        && !g_fileHas)
+        return;             /* wallpaper "Reset" without a file       */
     PostMessageW(g_mainHwnd, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED),
                  (LPARAM) h);
 }
@@ -4886,6 +4912,484 @@ static void wallpaperPick(int idx)
     refreshChecks();
 }
 
+/* ------------------------------------------------------------------ */
+/* common-mesh scan roster (Merge Selection card -> "Scan roster")     */
+/*                                                                     */
+/* Companion window for the merge_select module: turns the scan roster */
+/* the module recorded (merge-select.map.txt) plus everything listed   */
+/* in merge-select.ini into a checkbox list and saves the selection    */
+/* back. The module re-reads the .ini on every gate call, so a saved   */
+/* change applies to the next common-mesh run with no restart.         */
+/* ------------------------------------------------------------------ */
+
+#define MR_MAX      40
+#define MR_KEYCAP   320
+
+typedef struct { wchar_t key[MR_KEYCAP]; int incl; } MrRow;
+
+static MrRow   g_mr[MR_MAX];
+static int     g_mrN, g_mrOver;         /* rows + dropped overflow      */
+static wchar_t g_mrIni[512], g_mrMap[512], g_mrMsg[256];
+static HWND    g_mrWnd;
+static RECT    g_mrRowR[MR_MAX], g_mrBtnR[3];
+static int     g_mrHovRow = -1, g_mrHovBtn = -1;
+
+static const wchar_t *const MR_BTN[3] = { L"Save", L"Open folder",
+                                          L"Close" };
+
+/* read a key=value from the preamble of a .ini (everything before the
+ * first [section]); mirrors the host's cfg_string(). "..."-quoted
+ * values are unwrapped. FALSE when missing.                           */
+static BOOL preKeyA(const char *path, const char *key, char *out, int cap)
+{
+    FILE *f = fopen(path, "rb");
+    char line[1024];
+
+    if (!f)
+        return FALSE;
+    while (fgets(line, sizeof line, f)) {
+        char *s = line, *sep, *v, *e, *ke;
+
+        while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n')
+            s++;
+        if (*s == '[')
+            break;                      /* preamble only               */
+        if (*s == ';' || *s == '#' || !*s)
+            continue;
+        sep = strchr(s, '=');
+        if (!sep)
+            continue;
+        *sep = 0;
+        ke = sep - 1;
+        while (ke > s && (ke[-1] == ' ' || ke[-1] == '\t'))
+            *ke-- = 0;
+        if (_stricmp(s, key) != 0)
+            continue;
+        v = sep + 1;
+        while (*v == ' ' || *v == '\t')
+            v++;
+        e = v + strlen(v);
+        while (e > v && (e[-1] == ' ' || e[-1] == '\t'
+                         || e[-1] == '\r' || e[-1] == '\n'))
+            *--e = 0;
+        if (e > v + 1 && *v == '"' && e[-1] == '"') {
+            *--e = 0;
+            v++;
+        }
+        if (!*v)
+            continue;
+        strncpy(out, v, cap - 1);
+        out[cap - 1] = 0;
+        fclose(f);
+        return TRUE;
+    }
+    fclose(f);
+    return FALSE;
+}
+
+static void mrAdd(const wchar_t *key, int incl)
+{
+    int i;
+
+    if (!key[0])
+        return;
+    for (i = 0; i < g_mrN; i++) {
+        if (_wcsicmp(g_mr[i].key, key) == 0) {
+            if (incl >= 0)
+                g_mr[i].incl = incl;    /* later entries win           */
+            return;
+        }
+    }
+    if (g_mrN < MR_MAX) {
+        wcsncpy_s(g_mr[g_mrN].key, MR_KEYCAP, key, _TRUNCATE);
+        g_mr[g_mrN].incl = (incl == 0) ? 0 : 1;
+        g_mrN++;
+    } else
+        g_mrOver++;
+}
+
+/* map-file row: "hh:mm:ss  <key>  included=<0|1>[   <- note]"         */
+static void mrAddSpan(const wchar_t *start, size_t len, int incl)
+{
+    wchar_t tmp[MR_KEYCAP];
+    size_t n = len > MR_KEYCAP - 1 ? MR_KEYCAP - 1 : len;
+    int i;
+
+    for (i = 0; i < (int)n; i++)
+        tmp[i] = start[i];
+    while (n > 0 && (tmp[n - 1] == L' ' || tmp[n - 1] == L'\t'))
+        n--;
+    tmp[n] = 0;
+    mrAdd(tmp, incl);
+}
+
+static void mrPaths(void)
+{
+    char rel[MAX_PATH], abs[MAX_PATH], tmp[1024];
+    wchar_t *dot, *slash;
+
+    iniPathFor(abs, sizeof abs, "modules\\merge_select.ini");
+    if (preKeyA(abs, "file", tmp, (int)sizeof tmp) && tmp[0])
+        a2w(tmp, g_mrIni, (int)(sizeof g_mrIni / sizeof g_mrIni[0]));
+    else
+        wcscpy_s(g_mrIni, (sizeof g_mrIni / sizeof g_mrIni[0]),
+                 L"C:\\Users\\Public\\Shining3d\\EXStar Hub"
+                 L"\\merge-select.ini");
+    wcscpy_s(g_mrMap, (sizeof g_mrMap / sizeof g_mrMap[0]), g_mrIni);
+    dot   = wcsrchr(g_mrMap, L'.');
+    slash = wcsrchr(g_mrMap, L'\\');
+    if (dot && (!slash || dot > slash))
+        *dot = 0;
+    wcscat_s(g_mrMap, (sizeof g_mrMap / sizeof g_mrMap[0]), L".map.txt");
+}
+
+static void mrLoad(void)
+{
+    static wchar_t buf[65536];           /* 128 KB of map text is plenty */
+    static wchar_t names[16384];
+    HANDLE h;
+    wchar_t *line, *nl, *p;
+    DWORD rd = 0;
+
+    g_mrN = 0;
+    g_mrOver = 0;
+    g_mrMsg[0] = 0;
+
+    h = CreateFileW(g_mrMap, GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h != INVALID_HANDLE_VALUE) {
+        ReadFile(h, buf, (DWORD)sizeof buf - 2, &rd, NULL);
+        CloseHandle(h);
+        buf[rd / 2] = 0;
+        line = buf;
+        if (*line == 0xFEFF)
+            line++;
+        while (*line && (nl = wcschr(line, L'\n')) != NULL) {
+            wchar_t *q, *ip;
+
+            *nl = 0;
+            q = wcschr(line, L'\r');
+            if (q)
+                *q = 0;
+            ip = wcsstr(line, L"  included=");
+            if (ip) {
+                int incl = ip[11] == '1' ? 1 : 0;
+                q = wcsstr(line, L"  ");   /* end of the clock prefix  */
+                if (q && q < ip)
+                    mrAddSpan(q + 2, (size_t)(ip - (q + 2)), incl);
+            }
+            line = nl + 1;
+        }
+    }
+    /* the .ini has the last word and adds scans whose map lines were
+     * trimmed or written by other tooling */
+    if (GetPrivateProfileSectionNamesW(names,
+            (DWORD)(sizeof names / sizeof names[0]), g_mrIni))
+        for (p = names; *p; p += wcslen(p) + 1)
+            if (_wcsicmp(p, L"Settings") != 0)
+                mrAdd(p, GetPrivateProfileIntW(p, L"included", 1,
+                                               g_mrIni));
+}
+
+static void rosterSave(void)
+{
+    int i, bad = 0;
+    wchar_t v[2];
+
+    for (i = 0; i < g_mrN; i++) {
+        v[0] = g_mr[i].incl ? L'1' : L'0';
+        v[1] = 0;
+        if (!WritePrivateProfileStringW(g_mr[i].key, L"included", v,
+                                        g_mrIni))
+            bad++;
+    }
+    WritePrivateProfileStringW(NULL, NULL, NULL, g_mrIni); /* flush     */
+    if (bad)
+        swprintf(g_mrMsg, 256,
+                 L"Saved %d of %d scans - some writes failed.",
+                 g_mrN - bad, g_mrN);
+    else
+        swprintf(g_mrMsg, 256,
+                 L"Saved %d scans - applies to the next common-mesh run.",
+                 g_mrN);
+    status(L"Merge selection saved (%d scans).", g_mrN);
+}
+
+static void rosterOpenFolder(void)
+{
+    wchar_t dir[512];
+    wchar_t *slash;
+
+    if (!g_mrIni[0]) {
+        readAppEdit();
+        mrPaths();
+    }
+    wcscpy_s(dir, (sizeof dir / sizeof dir[0]), g_mrIni);
+    slash = wcsrchr(dir, L'\\');
+    if (slash)
+        *slash = 0;
+    ShellExecuteW(g_mrWnd, L"open", dir, NULL, NULL, SW_SHOW);
+}
+
+static void rosterClose(HWND hw)
+{
+    EnableWindow(g_mainHwnd, TRUE);
+    g_mrWnd = NULL;
+    g_mrHovRow = g_mrHovBtn = -1;
+    DestroyWindow(hw);
+}
+
+static void rosterHitTest(HWND hw, POINT pt, int *row, int *btn)
+{
+    RECT rc;
+    int i;
+
+    *row = *btn = -1;
+    GetClientRect(hw, &rc);
+    for (i = 0; i < 3; i++)
+        if (PtInRect(&g_mrBtnR[i], pt))
+            *btn = i;
+    for (i = 0; i < g_mrN; i++)
+        if (PtInRect(&g_mrRowR[i], pt))
+            *row = i;
+}
+
+static void rosterPaint(HWND hw)
+{
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(hw, &ps);
+    RECT rc, tr, cb, lr;
+    int x = U(18), y, i;
+    float fs;
+
+    GetClientRect(hw, &rc);
+    { HBRUSH b = CreateSolidBrush(C_BG);
+      FillRect(dc, &rc, b); DeleteObject(b); }
+    SetBkMode(dc, TRANSPARENT);
+    fs = g_fade; g_fade = 1.0f;
+    gpBegin(dc);
+
+    y = U(16);
+    SelectObject(dc, g_fontB);
+    SetTextColor(dc, C_TEXT);
+    SetRect(&tr, x, y, rc.right - x, y + U(22));
+    DrawTextW(dc, L"Common mesh \x2014 scan roster", -1, &tr,
+              DT_LEFT | DT_TOP | DT_SINGLELINE);
+    y += U(26);
+    SelectObject(dc, g_fontS);
+    SetTextColor(dc, C_TEXT2);
+    SetRect(&tr, x, y, rc.right - x, y + U(32));
+    DrawTextW(dc, L"Uncheck a scan to leave it out of the final merged "
+                  L"mesh. Saved changes apply to the next common-mesh "
+                  L"run - no restart needed.",
+              -1, &tr, DT_LEFT | DT_TOP | DT_WORDBREAK);
+    y += U(36);
+
+    if (g_mrN == 0) {
+        SelectObject(dc, g_fontS);
+        SetTextColor(dc, C_TEXT3);
+        SetRect(&tr, x, y + U(6), rc.right - x, y + U(60));
+        DrawTextW(dc, L"No scans recorded yet. Start a common-mesh "
+                      L"generation once with the hub open; the scans "
+                      L"then show up here.",
+                  -1, &tr, DT_LEFT | DT_TOP | DT_WORDBREAK);
+    }
+    for (i = 0; i < g_mrN; i++) {
+        RECT r = g_mrRowR[i];
+
+        if (i == g_mrHovRow) {
+            RECT hr = r;
+            InflateRect(&hr, U(6), U(2));
+            gpRR(&hr, (Gdiplus::REAL) U(6), RGB(46, 46, 46), 255, 0, 0, 0);
+        }
+        SetRect(&cb, r.left, (r.top + r.bottom) / 2 - U(8),
+                r.left + U(16), (r.top + r.bottom) / 2 + U(8));
+        if (g_mr[i].incl) {
+            Gdiplus::Point pts[3];
+            Gdiplus::Pen pn(gpc(RGB(18, 18, 18), 255),
+                            (Gdiplus::REAL) U(2));
+            gpRR(&cb, (Gdiplus::REAL) U(4), C_ACCENT, 255, C_ACCENT,
+                 255, 1.0f);
+            pts[0] = Gdiplus::Point(cb.left + U(3), cb.top + U(8));
+            pts[1] = Gdiplus::Point(cb.left + U(6), cb.top + U(11));
+            pts[2] = Gdiplus::Point(cb.left + U(13), cb.top + U(4));
+            g_g->DrawLines(&pn, pts, 3);
+        } else {
+            gpRR(&cb, (Gdiplus::REAL) U(4), RGB(31, 31, 31), 255,
+                 RGB(95, 95, 95), 255, 1.2f);
+        }
+        SelectObject(dc, g_font);
+        SetTextColor(dc, g_mr[i].incl ? C_TEXT : C_TEXT2);
+        SetRect(&lr, cb.right + U(10), r.top, r.right, r.bottom);
+        DrawTextW(dc, g_mr[i].key, -1, &lr,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+    i = g_mrN > 0 ? g_mrN - 1 : 0;
+    y = g_mrN ? g_mrRowR[i].bottom + U(8)
+              : y + U(58);
+    if (g_mrOver) {
+        SelectObject(dc, g_fontS);
+        SetTextColor(dc, C_TEXT3);
+        SetRect(&tr, x, y, rc.right - x, y + U(18));
+        DrawTextW(dc, L"+ more scans - edit the .ini file directly for "
+                      L"them", -1, &tr, DT_LEFT | DT_TOP | DT_SINGLELINE);
+        y += U(18);
+    }
+    if (g_mrMsg[0]) {
+        SelectObject(dc, g_fontS);
+        SetTextColor(dc, C_ACCENT);
+        SetRect(&tr, x, y, rc.right - x, y + U(18));
+        DrawTextW(dc, g_mrMsg, -1, &tr, DT_LEFT | DT_TOP | DT_SINGLELINE);
+    }
+    for (i = 0; i < 3; i++)
+        paintButton(dc, &g_mrBtnR[i], MR_BTN[i],
+                    i == g_mrHovBtn ? 1.0f : 0.0f, 0.0f, FALSE, TRUE,
+                    U(8));
+    gpEnd();
+    g_fade = fs;
+    EndPaint(hw, &ps);
+}
+
+static LRESULT CALLBACK rosterProc(HWND hw, UINT msg, WPARAM wp,
+                                   LPARAM lp)
+{
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+        rosterPaint(hw);
+        return 0;
+    case WM_MOUSEMOVE: {
+        POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
+        int row, btn;
+
+        rosterHitTest(hw, pt, &row, &btn);
+        if (row != g_mrHovRow || btn != g_mrHovBtn) {
+            g_mrHovRow = row;
+            g_mrHovBtn = btn;
+            InvalidateRect(hw, NULL, FALSE);
+        }
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
+        int row, btn;
+
+        rosterHitTest(hw, pt, &row, &btn);
+        if (row >= 0) {
+            g_mr[row].incl = !g_mr[row].incl;
+            g_mrMsg[0] = 0;
+            InvalidateRect(hw, NULL, FALSE);
+            return 0;
+        }
+        if (btn == 0) {
+            rosterSave();
+            InvalidateRect(hw, NULL, FALSE);
+        } else if (btn == 1) {
+            rosterOpenFolder();
+        } else if (btn == 2) {
+            rosterClose(hw);
+        }
+        return 0;
+    }
+    case WM_KEYDOWN:
+        if (wp == VK_ESCAPE) {
+            rosterClose(hw);
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        rosterClose(hw);
+        return 0;
+    case WM_NCLBUTTONDOWN:  /* let a title-bar drag not steal the hit */
+        break;
+    }
+    return DefWindowProcW(hw, msg, wp, lp);
+}
+
+static void mergeRoster(HWND owner)
+{
+    static BOOL clsDone = FALSE;
+    WNDCLASSW wc;
+    HDC dc;
+    int i, y, bw[3], x, h, w = U(560);
+    RECT wr = { 0, 0, w, 0 };
+
+    readAppEdit();
+    mrPaths();
+    mrLoad();
+
+    if (!clsDone) {
+        ZeroMemory(&wc, sizeof wc);
+        wc.lpfnWndProc   = rosterProc;
+        wc.hInstance     = g_hInst;
+        wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
+        wc.lpszClassName = L"ExStarMergeRosterWnd";
+        RegisterClassW(&wc);
+        clsDone = TRUE;
+    }
+    if (g_mrWnd) {
+        DestroyWindow(g_mrWnd);
+        g_mrWnd = NULL;
+    }
+
+    /* client height: head, rows, message line, buttons */
+    h = U(16) + U(26) + U(36) + g_mrN * U(28) + U(8) + U(18)
+        + (g_mrOver ? U(18) : 0) + U(14) + U(34) + U(16);
+    if (g_mrN == 0)
+        h = U(16) + U(26) + U(36) + U(58) + U(8) + U(18) + U(14)
+            + U(34) + U(16);
+    wr.bottom = h;
+    AdjustWindowRect(&wr, WS_CAPTION | WS_SYSMENU, FALSE);
+
+    g_mrWnd = CreateWindowExW(0, L"ExStarMergeRosterWnd",
+                              L"EXStar Hub - scan roster",
+                              WS_CAPTION | WS_SYSMENU,
+                              CW_USEDEFAULT, CW_USEDEFAULT,
+                              wr.right - wr.left, wr.bottom - wr.top,
+                              owner, NULL, g_hInst, NULL);
+    if (!g_mrWnd) {
+        status(L"Could not open the scan roster window.");
+        return;
+    }
+    { BOOL dark = TRUE;
+      DwmSetWindowAttribute(g_mrWnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                            &dark, sizeof dark); }
+
+    /* row + button geometry (fixed-size window, so compute once) */
+    y = U(16) + U(26) + U(36);
+    for (i = 0; i < g_mrN; i++)
+        SetRect(&g_mrRowR[i], U(18), y + i * U(28), w - U(18),
+                y + i * U(28) + U(28));
+    dc = GetDC(g_mrWnd);
+    SelectObject(dc, g_font);
+    for (i = 0; i < 3; i++) {
+        bw[i] = textMeasW(dc, MR_BTN[i]) + U(30);
+        if (bw[i] < U(84))
+            bw[i] = U(84);
+    }
+    ReleaseDC(g_mrWnd, dc);
+    x = U(18);
+    for (i = 0; i < 3; i++) {
+        SetRect(&g_mrBtnR[i], x, h - U(16) - U(34), x + bw[i],
+                h - U(16));
+        x += bw[i] + U(8);
+    }
+
+    {   RECT orc, nr;
+        GetWindowRect(owner, &orc);
+        GetWindowRect(g_mrWnd, &nr);
+        SetWindowPos(g_mrWnd, NULL,
+                     orc.left + ((orc.right - orc.left) - (nr.right - nr.left)) / 2,
+                     orc.top + ((orc.bottom - orc.top) - (nr.bottom - nr.top)) / 2,
+                     0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    }
+    EnableWindow(owner, FALSE);
+    ShowWindow(g_mrWnd, SW_SHOW);
+    SetForegroundWindow(g_mrWnd);
+}
+
 static void browse(void)
 {
     BROWSEINFOW bi;
@@ -5359,10 +5863,18 @@ static LRESULT CALLBACK wndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
         if (id >= IDC_WPBASE && id < IDC_WPBASE + g_modCount * MAX_FILEBTNS
             && HIWORD(wp) == BN_CLICKED) {
             int t = id - IDC_WPBASE;
-            if (t % MAX_FILEBTNS == 0)
-                wallpaperPick(t / MAX_FILEBTNS);
-            else
-                wallpaperReset(t / MAX_FILEBTNS);
+            int mi = t / MAX_FILEBTNS;
+
+            if (!g_mods[mi].fbtnNames) {
+                if (t % MAX_FILEBTNS == 0)
+                    wallpaperPick(mi);
+                else
+                    wallpaperReset(mi);
+            } else if (t % MAX_FILEBTNS == 0) {
+                mergeRoster(hw);
+            } else {
+                rosterOpenFolder();
+            }
             if (g_modArea)
                 InvalidateRect(g_modArea, NULL, TRUE);
             return 0;

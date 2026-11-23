@@ -35,7 +35,7 @@ not included in git).
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
 | fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
-| merge_select | 1.0.0 | per-scan include switch for the common mesh (folder-keyed ini, export detour) |
+| merge_select | 1.2.0 | per-scan include switch for the common mesh (gate identity + eye-icon watch, record-only) |
 | ExStarModManager | 1.5.0 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome) |
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
@@ -355,6 +355,32 @@ v1.0.0 + manager 1.5.0.
   running hub (mod log); install made single-threaded after a startup
   race was caught in the self-test. Pending: one live multi-scan mesh
   run to confirm the excluded scan is gone from the merged result.
+
+## Batch "eye-bound mesh selection" (2026-11-24) — IN PROGRESS
+
+Goal (user decision): the selection UI is the hub's own **eye icons** -
+a hidden scan row must not enter the common mesh. No manager clicks, no
+ini editing during work.
+
+* Live diagnosis: the scan-page "Меш" flow never queries
+  `isGenerateCloud` (it applies visibility itself), a cached mesh is
+  re-shown without any gate calls, and live gate objects return empty
+  from *both* exported name getters. Full analysis:
+  [merge-common-mesh.md §6](research/merge-common-mesh.md).
+* merge_select 1.1.x/1.2.0: identity now also read as the embedded
+  QString the vendor itself uses in `getProjInfo` (`**self+0x18 → +8`),
+  one-shot `idmap` fallback dump; caller probes mapped who drives the
+  mesh path; **eye watch** finds `ProjectListControllerE7`'s
+  QMetaObject at runtime (no RVAs), verifies method 8 =
+  `setNodeVisible(QUuid, bool)`, records `uuid -> visible` - the exact
+  signal the future gate will consume.
+* Stability: the scanservice abort (vendor error `0x00000012`) was
+  traced to running six modules inside sibling processes; reverted, and
+  manager 1.6.1 refuses to enable sibling mode until modules are proven
+  there one by one. `merge_select` needs the UI process only.
+* Next (needs live sessions): correlate eye uuids with gate scan names
+  (`Sn3DMultiProjects!Sn3DProjectsManager::getProjUuidList` etc.), then
+  answer `false` for hidden scans on mesh rebuilds.
 
 ## Open regressions
 

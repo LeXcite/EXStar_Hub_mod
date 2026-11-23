@@ -122,3 +122,60 @@ scans, so their effects simply AND together).
   common-mesh generation, add `included = 0` for one scan from
   `merge-select.map.txt`, re-generate - the excluded scan must vanish
   from the merged result while its folder stays intact.
+
+## 6. The scan-page mesh flow and the eye icons (2026-11-24)
+
+Two facts learned from live diagnostics (module v1.1.1/v1.1.2 probes):
+
+* a **cached** common mesh is re-shown without any work: the
+  `isGenerateCloud` gate only runs when the mesh is actually rebuilt
+  (new project or after deleting the result);
+* the **"Меш" flow on the scan page does not call `isGenerateCloud` at
+  all** - the visible selection is applied by the scan page itself.
+  Its "force-show" of every scan right after pressing Mesh also resets
+  the eye icons in the tree, which is stock behaviour.
+
+The eye icon of a scan row is a QML-callable slot in `ScanPage_E7.dll`:
+
+```
+ProjectListControllerE7::setNodeVisible(const QUuid&, bool)
+```
+
+The class is not exported, but its moc `QMetaObject` was located and
+fully decoded in the 2.1.0-10 binary (verified statically with REA and
+live by the module's own scan, which agrees with every pinned value):
+
+| item | value |
+|---|---|
+| `staticMetaObject` | RVA **0xA38210** (Qt5 flat layout) |
+| `qt_static_metacall` | RVA **0x42DF0**, at `metaobject+0x18` |
+| method count / index of `setNodeVisible` | 16 / **8** (`Call=InvokeMetaCall`, `_a[1]`=`QUuid*`, `_a[2]`=`bool`) |
+| slot body | RVA 0xBD380 |
+| stringdata / data arrays | RVA 0x236700 (34 strings) / 0x236C10 (revision 8) |
+| other slots | `onSubscribeData`(7), `tryRenameProject`(9), `delteProjects`(10), `selectableNodeClicked`(11..13), `clearSelection`(14), `nodeDoubleClicked`(15) |
+
+Direct C++ calls to `setNodeVisible` (the mesh dialog's force-show)
+bypass `qt_static_metacall`; QML eye toggles always go through it - so
+hooking the metacall separates the user's real show/hide intent from
+the dialog noise for free.
+
+Scan identity for the same objects came from the vendor's own
+`HandlePrjFile::getProjInfo` (Sn3DFile.dll RVA 0xDFB30): it reads the
+scan NAME as an **embedded QString at `*(self+0x18)+8`** (`NAME` map
+key) even while the folder/name getters return empty on live session
+scans. v1.1.4+ reads that directly for the gate identity; a one-shot
+`idmap` object dump backs it up if a vendor build ever moves it.
+
+Module v1.2.0 adds the **eye watch**: a worker thread finds the
+controller's QMetaObject by scanning `ScanPage_E7.dll` for a Qt5
+metaobject whose className string matches (no hardcoded RVAs), verifies
+the method table contains `setNodeVisible`, and detours the metacall
+purely to record `uuid -> visible` plus first-seen `(Call, method)`
+traffic. It never modifies anything (`eyewatch` ini switch).
+
+Sibling-process incident (same night): enabling six modules inside
+`scanservice.exe` via `sibling_all`/whitelist made it abort
+(0xc0000409 in ucrtbase) - project open then failed with vendor error
+`0x00000012`. Config reverted, and manager 1.6.1+ hard-disables
+sibling writing (`g_siblingsProven = 0`) until each module is proven
+there; `merge_select` needs the UI process only.
