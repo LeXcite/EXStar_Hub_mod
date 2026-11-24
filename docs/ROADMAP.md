@@ -356,11 +356,18 @@ v1.0.0 + manager 1.5.0.
   race was caught in the self-test. Pending: one live multi-scan mesh
   run to confirm the excluded scan is gone from the merged result.
 
-## Batch "eye-bound mesh selection" (2026-11-24) — IN PROGRESS
+## Batch "eye-bound mesh selection" (2026-11-24) — MERGE DONE, row force-show open
 
 Goal (user decision): the selection UI is the hub's own **eye icons** -
 a hidden scan row must not enter the common mesh. No manager clicks, no
 ini editing during work.
+
+Status: the merge half is live and user-verified twice (v1.4.7): hidden
+eye rows are persisted as `[uuid] included = 0` and both merge loops in
+`scanservice.exe` answer `SKIP`, so the final mesh contains only the
+visible scans. What is still stock: pressing Mesh Model re-shows every
+hidden row in the tree (the vendor's direct `setNodeVisible` call, which
+bypasses the QML metacall the module watches).
 
 * Live diagnosis: the scan-page "Mesh" flow never queries
   `isGenerateCloud` (it applies visibility itself), a cached mesh is
@@ -405,12 +412,24 @@ ini editing during work.
   inside the hand-built thunk, never inside the vendor image), so every
   call took the "outside the merge code" branch and no decision was ever
   applied; the thunk did not reserve the x64 shadow space before calling
-  the C helper; and the wrapper capture is now passed the caller's real
-  return address. Live result: project open in `scanservice.exe` logs
-  `gate ... ra=+0x7E3BB` with the three project QUuids. Hooks are also
-  restricted by `gate_exes`/`eyewatch_exes` (unmatched hosts keep an
-  inert module) and the decision half runs under `__try/__except` after
-  `scanservice.exe` died executing address 1 with an earlier build.
+  the C helper; and the wrapper capture now receives the caller's real
+  return address. Hooks are restricted by `gate_exes`/`eyewatch_exes`
+  (unmatched hosts keep an inert module) and the decision half runs
+  under `__try/__except` after `scanservice.exe` died executing address
+  1 with an earlier build.
+* 1.4.7 (user-verified twice): the wrapper QUuid member is already the
+  canonical struct order - converting it to wire order produced non-v4
+  uuids (`F54E`/`6049`/`1D4D`), so neither the ini section nor the eye
+  map could ever match. Live: `eye … -> hidden` writes
+  `[uuid] included = 0`, and the next Mesh Model run logs
+  `gate … excluded in .ini -> SKIP` for both merge loops
+  (`ra=+0x7E3BB` collection, `ra=+0x83097` processing). The final mesh
+  contained only the scan left visible; project folders untouched.
+* Next (open): the Mesh Model press still **re-shows hidden rows** in
+  the project tree. That is a direct C++ `setNodeVisible(uuid, true)`
+  call inside `ScanPage_E7.dll`, not the QML metacall, so the eye watch
+  never sees it. Needs the caller identified and a RAM-only suppress
+  (hook or call-site patch) that leaves the QML eye path intact.
 
 ## Open regressions
 

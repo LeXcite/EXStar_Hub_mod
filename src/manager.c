@@ -1152,44 +1152,32 @@ static void applyPreset(int idx, int p)
                pr->frames, pr->supported);
 }
 
-/* Sibling exes (scanservice.exe, Sn3DprocessManager.exe, ...) only ever
- * carry module code for modules explicitly PROVEN there.  Evidence
- * 2026-11-24: six modules inside scanservice.exe aborted it
- * (0xc0000409 in ucrtbase -> vendor error 0x00000012 on project open).
- * merge_select alone then ran a full night in scanservice /
- * softwareUpgrade / informationCollect / einscan_net_svr and the
- * fusion engine without a fault.  A whitelist writer that trusted the
- * per-module needsSiblings flag re-armed the six-module configuration
- * on 2026-11-24 18:42 (manager 1.6.3) and the 0x00000012 came back.
- * The fusion engine still needs merge_select (it builds the Mesh Model
- * result), so the supported configuration is the manual pair
+/* Sibling processes (scanservice.exe, Sn3DprocessManager.exe, ...) only
+ * ever carry module code for modules explicitly PROVEN there.
+ * Evidence 2026-11-24: six modules inside scanservice.exe aborted it
+ * (0xc0000409 in ucrtbase -> vendor error 0x00000012 on project open),
+ * while merge_select alone ran a full night there.  A writer that
+ * trusted the per-module needsSiblings flag re-armed the six-module
+ * configuration at 18:42 (manager 1.6.3) and the 0x00000012 came back.
+ * merge_select *is* needed in scanservice.exe - that process builds the
+ * post-mesh data the Mesh Model window shows - so the supported
+ * configuration is the manual pair
  *   sibling_all = 1
  *   sibling_modules = merge_select
- * and this writer now never rewrites existing sibling keys. */
+ * and this code never rewrites existing sibling keys: only a fresh
+ * modules.ini (no keys yet) gets the safe default. */
 
-static void syncSiblings(IniDoc *ini)
+static void defaultSiblingKeys(IniDoc *ini)
 {
     Sec *hs = iniSec(ini, "host");
-    char list[256];
-    size_t len = 0;
     int i;
 
     if (!hs)
         return;
-    /* Never rewrite the sibling keys: a manual
-     *   sibling_all = 1
-     *   sibling_modules = merge_select
-     * is the proven configuration for the fusion engine
-     * (Sn3DprocessManager.exe builds the Mesh Model result), and the
-     * 2026-11-24 regression came from this writer re-arming all six
-     * needsSiblings modules.  Only a fresh modules.ini (no keys yet)
-     * gets the safe default. */
     for (i = 0; i < hs->n; i++)
         if (_stricmp(hs->kv[i].key, "sibling_all") == 0
             || _stricmp(hs->kv[i].key, "sibling_modules") == 0)
             return;
-    (void)len;
-    (void)list;
     iniSet(hs, "sibling_all", "0");
     iniSet(hs, "sibling_modules", "");
 }
@@ -1312,7 +1300,7 @@ static BOOL doInstall(UINT mask)
             note(L"Removed legacy module: %hs.", g_legacy[i]);
     }
 
-    syncSiblings(&ini);
+    defaultSiblingKeys(&ini);
     iniSave(&ini, iniPath);
     stateAdd(&st, "modules.ini");
     stateSave(&st, g_appDir);
@@ -1359,7 +1347,7 @@ static BOOL doRemove(UINT mask)
         note(L"Module %ls disabled and removed (settings file kept). "
                L"Restart EXStar Hub.", m->title);
     }
-    syncSiblings(&ini);
+    defaultSiblingKeys(&ini);
     iniSave(&ini, iniPath);
     stateSave(&st, g_appDir);
     return TRUE;

@@ -122,6 +122,25 @@ scans, so their effects simply AND together).
   common-mesh generation, add `included = 0` for one scan from
   `merge-select.map.txt`, re-generate - the excluded scan must vanish
   from the merged result while its folder stays intact.
+* **2026-11-24 19:2x (v1.4.7, user-verified twice): eye icons drive the
+  merged result.** The user hid two of three scans with the eye icons
+  and pressed Mesh Model; the log shows the two QUuids persisted as
+  `included = 0` and both merge loops answering with the vendor flag
+  untouched but the decision overridden:
+
+  ```
+  eye A65FE546-D6D2-44FE-8CBC-3DB3408848C8 -> hidden
+  eye B7F2F769-26E8-42A4-ADA1-15E9C1322128 -> hidden
+  gate uuid=A65FE546… vendor=1  excluded in .ini  -> SKIP   ra=+0x7E3BB
+  gate uuid=14ACC446… vendor=1  identity unreadable -> include
+  gate uuid=B7F2F769… vendor=1  excluded in .ini  -> SKIP   ra=+0x7E3BB
+  gate uuid=A65FE546… excluded in .ini -> SKIP              ra=+0x83097
+  gate uuid=B7F2F769… excluded in .ini -> SKIP              ra=+0x83097
+  ```
+
+  The final mesh contained only the scan whose eye stayed visible, and
+  the project's folders were untouched. No crash dumps appeared with the
+  module loaded in `scanservice.exe` for the whole session.
 
 ## 6. The scan-page mesh flow and the eye icons (2026-11-24)
 
