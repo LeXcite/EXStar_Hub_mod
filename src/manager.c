@@ -179,7 +179,7 @@ static const ModDef g_mods[MAX_MODS] = {
       L"integrated GPUs (e.g. Radeon 780M) pass the startup GPU check - one memory byte, files untouched",
       L"MOD_GPU_GATE", L"MOD_GPU_GATE_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
-    { "merge_select", L"Merge Selection", "1.4.0",
+    { "merge_select", L"Merge Selection", "1.4.1",
       L"pick which scans feed the common mesh; excluded scans keep their data",
       L"MOD_MERGE_SELECT", L"MOD_MERGE_SELECT_INI",
       NULL, 0, NULL, 0, NULL, TRUE, TRUE, 0, g_fbtnMerge },

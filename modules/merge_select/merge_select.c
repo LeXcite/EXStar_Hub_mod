@@ -104,7 +104,7 @@
 
 #include "exstar_sdk.h"
 
-#define MOD_VERSION   "1.4.0"
+#define MOD_VERSION   "1.4.1"
 
 #define SEL_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.ini"
 #define MAP_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.map.txt"
@@ -606,10 +606,12 @@ static unsigned char __fastcall det_isCloud(void *self)
                         u8, haveU ? ustr : "-", eye, (int)r, whyS,
                         (!r || !inc) ? "SKIP" : "include");
         else
-            g_host->log("merge_select: gate <no id>  ra=+0x%llX impl=%p"
-                        "  vendor=%d  %s  -> include",
+            g_host->log("merge_select: gate <no id>  uuid=%s eye=%d"
+                        "  ra=+0x%llX impl=%p  vendor=%d  %s  -> %s",
+                        haveU ? ustr : "-", eye,
                         (unsigned long long)(ra - g_mpBase), (void *)impl,
-                        (int)r, whyS);
+                        (int)r, whyS,
+                        (!r || !inc) ? "SKIP" : "include");
     }
     return (r && inc) ? 1 : 0;
 }
@@ -774,22 +776,30 @@ static int eyeLookup(const unsigned char *u)
     return -1;
 }
 
-/* HandlePrjFile keeps the scan's QUuid as raw struct bytes at offset
- * +0x38 (the very bytes the community patchset hex-encodes for its
- * uuid sections). Read them for gate <-> eye correlation, SEH-safe. */
+/* HandlePrjFile keeps the scan's QUuid at offset +0x38 in WIRE byte
+ * order (Data1..Data3 stored big-endian: the community patchset cave
+ * hex-encodes the bytes with the {3,2,1,0,5,4,7,6,8..15} permutation
+ * to get the canonical text). Normalize to QUuid struct order so the
+ * string and the raw bytes match what the eye events report. */
 static void gateEyeUuid(void *self, unsigned char *u, char *ustr, int cap,
                         int *have)
 {
+    unsigned char raw[16];
     *have = 0;
     ustr[0] = 0;
     memset(u, 0, 16);
     __try {
-        memcpy(u, (const unsigned char *)self + 0x38, 16);
+        memcpy(raw, (const unsigned char *)self + 0x38, 16);
         *have = 1;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
-    if (*have)
-        fmtUuid(u, ustr, cap);
+    if (!*have)
+        return;
+    u[0] = raw[3]; u[1] = raw[2]; u[2] = raw[1]; u[3] = raw[0];
+    u[4] = raw[5]; u[5] = raw[4];
+    u[6] = raw[7]; u[7] = raw[6];
+    memcpy(u + 8, raw + 8, 8);
+    fmtUuid(u, ustr, cap);
 }
 
 static void eyeRecord(const unsigned char *u, int visible)
