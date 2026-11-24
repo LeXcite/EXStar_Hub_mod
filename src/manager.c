@@ -50,7 +50,7 @@
 
 #define APP_EXE_NAME     L"EXStar Hub.exe"
 #define APP_EXE_A        "EXStar Hub.exe"
-#define MANAGER_VERSION  L"1.6.3"   /* keep in sync with $version in build.ps1 */
+#define MANAGER_VERSION  L"1.6.6"   /* keep in sync with $version in build.ps1 */
 #define PROXY_MARKER     L"ExStarMod.winmm.dll"   /* OriginalFilename of our proxy */
 #define DEFAULT_APP_DIR  "C:\\Program Files\\Shining3d\\EXStar Hub"
 /* The vendor freezes the exe ProductVersion (the "file stamp", still
@@ -179,7 +179,7 @@ static const ModDef g_mods[MAX_MODS] = {
       L"integrated GPUs (e.g. Radeon 780M) pass the startup GPU check - one memory byte, files untouched",
       L"MOD_GPU_GATE", L"MOD_GPU_GATE_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
-    { "merge_select", L"Merge Selection", "1.4.1",
+    { "merge_select", L"Merge Selection", "1.4.6",
       L"pick which scans feed the common mesh; excluded scans keep their data",
       L"MOD_MERGE_SELECT", L"MOD_MERGE_SELECT_INI",
       NULL, 0, NULL, 0, NULL, TRUE, TRUE, 0, g_fbtnMerge },
@@ -1152,20 +1152,21 @@ static void applyPreset(int idx, int p)
                pr->frames, pr->supported);
 }
 
-/* Keep the [host] sibling_all/sibling_modules whitelist exactly in sync
- * with the registry: enabled modules that declare needsSiblings make the
- * host load in sibling processes (scanservice.exe etc.) and receive their
- * frames.  The legacy developer keys (dev_all/dev_modules) are untouched:
- * the host prefers those when dev_all=1. */
 /* Sibling exes (scanservice.exe, Sn3DprocessManager.exe, ...) only ever
  * carry module code for modules explicitly PROVEN there.  Evidence
  * 2026-11-24: six modules inside scanservice.exe aborted it
  * (0xc0000409 in ucrtbase -> vendor error 0x00000012 on project open).
  * merge_select alone then ran a full night in scanservice /
  * softwareUpgrade / informationCollect / einscan_net_svr and the
- * fusion engine without a fault - it is the only module listed today
- * (needsSiblings TRUE).  Any module added to that list needs its own
- * live verification in every sibling first. */
+ * fusion engine without a fault.  A whitelist writer that trusted the
+ * per-module needsSiblings flag re-armed the six-module configuration
+ * on 2026-11-24 18:42 (manager 1.6.3) and the 0x00000012 came back.
+ * The fusion engine still needs merge_select (it builds the Mesh Model
+ * result), so the supported configuration is the manual pair
+ *   sibling_all = 1
+ *   sibling_modules = merge_select
+ * and this writer now never rewrites existing sibling keys. */
+
 static void syncSiblings(IniDoc *ini)
 {
     Sec *hs = iniSec(ini, "host");
@@ -1175,37 +1176,22 @@ static void syncSiblings(IniDoc *ini)
 
     if (!hs)
         return;
-    list[0] = '\0';
-    for (i = 0; i < g_modCount; i++) {
-        char rel[MAX_PATH], abs[MAX_PATH];
-        const char *en = NULL;
-        Sec *s;
-        int j;
-
-        if (!g_mods[i].needsSiblings)
-            continue;
-        snprintf(rel, sizeof rel, "modules\\%s.dll", g_mods[i].id);
-        iniPathFor(abs, sizeof abs, rel);
-        if (!pathExistsA(abs))
-            continue;
-        s = iniSec(ini, g_mods[i].id);
-        for (j = 0; s && j < s->n; j++)
-            if (_stricmp(s->kv[j].key, "enabled") == 0)
-                en = s->kv[j].val;
-        if (en && atoi(en) == 0)
-            continue;
-        if (len && len + 1 < sizeof list)
-            list[len++] = ',';
-        len += (size_t) snprintf(list + len, sizeof list - len, "%s",
-                                 g_mods[i].id);
-        if (len >= sizeof list - 1) {         /* whitelist overflow: stop  */
-            len = sizeof list - 1;
-            break;
-        }
-    }
-    list[len] = '\0';
-    iniSet(hs, "sibling_all", list[0] ? "1" : "0");
-    iniSet(hs, "sibling_modules", list);
+    /* Never rewrite the sibling keys: a manual
+     *   sibling_all = 1
+     *   sibling_modules = merge_select
+     * is the proven configuration for the fusion engine
+     * (Sn3DprocessManager.exe builds the Mesh Model result), and the
+     * 2026-11-24 regression came from this writer re-arming all six
+     * needsSiblings modules.  Only a fresh modules.ini (no keys yet)
+     * gets the safe default. */
+    for (i = 0; i < hs->n; i++)
+        if (_stricmp(hs->kv[i].key, "sibling_all") == 0
+            || _stricmp(hs->kv[i].key, "sibling_modules") == 0)
+            return;
+    (void)len;
+    (void)list;
+    iniSet(hs, "sibling_all", "0");
+    iniSet(hs, "sibling_modules", "");
 }
 
 /* install modules from the bitmask; others -> enabled=0 */

@@ -95,6 +95,8 @@ unlisted scans are provably unaffected.
 | `verbose` | `1` | log each scan decision to the mod log (needs `[host] log = 1`) |
 | `eyewatch` | `1` | record project-list eye show/hide events (observation) |
 | `eye_gate` | `1` | hidden eye = scan left out of the common mesh, persisted as `[uuid]` sections (explicit `.ini` sections still win) |
+| `gate_exes` | `EXStar Hub.exe,scanservice.exe,Sn3DprocessManager.exe` | processes allowed to hook the merge gate; every other host keeps an inert module |
+| `eyewatch_exes` | `EXStar Hub.exe` | processes allowed to watch the eye icons (the QML UI) |
 | `file` | stock path | full path to the selection `.ini` (the `.map.txt` sits next to it) |
 
 ## Relationship to a community patchset
@@ -102,8 +104,9 @@ unlisted scans are provably unaffected.
 A shared community patchset implements a similar per-scan feature driven
 by `mesh-selection.ini` with UUID section names in the same folder. The
 two are independent and simply AND together: either mechanism excluding
-a scan takes it out of the merge. This module never reads or writes the
-UUID sections.
+a scan takes it out of the merge. The eye binding writes its own
+`[uuid]` sections into `merge-select.ini`; the community file is never
+touched.
 
 ## Files created at runtime (user-owned, safe to delete)
 

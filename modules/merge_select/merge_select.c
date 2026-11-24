@@ -104,7 +104,7 @@
 
 #include "exstar_sdk.h"
 
-#define MOD_VERSION   "1.4.1"
+#define MOD_VERSION   "1.4.6"
 
 #define SEL_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.ini"
 #define MAP_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.map.txt"
@@ -530,18 +530,104 @@ static int scanDecision(void *self, wchar_t *keyOut, int cap, int *why,
 /* eye watch (implemented with the meta-object code below) */
 static int  eyeLookup(const unsigned char *u);   /* -1 unknown, 0/1 vis */
 static void fmtUuid(const unsigned char *u, char *out, int cap);
-static void gateEyeUuid(void *self, unsigned char *u, char *ustr, int cap,
-                        int *have);
+static void gateEyeUuid(void *self, unsigned long long impl, void *wrapper,
+                        unsigned char *u, char *ustr, int cap, int *have);
 
-/* detour on HandlePrjFile::isGenerateCloud */
-static unsigned char __fastcall det_isCloud(void *self)
+/* ------------------------------------------------------------------ */
+/* wrapper-capturing thunk                                             */
+/*                                                                     */
+/* The merge loop in Sn3DMultiProjects!Sn3DHandleProjects::getMeshData */
+/* iterates scan items (wrappers) with `HandlePrjFile* = [rax+0x28]`   */
+/* and the scan QUuid at [rax+0x38]; `mov rcx,[rax+0x28]` runs right   */
+/* before `call [isGenerateCloud]`, so rax still holds the wrapper at  */
+/* the call.  A 65-byte hand-assembled stub therefore:                 */
+/*   - grabs the caller's real return address ([rsp] at entry) so the  */
+/*     detour can tell merge-loop callers from project open/save,      */
+/*   - passes rax (wrapper candidate) as 2nd and the return address as */
+/*     3rd argument,                                                  */
+/*   - reserves the 32-byte shadow space the x64 ABI requires before   */
+/*     calling a C function (1.4.4/1.4.5 did not, so the helper could  */
+/*     spill its parameters over the saved flags/registers),           */
+/*   - keeps 16-byte stack alignment at the call,                      */
+/*   - returns AL only: rax is a volatile return register, so the      */
+/*     saved copy is dropped instead of popped (1.4.5 fixed that).     */
+/* All other callers see the vendor answer unchanged.                  */
+/* ------------------------------------------------------------------ */
+static unsigned char *g_thunk;
+
+static int buildThunk(void *helper)
+{
+    unsigned char *t;
+    unsigned long long abs64 = (unsigned long long)helper;
+
+    t = (unsigned char *)VirtualAlloc(NULL, 128,
+                                      MEM_COMMIT | MEM_RESERVE,
+                                      PAGE_EXECUTE_READWRITE);
+    if (!t)
+        return 0;
+    t[0] = 0x4C; t[1] = 0x8B; t[2] = 0x04; t[3] = 0x24;              /* mov r8, [rsp]  (ra)    */
+    t[4] = 0x48; t[5] = 0x89; t[6] = 0xC2;                           /* mov rdx, rax (wrapper) */
+    t[7]  = 0x50; t[8]  = 0x53; t[9]  = 0x51; t[10] = 0x52;          /* push rax rbx rcx rdx   */
+    t[11] = 0x56; t[12] = 0x57;                                      /* push rsi rdi           */
+    t[13] = 0x41; t[14] = 0x50;                                      /* push r8                */
+    t[15] = 0x41; t[16] = 0x51;                                      /* push r9                */
+    t[17] = 0x41; t[18] = 0x52;                                      /* push r10               */
+    t[19] = 0x41; t[20] = 0x53;                                      /* push r11               */
+    t[21] = 0x9C;                                                    /* pushfq                 */
+    t[22] = 0x48; t[23] = 0x83; t[24] = 0xEC; t[25] = 0x20;          /* sub rsp, 0x20 (shadow) */
+    t[26] = 0x49; t[27] = 0xBA;                                      /* mov r10, helper        */
+    memcpy(t + 28, &abs64, 8);
+    t[36] = 0x41; t[37] = 0xFF; t[38] = 0xD2;                        /* call r10               */
+    t[39] = 0x0F; t[40] = 0xB6; t[41] = 0xC0;                        /* movzx eax, al          */
+    t[42] = 0x48; t[43] = 0x83; t[44] = 0xC4; t[45] = 0x20;          /* add rsp, 0x20          */
+    t[46] = 0x9D;                                                    /* popfq                  */
+    t[47] = 0x41; t[48] = 0x5B;                                      /* pop r11                */
+    t[49] = 0x41; t[50] = 0x5A;                                      /* pop r10                */
+    t[51] = 0x41; t[52] = 0x59;                                      /* pop r9                 */
+    t[53] = 0x41; t[54] = 0x58;                                      /* pop r8                 */
+    t[55] = 0x5F; t[56] = 0x5E;                                      /* pop rdi rsi            */
+    t[57] = 0x5A; t[58] = 0x59;                                      /* pop rdx rcx            */
+    t[59] = 0x5B;                                                    /* pop rbx                */
+    t[60] = 0x48; t[61] = 0x83; t[62] = 0xC4; t[63] = 0x08;          /* add rsp, 8 (drop rax)  */
+    t[64] = 0xC3;                                                    /* ret (AL = answer)      */
+    g_thunk = t;
+    return 1;
+}
+
+/* the decision half runs under SEH: a vendor object that moved between
+ * releases must never take the host process down (fail-open = stock) */
+static unsigned char decideCloud(void *self, void *wrapper,
+                                 unsigned char *ra, unsigned char r);
+
+/* detour on HandlePrjFile::isGenerateCloud (called via g_thunk, which
+ * adds the wrapper candidate and the caller's return address) */
+static unsigned char __fastcall det_isCloud(void *self, void *wrapper,
+                                            void *ra)
 {
     unsigned char r = g_origIsCloud(self);
-    unsigned char *ra = (unsigned char *)_ReturnAddress();
-    static const char *const whyN[] = {
-        "excluded in .ini", "included in .ini", "not listed (stock)",
-        "master switch off", "identity unreadable (fail-open)",
-        "eye icon hidden" };
+    unsigned char out = r;
+
+    __try {
+        out = decideCloud(self, wrapper, (unsigned char *)ra, r);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        static volatile LONG faulted;
+        if (InterlockedIncrement(&faulted) == 1)
+            g_host->log("merge_select: gate fault while reading the vendor "
+                        "object - this call keeps the stock answer");
+        out = r;
+    }
+    return out;
+}
+
+static const char *const g_whyN[] = {
+    "excluded in .ini", "included in .ini", "not listed (stock)",
+    "master switch off", "identity unreadable (fail-open)",
+    "eye icon hidden" };
+
+static unsigned char decideCloud(void *self, void *wrapper,
+                                 unsigned char *ra, unsigned char r)
+{
+    const char *const *whyN = g_whyN;
     wchar_t key[PATH_CAP];
     unsigned long long impl = 0;
     unsigned char ub[16];
@@ -558,15 +644,14 @@ static unsigned char __fastcall det_isCloud(void *self)
                        &why, &impl);
 
     /* eye binding, two channels, both keyed by the scan QUuid the
-     * object carries at self+0x38 (the very bytes the community
-     * patchset hex-encodes for its uuid sections):
+     * object carries (offset located at runtime - see uuidScan):
      * - the shared .ini: [uuid] sections written whenever an eye is
      *   toggled (works across processes - the fusion engine's merge
      *   loop reads the same file it never wrote)
      * - the in-process eye map: instant state from the metacall watch
      * An explicit .ini section always wins; the eye map only speaks
      * when the ini has no decision for the scan. */
-    gateEyeUuid(self, ub, ustr, (int)sizeof ustr, &haveU);
+    gateEyeUuid(self, impl, wrapper, ub, ustr, (int)sizeof ustr, &haveU);
     if (g_eyeGate && haveU && why != WHY_MASTER) {
         wchar_t ukey[64];
         int t = -1;
@@ -620,6 +705,50 @@ static unsigned char __fastcall det_isCloud(void *self)
 /* install (module worker thread only - never under the loader lock)   */
 /* ------------------------------------------------------------------ */
 
+/* Which host processes may carry live hooks.  Evidence 2026-11-24
+ * 19:02: scanservice.exe died (0xC0000005, write to address 1) with the
+ * module loaded in it, and the vendor then refused the project with
+ * 0x00000012.  Hooks therefore only ever go into processes that need
+ * them, and every other host keeps a completely inert module:
+ *   gate_exes     - processes that run Sn3DMultiProjects' merge loop
+ *   eyewatch_exes - the QML UI process (eye icons live there)
+ * Both are ini switches; an unmatched process logs once and goes idle. */
+static char g_exeName[MAX_PATH] = "?";
+
+static int exeAllowed(const char *key, const char *defList)
+{
+    char list[256];
+    size_t i = 0;
+
+    if (g_host->cfg_string(g_host, key, list, (int)sizeof list) <= 0
+        || !list[0])
+        strcpy_s(list, sizeof list, defList);
+    while (i < sizeof list && list[i]) {
+        char name[MAX_PATH];
+        size_t n = 0;
+        int more;
+
+        while (list[i] == ' ' || list[i] == '\t')
+            i++;
+        while (list[i] && list[i] != ',' && list[i] != ';') {
+            if (n + 1 < sizeof name)
+                name[n++] = list[i];
+            i++;
+        }
+        more = list[i] != 0;
+        if (more)
+            i++;
+        while (n && (name[n - 1] == ' ' || name[n - 1] == '\t'))
+            n--;
+        name[n] = 0;
+        if (n && _stricmp(name, g_exeName) == 0)
+            return 1;
+        if (!more)
+            break;
+    }
+    return 0;
+}
+
 static void tryInstall(void)
 {
     HMODULE sf, qt, mp;
@@ -629,6 +758,13 @@ static void tryInstall(void)
 
     if (g_installed || g_broken)
         return;
+    if (!exeAllowed("gate_exes",
+                    "EXStar Hub.exe,scanservice.exe,Sn3DprocessManager.exe")) {
+        g_host->log("merge_select: %s is not in gate_exes - module stays "
+                    "inert here (no hooks, no files)", g_exeName);
+        InterlockedExchange(&g_broken, 1);
+        return;
+    }
     sf = GetModuleHandleA("Sn3DFile.dll");
     qt = GetModuleHandleA("Qt5Core.dll");
     mp = GetModuleHandleA("Sn3DMultiProjects.dll");
@@ -663,7 +799,12 @@ static void tryInstall(void)
         InterlockedExchange(&g_broken, 1);
         return;
     }
-    if (!g_host->hook(target, (void *)det_isCloud, (void **)&g_origIsCloud)) {
+    if (!g_thunk && !buildThunk((void *)det_isCloud)) {
+        g_host->log("merge_select: thunk alloc failed - app stays stock");
+        InterlockedExchange(&g_broken, 1);
+        return;
+    }
+    if (!g_host->hook(target, (void *)g_thunk, (void **)&g_origIsCloud)) {
         g_host->log("merge_select: detour refused - app stays stock");
         InterlockedExchange(&g_broken, 1);
         return;
@@ -776,18 +917,283 @@ static int eyeLookup(const unsigned char *u)
     return -1;
 }
 
-/* HandlePrjFile keeps the scan's QUuid at offset +0x38 in WIRE byte
- * order (Data1..Data3 stored big-endian: the community patchset cave
- * hex-encodes the bytes with the {3,2,1,0,5,4,7,6,8..15} permutation
- * to get the canonical text). Normalize to QUuid struct order so the
- * string and the raw bytes match what the eye events report. */
-static void gateEyeUuid(void *self, unsigned char *u, char *ustr, int cap,
-                        int *have)
+/* ---- uuid finder ------------------------------------------------
+ * Live evidence 2026-11-24: the HandlePrjFile that the merge loop
+ * passes to isGenerateCloud carries ZERO at +0x38.  The community
+ * patchset key lives in the loop's WRAPPER item (wrapper+0x38 is the
+ * QUuid, wrapper+0x28 the HandlePrjFile pointer - two different heap
+ * objects), which is not reachable from self.  So instead of trusting
+ * one offset, FIND the uuid: the eye watch has recorded the QUuid of
+ * every scan row ever toggled, and the module searches the scan object
+ * and its vendor impl for those known values - in both memory layouts
+ * (QUuid struct little-endian, text-order big-endian) and as UTF-16
+ * canonical text.  The first hit (level, offset, layout) is cached and
+ * every later decision reads it directly; misses log a compact dump
+ * so future vendor builds stay debuggable. */
+#define USCAN_WIN  0x200                    /* bytes scanned per obj   */
+#define USCAN_MAX  32                       /* known uuids to try      */
+
+static struct { int level, off, lay; } g_uLoc = { -1, 0, 0 };
+static volatile LONG g_uScanTries   = 8;
+static volatile LONG g_uScanLogged  = 8;
+static volatile LONG g_uMissLogged  = 3;
+
+static void uuidLeToBe(const unsigned char *u, unsigned char *b)
+{
+    b[0] = u[3]; b[1] = u[2]; b[2] = u[1]; b[3] = u[0];
+    b[4] = u[5]; b[5] = u[4];
+    b[6] = u[7]; b[7] = u[6];
+    memcpy(b + 8, u + 8, 8);
+}
+
+static int memFind(const unsigned char *buf, int len,
+                   const unsigned char *pat, int plen)
+{
+    int i;
+
+    for (i = 0; i + plen <= len; i++)
+        if (buf[i] == pat[0] && memcmp(buf + i, pat, plen) == 0)
+            return i;
+    return -1;
+}
+
+static int hexNib(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int uuidFromText(const wchar_t *t, unsigned char *u)
+{
+    /* "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX" -> QUuid struct bytes */
+    int i, nib, pos = 0;
+    unsigned char bytes[16];
+
+    for (i = 0; i < 16; i++) {
+        nib = hexNib((char)t[pos]);
+        if (nib < 0)
+            return 0;
+        bytes[i] = (unsigned char)(nib << 4);
+        pos++;
+        nib = hexNib((char)t[pos]);
+        if (nib < 0)
+            return 0;
+        bytes[i] |= (unsigned char)nib;
+        pos++;
+        if (i == 3 || i == 5 || i == 7 || i == 9) {
+            if (t[pos] != L'-')
+                return 0;
+            pos++;
+        }
+    }
+    u[0] = bytes[3]; u[1] = bytes[2]; u[2] = bytes[1]; u[3] = bytes[0];
+    u[4] = bytes[5]; u[5] = bytes[4];
+    u[6] = bytes[7]; u[7] = bytes[6];
+    memcpy(u + 8, bytes + 8, 8);
+    return 1;
+}
+
+static int copyWin(void *src, unsigned char *win)
+{
+    int ok = 0;
+
+    __try {
+        memcpy(win, src, USCAN_WIN);
+        ok = 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return ok;
+}
+
+/* search self/impl for any known eye uuid; fills u/ustr, caches g_uLoc */
+static int uuidScan(void *self, unsigned long long impl,
+                    unsigned char *u, char *ustr, int cap)
+{
+    static const char *const layN[] = { "le16", "be16", "txt16" };
+    unsigned char sw[USCAN_WIN], iw[USCAN_WIN], be[16], pat[72];
+    int haveS, haveI = 0, i, n = 0, off, hit = 0;
+    int hlay = 0, hlevel = 0, hoff = 0;
+    unsigned char hu[16];
+    char s[64];
+
+    haveS = copyWin(self, sw);
+    if (impl)
+        haveI = copyWin((void *)(size_t)impl, iw);
+    if (!haveS && !haveI)
+        return 0;
+
+    for (i = 0; i < EYE_MAX && n < USCAN_MAX; i++) {
+        unsigned char *le = g_eye[i].uuid;
+        int k;
+
+        if (!g_eye[i].seq)
+            continue;
+        n++;
+        uuidLeToBe(le, be);
+        if (haveS) {
+            if ((off = memFind(sw, USCAN_WIN, le, 16)) >= 0)
+                { hit = 1; hlevel = 0; hoff = off; hlay = 0; }
+            else if ((off = memFind(sw, USCAN_WIN, be, 16)) >= 0)
+                { hit = 1; hlevel = 0; hoff = off; hlay = 1; }
+        }
+        if (!hit && haveI) {
+            if ((off = memFind(iw, USCAN_WIN, le, 16)) >= 0)
+                { hit = 1; hlevel = 1; hoff = off; hlay = 0; }
+            else if ((off = memFind(iw, USCAN_WIN, be, 16)) >= 0)
+                { hit = 1; hlevel = 1; hoff = off; hlay = 1; }
+        }
+        if (!hit) {
+            fmtUuid(le, s, sizeof s);          /* canonical text      */
+            for (k = 0; k < 36; k++) {         /* UTF-16 in both objs */
+                pat[2 * k]     = (unsigned char) s[k];
+                pat[2 * k + 1] = 0;
+            }
+            if (haveS && (off = memFind(sw, USCAN_WIN, pat, 72)) >= 0)
+                { hit = 1; hlevel = 0; hoff = off; hlay = 2; }
+            else if (haveI && (off = memFind(iw, USCAN_WIN, pat, 72)) >= 0)
+                { hit = 1; hlevel = 1; hoff = off; hlay = 2; }
+            if (hit)
+                memcpy(hu, le, 16);
+            else
+                continue;
+        } else
+            memcpy(hu, le, 16);
+        break;
+    }
+    if (hit) {
+        g_uLoc.level = hlevel;
+        g_uLoc.off   = hoff;
+        g_uLoc.lay   = hlay;
+        memcpy(u, hu, 16);
+        fmtUuid(u, ustr, cap);
+        if (InterlockedDecrement(&g_uScanLogged) >= 0)
+            g_host->log("merge_select: uuidscan: %s at %s+0x%X [%s]",
+                        ustr, hlevel ? "impl" : "self", hoff, layN[hlay]);
+        return 1;
+    }
+    if (InterlockedDecrement(&g_uMissLogged) >= 0) {
+        char hs[129];
+        for (i = 0; i < 32; i++)
+            _snprintf_s(hs + 2 * i, 3, _TRUNCATE, "%02X",
+                        haveS ? sw[i] : iw[i]);
+        g_host->log("merge_select: uuidscan: no hit (targets=%d) "
+                    "self[0..31]=%s self+0x38=%02X%02X%02X%02X",
+                    n, hs,
+                    haveS ? sw[0x38] : 0, haveS ? sw[0x39] : 0,
+                    haveS ? sw[0x3A] : 0, haveS ? sw[0x3B] : 0);
+    }
+    return 0;
+}
+
+/* wrapper channel: the merge loop (verified in Sn3DMultiProjects
+ * getMeshData) iterates items with the scan QUuid at wrapper+0x38 and
+ * the HandlePrjFile pointer at wrapper+0x28, loading rcx=[rax+0x28]
+ * right before `call [isGenerateCloud]`.  A hand-built thunk therefore
+ * hands us rax=wrapper candidate; it is accepted only when
+ * [candidate+0x28] == self, so no other call path can be fooled. */
+static int wrapperUuid(void *self, void *w, unsigned char *u)
+{
+    void *fp = NULL;
+
+    if (!w)
+        return 0;
+    __try {
+        fp = *(void **)((unsigned char *)w + 0x28);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    if (fp != self)
+        return 0;
+    {
+        unsigned char raw16[16], alt[16];
+        int k, zero = 1;
+
+        __try {
+            memcpy(raw16, (const unsigned char *)w + 0x38, 16);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return 0;
+        }
+        uuidLeToBe(raw16, alt);          /* other byte-order candidate */
+        if (eyeLookup(raw16) >= 0 && eyeLookup(alt) < 0)
+            memcpy(u, raw16, 16);        /* member is already struct   */
+        else
+            memcpy(u, alt, 16);          /* wire order (community key) */
+        for (k = 0; k < 8; k++)
+            if (u[k]) { zero = 0; break; }
+        if (zero)
+            return 0;
+    }
+    return 1;
+}
+
+/* rescan while new eye uuids show up: the eye map is usually empty at
+ * the first gate call of a session, so one static round is useless */
+static void gateEyeUuid(void *self, unsigned long long impl, void *wrapper,
+                        unsigned char *u, char *ustr, int cap, int *have)
 {
     unsigned char raw[16];
+    static int s_lastN;
+    int n = 0, i;
+
     *have = 0;
     ustr[0] = 0;
     memset(u, 0, 16);
+
+    /* best case: eye state recorded in this very call */
+    if (wrapperUuid(self, wrapper, u)) {
+        fmtUuid(u, ustr, cap);
+        *have = 1;
+        return;
+    }
+
+    if (g_uLoc.level >= 0) {
+        unsigned char *src = g_uLoc.level == 0
+            ? (unsigned char *)self + g_uLoc.off
+            : (unsigned char *)(size_t)impl + g_uLoc.off;
+        if (g_uLoc.lay == 2) {
+            wchar_t t[40];
+            __try {
+                memcpy(t, src, 72);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                g_uLoc.level = -1;
+            }
+            if (g_uLoc.level >= 0 && uuidFromText(t, u)) {
+                fmtUuid(u, ustr, cap);
+                *have = 1;
+                return;
+            }
+        } else {
+            __try {
+                memcpy(raw, src, 16);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                g_uLoc.level = -1;
+            }
+            if (g_uLoc.level >= 0) {
+                if (g_uLoc.lay == 0)
+                    memcpy(u, raw, 16);
+                else
+                    uuidLeToBe(raw, u);
+                fmtUuid(u, ustr, cap);
+                *have = 1;
+                return;
+            }
+        }
+    }
+    if (!g_eyeGate)
+        return;
+    for (i = 0; i < EYE_MAX; i++)
+        if (g_eye[i].seq)
+            n++;
+    if (n > s_lastN
+        || (n > 0 && InterlockedDecrement(&g_uScanTries) >= 0)) {
+        s_lastN = n;
+        if (uuidScan(self, impl, u, ustr, cap)) {
+            *have = 1;
+            return;
+        }
+    }
     __try {
         memcpy(raw, (const unsigned char *)self + 0x38, 16);
         *have = 1;
@@ -795,10 +1201,13 @@ static void gateEyeUuid(void *self, unsigned char *u, char *ustr, int cap,
     }
     if (!*have)
         return;
-    u[0] = raw[3]; u[1] = raw[2]; u[2] = raw[1]; u[3] = raw[0];
-    u[4] = raw[5]; u[5] = raw[4];
-    u[6] = raw[7]; u[7] = raw[6];
-    memcpy(u + 8, raw + 8, 8);
+    if (!raw[0] && !raw[1] && !raw[2] && !raw[3]
+        && !raw[4] && !raw[5] && !raw[6] && !raw[7]) {
+        *have = 0;                       /* zero padding, not an id   */
+        memset(u, 0, 16);
+        return;
+    }
+    uuidLeToBe(raw, u);
     fmtUuid(u, ustr, cap);
 }
 
@@ -825,11 +1234,18 @@ static void eyeRecord(const unsigned char *u, int visible)
     /* persist the eye state into the shared selection .ini as a
      * [uuid] section: the same file every process with this module
      * consults at the gate (the fusion engine has no QML of its own,
-     * the hub UI is the only writer) */
+     * the hub UI is the only writer). Hidden writes included = 0;
+     * showing removes the section, so the file stays a clean list of
+     * exclusions. NOTE: the vendor resets the tree to "all visible"
+     * when a project re-opens, so these sections describe the current
+     * session, like the eye icons themselves. */
     if (g_eyeGate && MultiByteToWideChar(CP_UTF8, 0, s, -1, ws,
-                                         (int)(sizeof ws / sizeof ws[0])) > 0)
-        WritePrivateProfileStringW(ws, L"included",
-                                   visible ? L"1" : L"0", g_selFile);
+                                         (int)(sizeof ws / sizeof ws[0])) > 0) {
+        if (visible)
+            WritePrivateProfileStringW(ws, NULL, NULL, g_selFile);
+        else
+            WritePrivateProfileStringW(ws, L"included", L"0", g_selFile);
+    }
     if (g_verbose && InterlockedDecrement(&g_eyeLogged) >= 0)
         g_host->log("merge_select: eye %s -> %s",
                     s, visible ? "VISIBLE" : "hidden");
@@ -1075,13 +1491,20 @@ static unsigned WINAPI worker(LPVOID arg)
     }
 
     /* eye watch: wait until ScanPage_E7.dll is mapped, then find and
-     * observe the vendor's show/hide slot (record-only, ini switch) */
+     * observe the vendor's show/hide slot (record-only, ini switch).
+     * The icons live in the QML UI process only; arming the metacall
+     * detour inside a service process would be an unnecessary risk. */
     if (!g_broken && g_eyewatch) {
-        ULONGLONG t1 = GetTickCount64();
-        while (!g_eyeDone && GetTickCount64() - t1 < 600000) {
-            if (eyeTry())
-                break;
-            WaitForSingleObject(g_wake, 1000);
+        if (exeAllowed("eyewatch_exes", "EXStar Hub.exe")) {
+            ULONGLONG t1 = GetTickCount64();
+            while (!g_eyeDone && GetTickCount64() - t1 < 600000) {
+                if (eyeTry())
+                    break;
+                WaitForSingleObject(g_wake, 1000);
+            }
+        } else {
+            g_host->log("merge_select: eye watch not needed in %s "
+                        "(eyewatch_exes)", g_exeName);
         }
     }
     return 0;
@@ -1108,6 +1531,15 @@ EX_EXPORT int ex_init(const ExHost *host)
     g_verbose = host->cfg_int(host, "verbose", 1);
     g_eyewatch = host->cfg_int(host, "eyewatch", 1);
     g_eyeGate = host->cfg_int(host, "eye_gate", 1);
+
+    {   /* the exe name drives the hook allowlists - resolve it before the
+         * worker thread starts */
+        char exe[MAX_PATH] = "?", *b;
+        if (GetModuleFileNameA(NULL, exe, sizeof exe) > 0
+            && (b = strrchr(exe, '\\')) != NULL)
+            memmove(exe, b + 1, strlen(b + 1) + 1);
+        strcpy_s(g_exeName, sizeof g_exeName, exe);
+    }
 
     if (host->cfg_string(host, "file", abuf, sizeof abuf) > 0 && abuf[0]
         && MultiByteToWideChar(CP_UTF8, 0, abuf, -1, wbuf,

@@ -130,10 +130,10 @@ Two facts learned from live diagnostics (module v1.1.1/v1.1.2 probes):
 * a **cached** common mesh is re-shown without any work: the
   `isGenerateCloud` gate only runs when the mesh is actually rebuilt
   (new project or after deleting the result);
-* the **"Меш" flow on the scan page does not call `isGenerateCloud` at
-  all** - the visible selection is applied by the scan page itself.
-  Its "force-show" of every scan right after pressing Mesh also resets
-  the eye icons in the tree, which is stock behaviour.
+* the scan page's Mesh flow **does** call `isGenerateCloud`, but only
+  from the post-mesh collection in `scanservice.exe` (see section 7).
+  The earlier "it never asks the gate" reading came from runs where
+  the module was not loaded in that process.
 
 The eye icon of a scan row is a QML-callable slot in `ScanPage_E7.dll`:
 
@@ -176,6 +176,71 @@ traffic. It never modifies anything (`eyewatch` ini switch).
 Sibling-process incident (same night): enabling six modules inside
 `scanservice.exe` via `sibling_all`/whitelist made it abort
 (0xc0000409 in ucrtbase) - project open then failed with vendor error
-`0x00000012`. Config reverted, and manager 1.6.1+ hard-disables
-sibling writing (`g_siblingsProven = 0`) until each module is proven
-there; `merge_select` needs the UI process only.
+`0x00000012`. Config reverted; since then only `merge_select` may enter
+a sibling, and the module itself applies a second, stricter gate (see
+`gate_exes` below).
+
+## 7. Where the eye decision is actually applied (v1.4.6)
+
+The gate writer and the gate reader live in different processes, which
+explains every confusing observation of the day:
+
+* **the eye icons run in the UI process** - `EXStar Hub.exe`, where the
+  QML `ScanPage_E7` controllers live and where the `setNodeVisible`
+  metacall is watched and written to `merge-select.ini` as
+  `[<uuid>] included = 0`;
+* **the common mesh is collected in the service process** -
+  `scanservice.exe` loads `Sn3DMultiProjects.dll` and its own log shows
+  the merge loop:
+  `[open-post-mesh] getMeshData ready ... uuidCount=3` followed by
+  `Sn3DHandleProjects::getMeshData()`. The gate calls arrive there as
+  `ra=Sn3DMultiProjects.dll+0x7E3BB`;
+* `Sn3DprocessManager.exe` also runs during the Mesh Model flow but
+  never maps `Sn3DMultiProjects.dll`, so it cannot be the merge host
+  (that working hypothesis of the day was wrong).
+
+**Shared-state decision.** `merge-select.ini` in
+`C:\Users\Public\Shining3d\EXStar Hub\` is the hand-off: the UI process
+writes `[<uuid>] included = 0/1`, the service process reads it at every
+gate call. An explicit `[folder]` section still wins over a `[uuid]`
+one, and every failure mode keeps the stock answer (fail-open).
+
+**Hook allowlists (v1.4.6).** A module that hooks inside a service
+process can take the service down, and a dead `scanservice` is exactly
+what the vendor reports as error `0x00000012` on project open. Two ini
+switches therefore decide where hooks may live; an unmatched process
+keeps a completely inert module (no hooks, no files):
+
+| switch | default | meaning |
+|---|---|---|
+| `gate_exes` | `EXStar Hub.exe,scanservice.exe,Sn3DprocessManager.exe` | processes allowed to hook `isGenerateCloud` |
+| `eyewatch_exes` | `EXStar Hub.exe` | processes allowed to hook the QML metacall |
+
+**Boxed gate (v1.4.6).** The decision half of the detour runs inside
+`__try/__except`: a vendor object that moved between releases can no
+longer take the process down, the call simply keeps the vendor answer
+and one line is logged. This was added after `scanservice.exe` died
+with `0xC0000005` (execute at address 1) while the module was loaded.
+
+**Real caller address (v1.4.6).** The detour used to compare
+`_ReturnAddress()` - but that is the address inside the detour thunk,
+never inside `Sn3DMultiProjects.dll`, so every call took the
+"caller outside the merge code" branch and the decision was never
+applied. The thunk now passes the caller's own return address
+(`[rsp]` at entry) as a third argument, which is why live runs finally
+show `ra=+0x7E3BB` together with the three scan QUuids of the project.
+
+**Wrapper identity.** The uuid printed by the gate comes from the loop
+item the thunk captures in `rax` (`wrapper+0x38`, accepted only when
+`[wrapper+0x28] == self`). Live example from `Project_3`:
+`FE640E47-12CE-F54E-944A-011E29720325`,
+`1E864968-326E-6049-BFEF-6378AF077A00`,
+`4E6A3998-6385-1D4D-BD42-10469549E656`.
+
+**Thunk ABI.** The hand-assembled stub is 65 bytes: it grabs the return
+address, passes `rax` and that address to the C helper, reserves the
+32-byte shadow space the x64 ABI requires, keeps 16-byte stack
+alignment at the call, and returns `AL` only (the saved `rax` is
+dropped, not popped, because the vendor reads the byte straight after
+the call). Versions 1.4.4/1.4.5 got the shadow space and the return
+address wrong; neither was visible while the gate was inert.

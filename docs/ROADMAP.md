@@ -35,8 +35,8 @@ not included in git).
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
 | fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
-| merge_select | 1.4.0 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch) |
-| ExStarModManager | 1.5.0 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome) |
+| merge_select | 1.4.6 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch, hook allowlists) |
+| ExStarModManager | 1.6.6 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist |
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
 
@@ -327,7 +327,7 @@ real child control is the app-folder EDIT.
   now travel through the window queue and are shown by the UI thread).
 * `src/manager.c` is pure ASCII: all UI glyphs (`× → « » µ …`) are
   `\uXXXX` escapes - the file cannot be mojibake'd by an editor or a
-  build again (an earlier CP1251 round-trip had baked `25Г—25` into the
+  build again (an earlier CP1251 round-trip had baked mojibake into the
   Laser title).
 * CLI (`--install/--remove/--restore/--scanner-*`) behavior unchanged;
   version resources carry 1.4.0.
@@ -362,11 +362,15 @@ Goal (user decision): the selection UI is the hub's own **eye icons** -
 a hidden scan row must not enter the common mesh. No manager clicks, no
 ini editing during work.
 
-* Live diagnosis: the scan-page "Меш" flow never queries
+* Live diagnosis: the scan-page "Mesh" flow never queries
   `isGenerateCloud` (it applies visibility itself), a cached mesh is
   re-shown without any gate calls, and live gate objects return empty
   from *both* exported name getters. Full analysis:
   [merge-common-mesh.md §6](research/merge-common-mesh.md).
+  **Corrected 1.4.6:** the Mesh flow does query the gate, but from the
+  post-mesh collection in `scanservice.exe`
+  (`getMeshData`, `ra=Sn3DMultiProjects+0x7E3BB`); the earlier negative
+  reading came from runs without the module in that process.
 * merge_select 1.1.x/1.2.0: identity now also read as the embedded
   QString the vendor itself uses in `getProjInfo` (`**self+0x18 → +8`),
   one-shot `idmap` fallback dump; caller probes mapped who drives the
@@ -391,10 +395,22 @@ ini editing during work.
   behaviour.
 * Sibling mode: only `merge_select` is proven inside the sibling
   processes (it survived a full night there; the six-module config
-  killed `scanservice.exe`). Manager 1.6.3 re-enables
-  `sibling_all`/`sibling_modules` but writes only proven modules into
-  the whitelist; every future sibling module needs its own live proof
-  first.
+  killed `scanservice.exe`). Since manager 1.6.4 the manager never
+  rewrites `sibling_all`/`sibling_modules` at all - the proven pair
+  `sibling_all = 1` / `sibling_modules = merge_select` is set by hand
+  and left alone, and every future sibling module needs its own live
+  proof first.
+* 1.4.6 (gate finally live): three defects of the 1.4.3-1.4.5 chain were
+  found and fixed - the detour compared `_ReturnAddress()` (the address
+  inside the hand-built thunk, never inside the vendor image), so every
+  call took the "outside the merge code" branch and no decision was ever
+  applied; the thunk did not reserve the x64 shadow space before calling
+  the C helper; and the wrapper capture is now passed the caller's real
+  return address. Live result: project open in `scanservice.exe` logs
+  `gate ... ra=+0x7E3BB` with the three project QUuids. Hooks are also
+  restricted by `gate_exes`/`eyewatch_exes` (unmatched hosts keep an
+  inert module) and the decision half runs under `__try/__except` after
+  `scanservice.exe` died executing address 1 with an earlier build.
 
 ## Open regressions
 
