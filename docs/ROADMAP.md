@@ -378,9 +378,15 @@ ini editing during work.
   traced to running six modules inside sibling processes; reverted, and
   manager 1.6.1 refuses to enable sibling mode until modules are proven
   there one by one. `merge_select` needs the UI process only.
-* Next (needs live sessions): correlate eye uuids with gate scan names
-  (`Sn3DMultiProjects!Sn3DProjectsManager::getProjUuidList` etc.), then
-  answer `false` for hidden scans on mesh rebuilds.
+* Shipped in 1.3.0: the gate reads the scan `QUuid` straight from the
+  `HandlePrjFile` object (offset +0x38, the exact bytes the community
+  patchset keys its uuid sections with), matches it against the
+  recorded eye events and skips hidden scans on rebuild - the eye icon
+  is now the everyday switch; `merge-select.ini` keeps precedence,
+  `eye_gate = 0` restores stock behaviour. One live run pending:
+  hide an eye, rebuild the common mesh, expect
+  `gate ... uuid=... eye=0 ... eye icon hidden -> SKIP` and the row
+  missing from the merged result only.
 
 ## Open regressions
 

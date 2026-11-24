@@ -1,6 +1,6 @@
 # Merge Selection (`merge_select`)
 
-**Version 1.2.0 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
+**Version 1.3.0 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
 
 ## What it does
 
@@ -30,6 +30,11 @@ exactly like stock.
 
 ## How to use it
 
+The everyday way: **hide the scan's row in the project list (eye
+icon)** - the next common-mesh build leaves it out. Show it again to
+bring it back. Everything below is the manual override for scripts and
+power users.
+
 1. Install/enable the module in the Mod Manager and start a common-mesh
    run once so the hub sees each scan.
 2. Open `merge-select.map.txt` (same folder): the module records each
@@ -49,11 +54,16 @@ dump lands in the mod log if even that ever goes blank).
 
 Since 1.2.0 the module additionally **watches the eye icons** of the
 project list (the vendor slot `ProjectListControllerE7::setNodeVisible`,
-located at runtime through its Qt meta-object - no RVAs). It records
-`uuid -> visible` plus the caller of each meta-call into the mod log.
-This is pure observation and feeds the upcoming "hidden eye = not in
-the common mesh" behaviour; it changes nothing by itself and can be
-switched off with `eyewatch = 0`.
+located at runtime through its Qt meta-object - no RVAs). Since 1.3.0
+this watching is the everyday switch: every scan object carries its
+scan `QUuid` at offset +0x38, the same uuid the eye events report, so a
+common-mesh rebuild skips every scan whose row you hid (eye icon off),
+logs it as `eye icon hidden`, and keeps your data untouched. An
+explicit section in `merge-select.ini` still overrides the eye state
+(the ini remains the power-user tool); `eye_gate = 0` restores stock
+behaviour. The mesh dialog's own "show everything" burst is direct
+vendor C++ code that bypasses the meta-call watch, so it can no longer
+silently re-include a hidden scan.
 
 ## How it works
 
@@ -79,7 +89,8 @@ unlisted scans are provably unaffected.
 | key | default | meaning |
 |-----|---------|---------|
 | `verbose` | `1` | log each scan decision to the mod log (needs `[host] log = 1`) |
-| `eyewatch` | `1` | record project-list eye show/hide events (observation only) |
+| `eyewatch` | `1` | record project-list eye show/hide events (observation) |
+| `eye_gate` | `1` | hidden eye = scan left out of the common mesh (explicit `.ini` sections still win) |
 | `file` | stock path | full path to the selection `.ini` (the `.map.txt` sits next to it) |
 
 ## Relationship to a community patchset

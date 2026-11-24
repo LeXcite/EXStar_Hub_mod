@@ -50,7 +50,7 @@
 
 #define APP_EXE_NAME     L"EXStar Hub.exe"
 #define APP_EXE_A        "EXStar Hub.exe"
-#define MANAGER_VERSION  L"1.6.1"   /* keep in sync with $version in build.ps1 */
+#define MANAGER_VERSION  L"1.6.2"   /* keep in sync with $version in build.ps1 */
 #define PROXY_MARKER     L"ExStarMod.winmm.dll"   /* OriginalFilename of our proxy */
 #define DEFAULT_APP_DIR  "C:\\Program Files\\Shining3d\\EXStar Hub"
 /* The vendor freezes the exe ProductVersion (the "file stamp", still
@@ -179,7 +179,7 @@ static const ModDef g_mods[MAX_MODS] = {
       L"integrated GPUs (e.g. Radeon 780M) pass the startup GPU check - one memory byte, files untouched",
       L"MOD_GPU_GATE", L"MOD_GPU_GATE_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
-    { "merge_select", L"Merge Selection", "1.2.0",
+    { "merge_select", L"Merge Selection", "1.3.0",
       L"pick which scans feed the common mesh; excluded scans keep their data",
       L"MOD_MERGE_SELECT", L"MOD_MERGE_SELECT_INI",
       NULL, 0, NULL, 0, NULL, FALSE, TRUE, 0, g_fbtnMerge },

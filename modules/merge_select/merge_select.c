@@ -104,7 +104,7 @@
 
 #include "exstar_sdk.h"
 
-#define MOD_VERSION   "1.2.0"
+#define MOD_VERSION   "1.3.0"
 
 #define SEL_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.ini"
 #define MAP_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.map.txt"
@@ -115,6 +115,7 @@
 static const ExHost *g_host;
 static int           g_verbose = 1;
 static int           g_eyewatch = 1;
+static int           g_eyeGate = 1;
 static wchar_t       g_selFile[PATH_CAP];
 static wchar_t       g_mapFile[PATH_CAP];
 
@@ -346,6 +347,7 @@ static void ensureSelFile(void)
 #define WHY_UNLISTED  2
 #define WHY_MASTER    3
 #define WHY_NOREAD    4
+#define WHY_EYE       5
 
 /* one vendor QString getter -> wchar buffer; 1 when a non-empty string
  * came back. Runs the getter + utf16 + dtor trio under the caller's SEH. */
@@ -525,6 +527,12 @@ static int scanDecision(void *self, wchar_t *keyOut, int cap, int *why,
     return v != 0;
 }
 
+/* eye watch (implemented with the meta-object code below) */
+static int  eyeLookup(const unsigned char *u);   /* -1 unknown, 0/1 vis */
+static void fmtUuid(const unsigned char *u, char *out, int cap);
+static void gateEyeUuid(void *self, unsigned char *u, char *ustr, int cap,
+                        int *have);
+
 /* detour on HandlePrjFile::isGenerateCloud */
 static unsigned char __fastcall det_isCloud(void *self)
 {
@@ -532,9 +540,13 @@ static unsigned char __fastcall det_isCloud(void *self)
     unsigned char *ra = (unsigned char *)_ReturnAddress();
     static const char *const whyN[] = {
         "excluded in .ini", "included in .ini", "not listed (stock)",
-        "master switch off", "identity unreadable (fail-open)" };
+        "master switch off", "identity unreadable (fail-open)",
+        "eye icon hidden" };
     wchar_t key[PATH_CAP];
     unsigned long long impl = 0;
+    unsigned char ub[16];
+    char ustr[48];
+    int haveU = 0, eye = -1;
     int why = WHY_NOREAD, inc;
 
     if (ra < g_mpBase || ra >= g_mpBase + g_mpSize) {
@@ -544,6 +556,19 @@ static unsigned char __fastcall det_isCloud(void *self)
 
     inc = scanDecision(self, key, (int)(sizeof key / sizeof key[0]),
                        &why, &impl);
+
+    /* eye binding: the scan's QUuid at self+0x38 identifies the very
+     * row the eye icons toggle.  A hidden eye excludes the scan as
+     * long as the .ini has no explicit decision for it (the ini keeps
+     * precedence as the power-user override). */
+    gateEyeUuid(self, ub, ustr, (int)sizeof ustr, &haveU);
+    if (haveU)
+        eye = eyeLookup(ub);
+    if (g_eyeGate && inc && eye == 0
+        && (why == WHY_UNLISTED || why == WHY_NOREAD)) {
+        inc = 0;
+        why = WHY_EYE;
+    }
 
     if (InterlockedCompareExchange(&g_reportBusy, 1, 0) == 0) {
         if (!r)
@@ -560,8 +585,10 @@ static unsigned char __fastcall det_isCloud(void *self)
         if (key[0] &&
             WideCharToMultiByte(CP_UTF8, 0, key, -1, u8, (int)sizeof u8,
                                 NULL, NULL) > 0)
-            g_host->log("merge_select: gate %s  vendor=%d  %s  -> %s",
-                        u8, (int)r, whyS, (!r || !inc) ? "SKIP" : "include");
+            g_host->log("merge_select: gate %s  uuid=%s eye=%d  vendor=%d"
+                        "  %s  -> %s",
+                        u8, haveU ? ustr : "-", eye, (int)r, whyS,
+                        (!r || !inc) ? "SKIP" : "include");
         else
             g_host->log("merge_select: gate <no id>  ra=+0x%llX impl=%p"
                         "  vendor=%d  %s  -> include",
@@ -715,9 +742,38 @@ static void fmtUuid(const unsigned char *u, char *out, int cap)
     unsigned d2 = (unsigned)(u[4] | u[5] << 8);
     unsigned d3 = (unsigned)(u[6] | u[7] << 8);
     _snprintf_s(out, cap, _TRUNCATE,
-                "%08X-%04X-%04X-%02X%02X-%02X%02X-%02X%02X%02X%02X",
+                "%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X",
                 d1, d2, d3, u[8], u[9], u[10], u[11], u[12], u[13],
                 u[14], u[15]);
+}
+
+/* eye state of a raw QUuid struct: -1 = never seen, else visible flag */
+static int eyeLookup(const unsigned char *u)
+{
+    int i;
+
+    for (i = 0; i < EYE_MAX; i++)
+        if (g_eye[i].seq && memcmp(g_eye[i].uuid, u, 16) == 0)
+            return g_eye[i].visible;
+    return -1;
+}
+
+/* HandlePrjFile keeps the scan's QUuid as raw struct bytes at offset
+ * +0x38 (the very bytes the community patchset hex-encodes for its
+ * uuid sections). Read them for gate <-> eye correlation, SEH-safe. */
+static void gateEyeUuid(void *self, unsigned char *u, char *ustr, int cap,
+                        int *have)
+{
+    *have = 0;
+    ustr[0] = 0;
+    memset(u, 0, 16);
+    __try {
+        memcpy(u, (const unsigned char *)self + 0x38, 16);
+        *have = 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    if (*have)
+        fmtUuid(u, ustr, cap);
 }
 
 static void eyeRecord(const unsigned char *u, int visible)
@@ -1017,6 +1073,7 @@ EX_EXPORT int ex_init(const ExHost *host)
     g_host = host;
     g_verbose = host->cfg_int(host, "verbose", 1);
     g_eyewatch = host->cfg_int(host, "eyewatch", 1);
+    g_eyeGate = host->cfg_int(host, "eye_gate", 1);
 
     if (host->cfg_string(host, "file", abuf, sizeof abuf) > 0 && abuf[0]
         && MultiByteToWideChar(CP_UTF8, 0, abuf, -1, wbuf,
