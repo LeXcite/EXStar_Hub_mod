@@ -104,7 +104,7 @@
 
 #include "exstar_sdk.h"
 
-#define MOD_VERSION   "1.3.0"
+#define MOD_VERSION   "1.4.0"
 
 #define SEL_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.ini"
 #define MAP_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.map.txt"
@@ -557,17 +557,33 @@ static unsigned char __fastcall det_isCloud(void *self)
     inc = scanDecision(self, key, (int)(sizeof key / sizeof key[0]),
                        &why, &impl);
 
-    /* eye binding: the scan's QUuid at self+0x38 identifies the very
-     * row the eye icons toggle.  A hidden eye excludes the scan as
-     * long as the .ini has no explicit decision for it (the ini keeps
-     * precedence as the power-user override). */
+    /* eye binding, two channels, both keyed by the scan QUuid the
+     * object carries at self+0x38 (the very bytes the community
+     * patchset hex-encodes for its uuid sections):
+     * - the shared .ini: [uuid] sections written whenever an eye is
+     *   toggled (works across processes - the fusion engine's merge
+     *   loop reads the same file it never wrote)
+     * - the in-process eye map: instant state from the metacall watch
+     * An explicit .ini section always wins; the eye map only speaks
+     * when the ini has no decision for the scan. */
     gateEyeUuid(self, ub, ustr, (int)sizeof ustr, &haveU);
-    if (haveU)
-        eye = eyeLookup(ub);
-    if (g_eyeGate && inc && eye == 0
-        && (why == WHY_UNLISTED || why == WHY_NOREAD)) {
-        inc = 0;
-        why = WHY_EYE;
+    if (g_eyeGate && haveU && why != WHY_MASTER) {
+        wchar_t ukey[64];
+        int t = -1;
+        if (MultiByteToWideChar(CP_UTF8, 0, ustr, -1, ukey,
+                                (int)(sizeof ukey / sizeof ukey[0])) > 0)
+            t = GetPrivateProfileIntW(ukey, L"included", -1, g_selFile);
+        if (t != -1) {
+            inc = (t != 0);
+            why = (t != 0) ? WHY_INI_INC : WHY_INI_EXC;
+        } else {
+            eye = eyeLookup(ub);
+            if (inc && eye == 0
+                && (why == WHY_UNLISTED || why == WHY_NOREAD)) {
+                inc = 0;
+                why = WHY_EYE;
+            }
+        }
     }
 
     if (InterlockedCompareExchange(&g_reportBusy, 1, 0) == 0) {
@@ -779,6 +795,7 @@ static void gateEyeUuid(void *self, unsigned char *u, char *ustr, int cap,
 static void eyeRecord(const unsigned char *u, int visible)
 {
     char s[64];
+    wchar_t ws[64];
     int i, slot = -1, seq = (int)InterlockedIncrement(&g_eyeSeq);
 
     for (i = 0; i < EYE_MAX; i++)
@@ -794,11 +811,18 @@ static void eyeRecord(const unsigned char *u, int visible)
         g_eye[slot].visible = visible;
         g_eye[slot].seq = seq;
     }
-    if (g_verbose && InterlockedDecrement(&g_eyeLogged) >= 0) {
-        fmtUuid(u, s, sizeof s);
+    fmtUuid(u, s, sizeof s);
+    /* persist the eye state into the shared selection .ini as a
+     * [uuid] section: the same file every process with this module
+     * consults at the gate (the fusion engine has no QML of its own,
+     * the hub UI is the only writer) */
+    if (g_eyeGate && MultiByteToWideChar(CP_UTF8, 0, s, -1, ws,
+                                         (int)(sizeof ws / sizeof ws[0])) > 0)
+        WritePrivateProfileStringW(ws, L"included",
+                                   visible ? L"1" : L"0", g_selFile);
+    if (g_verbose && InterlockedDecrement(&g_eyeLogged) >= 0)
         g_host->log("merge_select: eye %s -> %s",
                     s, visible ? "VISIBLE" : "hidden");
-    }
 }
 
 /* detour on qt_static_metacall: observe, never interfere */

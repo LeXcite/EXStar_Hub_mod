@@ -1,6 +1,6 @@
 # Merge Selection (`merge_select`)
 
-**Version 1.3.0 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
+**Version 1.4.0 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
 
 ## What it does
 
@@ -54,16 +54,20 @@ dump lands in the mod log if even that ever goes blank).
 
 Since 1.2.0 the module additionally **watches the eye icons** of the
 project list (the vendor slot `ProjectListControllerE7::setNodeVisible`,
-located at runtime through its Qt meta-object - no RVAs). Since 1.3.0
-this watching is the everyday switch: every scan object carries its
-scan `QUuid` at offset +0x38, the same uuid the eye events report, so a
-common-mesh rebuild skips every scan whose row you hid (eye icon off),
-logs it as `eye icon hidden`, and keeps your data untouched. An
-explicit section in `merge-select.ini` still overrides the eye state
-(the ini remains the power-user tool); `eye_gate = 0` restores stock
-behaviour. The mesh dialog's own "show everything" burst is direct
-vendor C++ code that bypasses the meta-call watch, so it can no longer
-silently re-include a hidden scan.
+located at runtime through its Qt meta-object - no RVAs). Since 1.4.0
+every toggle is also **persisted into `merge-select.ini` as a
+`[<UUID>]` section** (`included = 0/1`) - the scan `QUuid` is the one
+at `HandlePrjFile+0x38`, the same bytes the community patchset keys its
+uuid sections with. The gate consults that section first, so the eye
+state follows the scan into every process that runs the merge -
+including the fusion engine (`Sn3DprocessManager.exe`), which builds
+the scan-page mesh in its own process and has no UI of its own. The
+hub is the only writer; the merge processes are readers.
+`eye_gate = 0` restores stock behaviour, explicit `[folder]` sections
+keep working, and everything stays fail-open. The mesh dialog's own
+"show everything" burst is direct vendor C++ (bypasses the meta-call),
+so it never writes a section - a hidden scan stays excluded even while
+the dialog momentarily re-shows it in the 3D view.
 
 ## How it works
 
@@ -90,7 +94,7 @@ unlisted scans are provably unaffected.
 |-----|---------|---------|
 | `verbose` | `1` | log each scan decision to the mod log (needs `[host] log = 1`) |
 | `eyewatch` | `1` | record project-list eye show/hide events (observation) |
-| `eye_gate` | `1` | hidden eye = scan left out of the common mesh (explicit `.ini` sections still win) |
+| `eye_gate` | `1` | hidden eye = scan left out of the common mesh, persisted as `[uuid]` sections (explicit `.ini` sections still win) |
 | `file` | stock path | full path to the selection `.ini` (the `.map.txt` sits next to it) |
 
 ## Relationship to a community patchset

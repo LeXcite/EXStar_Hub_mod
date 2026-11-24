@@ -35,7 +35,7 @@ not included in git).
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
 | fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
-| merge_select | 1.2.0 | per-scan include switch for the common mesh (gate identity + eye-icon watch, record-only) |
+| merge_select | 1.4.0 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch) |
 | ExStarModManager | 1.5.0 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome) |
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
@@ -378,15 +378,23 @@ ini editing during work.
   traced to running six modules inside sibling processes; reverted, and
   manager 1.6.1 refuses to enable sibling mode until modules are proven
   there one by one. `merge_select` needs the UI process only.
-* Shipped in 1.3.0: the gate reads the scan `QUuid` straight from the
-  `HandlePrjFile` object (offset +0x38, the exact bytes the community
-  patchset keys its uuid sections with), matches it against the
-  recorded eye events and skips hidden scans on rebuild - the eye icon
-  is now the everyday switch; `merge-select.ini` keeps precedence,
-  `eye_gate = 0` restores stock behaviour. One live run pending:
-  hide an eye, rebuild the common mesh, expect
-  `gate ... uuid=... eye=0 ... eye icon hidden -> SKIP` and the row
-  missing from the merged result only.
+* Shipped in 1.3.0/1.4.0: the gate reads the scan `QUuid` straight from
+  the `HandlePrjFile` object (offset +0x38, the exact bytes the
+  community patchset keys its uuid sections with). Live diagnosis on
+  2026-11-24 showed the scan-page "Mesh Model" never reaches the gate
+  from the UI process - that merge runs in the **fusion engine**
+  (`Sn3DprocessManager.exe`), so eye toggles are now persisted by the
+  hub into `merge-select.ini` as `[uuid] included = 0/1` sections
+  (1.4.0) and consulted by the gate in every process: hidden rows are
+  left out of both the saved-project and the engine-built mesh, and
+  the state survives restarts. `eye_gate = 0` restores stock
+  behaviour.
+* Sibling mode: only `merge_select` is proven inside the sibling
+  processes (it survived a full night there; the six-module config
+  killed `scanservice.exe`). Manager 1.6.3 re-enables
+  `sibling_all`/`sibling_modules` but writes only proven modules into
+  the whitelist; every future sibling module needs its own live proof
+  first.
 
 ## Open regressions
 

@@ -50,7 +50,7 @@
 
 #define APP_EXE_NAME     L"EXStar Hub.exe"
 #define APP_EXE_A        "EXStar Hub.exe"
-#define MANAGER_VERSION  L"1.6.2"   /* keep in sync with $version in build.ps1 */
+#define MANAGER_VERSION  L"1.6.3"   /* keep in sync with $version in build.ps1 */
 #define PROXY_MARKER     L"ExStarMod.winmm.dll"   /* OriginalFilename of our proxy */
 #define DEFAULT_APP_DIR  "C:\\Program Files\\Shining3d\\EXStar Hub"
 /* The vendor freezes the exe ProductVersion (the "file stamp", still
@@ -179,10 +179,10 @@ static const ModDef g_mods[MAX_MODS] = {
       L"integrated GPUs (e.g. Radeon 780M) pass the startup GPU check - one memory byte, files untouched",
       L"MOD_GPU_GATE", L"MOD_GPU_GATE_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
-    { "merge_select", L"Merge Selection", "1.3.0",
+    { "merge_select", L"Merge Selection", "1.4.0",
       L"pick which scans feed the common mesh; excluded scans keep their data",
       L"MOD_MERGE_SELECT", L"MOD_MERGE_SELECT_INI",
-      NULL, 0, NULL, 0, NULL, FALSE, TRUE, 0, g_fbtnMerge },
+      NULL, 0, NULL, 0, NULL, TRUE, TRUE, 0, g_fbtnMerge },
 };
 static const int g_modCount = 9;
 
@@ -1157,15 +1157,15 @@ static void applyPreset(int idx, int p)
  * host load in sibling processes (scanservice.exe etc.) and receive their
  * frames.  The legacy developer keys (dev_all/dev_modules) are untouched:
  * the host prefers those when dev_all=1. */
-/* Sibling exes (scanservice.exe etc.) only ever carry module code that
- * modules explicitly declare with needsSiblings.  Observed 2026-11-24:
- * with the six currently-declared modules live inside scanservice.exe,
- * it aborted (0xc0000409 in ucrtbase) and the app reported "Software
- * error code: 0x00000012" on project open.  Until every sibling module
- * is proven stable there, running modules in sibling processes stays
- * globally off; the host keys and this writer stay in place. */
-static const int g_siblingsProven = 0;
-
+/* Sibling exes (scanservice.exe, Sn3DprocessManager.exe, ...) only ever
+ * carry module code for modules explicitly PROVEN there.  Evidence
+ * 2026-11-24: six modules inside scanservice.exe aborted it
+ * (0xc0000409 in ucrtbase -> vendor error 0x00000012 on project open).
+ * merge_select alone then ran a full night in scanservice /
+ * softwareUpgrade / informationCollect / einscan_net_svr and the
+ * fusion engine without a fault - it is the only module listed today
+ * (needsSiblings TRUE).  Any module added to that list needs its own
+ * live verification in every sibling first. */
 static void syncSiblings(IniDoc *ini)
 {
     Sec *hs = iniSec(ini, "host");
@@ -1175,11 +1175,6 @@ static void syncSiblings(IniDoc *ini)
 
     if (!hs)
         return;
-    if (!g_siblingsProven) {
-        iniSet(hs, "sibling_all", "0");
-        iniSet(hs, "sibling_modules", "");
-        return;
-    }
     list[0] = '\0';
     for (i = 0; i < g_modCount; i++) {
         char rel[MAX_PATH], abs[MAX_PATH];
