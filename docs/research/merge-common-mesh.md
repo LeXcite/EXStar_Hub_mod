@@ -232,10 +232,16 @@ show `ra=+0x7E3BB` together with the three scan QUuids of the project.
 
 **Wrapper identity.** The uuid printed by the gate comes from the loop
 item the thunk captures in `rax` (`wrapper+0x38`, accepted only when
-`[wrapper+0x28] == self`). Live example from `Project_3`:
-`FE640E47-12CE-F54E-944A-011E29720325`,
-`1E864968-326E-6049-BFEF-6378AF077A00`,
-`4E6A3998-6385-1D4D-BD42-10469549E656`.
+`[wrapper+0x28] == self`). The member bytes are a **QUuid struct**
+(`uint data1` little-endian first), so they are already the canonical
+order the eye map uses; converting them to wire order produces uuids
+that are not version 4. Live check on `Project_3` made that visible:
+`F54E`/`6049`/`1D4D` in the version nibble before the fix, i.e.
+`470E64FE-CE12-4EF5-944A-011E29720325`,
+`6849861E-6E32-4960-BFEF-6378AF077A00`,
+`98396A4E-8563-4D1D-BD42-10469549E656` after it (v1.4.7). The
+wire-order layout is only used when it is the one that matches a
+recorded eye event.
 
 **Thunk ABI.** The hand-assembled stub is 65 bytes: it grabs the return
 address, passes `rax` and that address to the C helper, reserves the

@@ -104,7 +104,7 @@
 
 #include "exstar_sdk.h"
 
-#define MOD_VERSION   "1.4.6"
+#define MOD_VERSION   "1.4.7"
 
 #define SEL_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.ini"
 #define MAP_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.map.txt"
@@ -1116,10 +1116,15 @@ static int wrapperUuid(void *self, void *w, unsigned char *u)
             return 0;
         }
         uuidLeToBe(raw16, alt);          /* other byte-order candidate */
-        if (eyeLookup(raw16) >= 0 && eyeLookup(alt) < 0)
-            memcpy(u, raw16, 16);        /* member is already struct   */
+        /* QUuid is {uint,ushort,ushort,uchar[8]} and data1..data3 are
+         * little-endian in memory, so the raw member bytes ARE the
+         * canonical struct order the eye map uses; `alt` is the
+         * text/wire order.  Live proof 2026-11-24: raw gives version-4
+         * uuids (…-4EF5-…, …-4960-…, …-4D1D-…) while alt does not. */
+        if (eyeLookup(alt) >= 0 && eyeLookup(raw16) < 0)
+            memcpy(u, alt, 16);          /* wire order, only if it hits */
         else
-            memcpy(u, alt, 16);          /* wire order (community key) */
+            memcpy(u, raw16, 16);        /* member is already struct   */
         for (k = 0; k < 8; k++)
             if (u[k]) { zero = 0; break; }
         if (zero)
