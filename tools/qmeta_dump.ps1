@@ -18,7 +18,7 @@
     The index a QML or C++ caller passes to qt_static_metacall is the
     position in that table, so this dump is what you need to invoke a
     non-exported slot by name at runtime - the same lookup
-    modules\merge_select\merge_select.c does in metaFind().
+    modules\selective_mesh\selective_mesh.c does in metaFind().
 
 .PARAMETER File
     Binary to read (read-only).

@@ -1,7 +1,7 @@
 /* qlist_lab.c - prove the module's list reader against the Qt this product
  * ships, before the module ever has to guess.
  *
- * merge_select reads a scene command's `names` list straight out of memory
+ * selective_mesh reads a scene command's `names` list straight out of memory
  * (it must not call Qt from inside the hook), so it needs to know where Qt
  * keeps the count and the entries of a QStringList.  qt_read.h contains the
  * reader; this tool contains the proof: it loads the app's OWN Qt5Core.dll,
@@ -15,7 +15,7 @@
  * object takes `this` in RCX and the hidden return slot in RDX, and returns
  * the slot in RAX.  So every such call below is Fn(self, &result, ...).
  *
- *   cl /nologo /O2 /MT /utf-8 /I..\modules\merge_select qlist_lab.c
+ *   cl /nologo /O2 /MT /utf-8 /I..\modules\selective_mesh qlist_lab.c
  *   qlist_lab.exe "C:\Program Files\Shining3d\EXStar Hub\Qt5Core.dll"
  *
  * Exit code 0 = the reader decoded the expected names.  Development tool;

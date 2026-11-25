@@ -1,6 +1,6 @@
 /* qmeta_lab.c - what the Qt this product ships calls its value types.
  *
- * merge_select reads QVariants by their numeric tag, and a wrong tag means a
+ * selective_mesh reads QVariants by their numeric tag, and a wrong tag means a
  * wrong reading of a real command, so the numbers are not recalled from
  * documentation: QMetaType::typeName() is asked, in this very build, for
  * every id a command has ever carried.  A log line saying `nodes=list?` can

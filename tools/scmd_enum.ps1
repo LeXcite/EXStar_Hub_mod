@@ -16,7 +16,7 @@
     { name, handler RVA } it finds, so the command surface of a vendor
     update can be diffed without a debugger and without any hardcoded
     RVA.  It is the offline twin of `sceneAnchor()` in
-    modules\merge_select\merge_select.c: a command this script lists can
+    modules\selective_mesh\selective_mesh.c: a command this script lists can
     be hooked by name, a command it does not list is not reachable that
     way.
 

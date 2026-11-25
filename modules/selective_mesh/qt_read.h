@@ -1,11 +1,11 @@
 /*
  * qt_read.h - read the Qt 5 containers this product ships, as data.
  *
- * merge_select answers inside the vendor's own calls, and it must not call
- * Qt from there: v1.5.0 asked QVariant what a value was, and the hub died
- * in Qt5Core on every start (docs\research\merge-common-mesh.md).  So the
- * module inspects the containers instead.  These readers are the whole of
- * that layout knowledge, and they live in a header for one reason:
+ * Selective Mesh answers inside the vendor's own calls, and it must not
+ * call Qt from there: v1.5.0 asked QVariant what a value was, and the hub
+ * died in Qt5Core on every start (docs\research\merge-common-mesh.md).  So
+ * the module inspects the containers instead.  These readers are the whole
+ * of that layout knowledge, and they live in a header for one reason:
  * tools\qlist_lab.c builds real containers with the shipped Qt5Core's own
  * functions and runs THIS code on them outside the product.  What is proven
  * there is what runs here; nothing in the module is a layout guess that

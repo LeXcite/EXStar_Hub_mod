@@ -50,7 +50,7 @@
 
 #define APP_EXE_NAME     L"EXStar Hub.exe"
 #define APP_EXE_A        "EXStar Hub.exe"
-#define MANAGER_VERSION  L"1.6.6"   /* keep in sync with $version in build.ps1 */
+#define MANAGER_VERSION  L"1.6.9"   /* keep in sync with $version in build.ps1 */
 #define PROXY_MARKER     L"ExStarMod.winmm.dll"   /* OriginalFilename of our proxy */
 #define DEFAULT_APP_DIR  "C:\\Program Files\\Shining3d\\EXStar Hub"
 /* The vendor freezes the exe ProductVersion (the "file stamp", still
@@ -139,8 +139,8 @@ static const PresetDef g_prQuality[] = {
     { L"Ultra",       L"0.02 mm",  20, 45, 7 },
 };
 
-/* Merge Selection card buttons: the roster window and the folder that
- * holds merge-select.ini / merge-select.map.txt                     */
+/* Selective Mesh card buttons: the roster window and the folder that
+ * holds selective-mesh.ini / selective-mesh.map.txt                */
 static const wchar_t *const g_fbtnMerge[2] = { L"Scan roster",
                                                L"Open folder" };
 
@@ -179,17 +179,22 @@ static const ModDef g_mods[MAX_MODS] = {
       L"integrated GPUs (e.g. Radeon 780M) pass the startup GPU check - one memory byte, files untouched",
       L"MOD_GPU_GATE", L"MOD_GPU_GATE_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
-    { "merge_select", L"Merge Selection", "1.5.5",
+    { "selective_mesh", L"Selective Mesh", "1.6.0",
       L"pick which scans feed the common mesh; excluded scans keep their data",
-      L"MOD_MERGE_SELECT", L"MOD_MERGE_SELECT_INI",
+      L"MOD_SELECTIVE_MESH", L"MOD_SELECTIVE_MESH_INI",
       NULL, 0, NULL, 0, NULL, TRUE, TRUE, 0, g_fbtnMerge },
 };
 static const int g_modCount = 9;
 
 /* modules shipped by older manager builds and no longer bundled; their
  * files and modules.ini sections are removed on the next install so a
- * stale DLL cannot fight the new modules over the same hooks */
-static const char *const g_legacy[] = { "marker_recolor", NULL };
+ * stale DLL cannot fight the new modules over the same hooks.
+ * merge_select is here because 1.6.0 renamed it to selective_mesh: the
+ * host derives the module id from the DLL basename and defaults every
+ * section in modules.ini to enabled, so a leftover merge_select.dll
+ * would hook the same gate a second time in the same process. */
+static const char *const g_legacy[] = { "marker_recolor", "merge_select",
+                                        NULL };
 
 /* ------------------------------------------------------------------ */
 /* small helpers                                                       */
@@ -1156,16 +1161,73 @@ static void applyPreset(int idx, int p)
  * ever carry module code for modules explicitly PROVEN there.
  * Evidence 2026-11-24: six modules inside scanservice.exe aborted it
  * (0xc0000409 in ucrtbase -> vendor error 0x00000012 on project open),
- * while merge_select alone ran a full night there.  A writer that
- * trusted the per-module needsSiblings flag re-armed the six-module
- * configuration at 18:42 (manager 1.6.3) and the 0x00000012 came back.
- * merge_select *is* needed in scanservice.exe - that process builds the
- * post-mesh data the Mesh Model window shows - so the supported
- * configuration is the manual pair
+ * while selective_mesh alone (then named merge_select) ran a full night
+ * there.  A writer that trusted the per-module needsSiblings flag
+ * re-armed the six-module configuration at 18:42 (manager 1.6.3) and the
+ * 0x00000012 came back.  selective_mesh *is* needed in scanservice.exe -
+ * that process builds the post-mesh data the Mesh Model window shows -
+ * so the supported configuration is the manual pair
  *   sibling_all = 1
- *   sibling_modules = merge_select
+ *   sibling_modules = selective_mesh
  * and this code never rewrites existing sibling keys: only a fresh
- * modules.ini (no keys yet) gets the safe default. */
+ * modules.ini (no keys yet) gets the safe default.  The one exception is
+ * migrateRenamedIds(), which renames tokens, never adds or removes one. */
+
+/* 1.6.0 renamed merge_select to selective_mesh. A hand-tuned
+ * [host] sibling_modules list names the OLD id, and defaultSiblingKeys
+ * below never rewrites existing keys, so without this the renamed
+ * module would silently lose its sibling slot - the merge gate then
+ * never runs in scanservice.exe, which is exactly where the post-mesh
+ * data is built. Only whole tokens are replaced; the list's order,
+ * spacing style and every other module in it stay as written. */
+static void migrateRenamedIds(IniDoc *ini)
+{
+    Sec *hs = iniSec(ini, "host");
+    int i;
+
+    if (!hs)
+        return;
+    for (i = 0; i < hs->n; i++) {
+        char out[128], tok[64];
+        const char *p;
+        BOOL changed = FALSE;
+
+        if (_stricmp(hs->kv[i].key, "sibling_modules") != 0
+            || !strstr(hs->kv[i].val, "merge_select"))
+            continue;
+        out[0] = 0;
+        p = hs->kv[i].val;
+        while (*p) {
+            const char *c = strchr(p, ',');
+            size_t len = c ? (size_t)(c - p) : strlen(p);
+
+            while (len && (*p == ' ' || *p == '\t')) { p++; len--; }
+            while (len && (p[len - 1] == ' ' || p[len - 1] == '\t'))
+                len--;
+            if (len) {
+                if (len >= sizeof tok)
+                    len = sizeof tok - 1;
+                memcpy(tok, p, len);
+                tok[len] = 0;
+                if (_stricmp(tok, "merge_select") == 0) {
+                    strcpy_s(tok, sizeof tok, "selective_mesh");
+                    changed = TRUE;
+                }
+                if (out[0])
+                    strncat_s(out, sizeof out, ",", _TRUNCATE);
+                strncat_s(out, sizeof out, tok, _TRUNCATE);
+            }
+            if (!c)
+                break;
+            p = c + 1;
+        }
+        if (changed) {
+            iniSet(hs, "sibling_modules", out);
+            note(L"Sibling list updated: merge_select -> selective_mesh.");
+        }
+        break;
+    }
+}
 
 static void defaultSiblingKeys(IniDoc *ini)
 {
@@ -1300,6 +1362,26 @@ static BOOL doInstall(UINT mask)
             note(L"Removed legacy module: %hs.", g_legacy[i]);
     }
 
+    {   /* 1.6.0 rename: carry the module's own switch file along before
+         * the loop below writes a fresh one (it only writes when the
+         * target is missing) and before the legacy cleanup deletes the
+         * old file.  Same copy on remove would be wrong - there the user
+         * asked for the module to go. */
+        char oldRel[MAX_PATH], oldAbs[MAX_PATH], newRel[MAX_PATH], newAbs[MAX_PATH];
+
+        snprintf(oldRel, sizeof oldRel, "modules\\%s.ini", "merge_select");
+        snprintf(newRel, sizeof newRel, "modules\\%s.ini", "selective_mesh");
+        iniPathFor(oldAbs, sizeof oldAbs, oldRel);
+        iniPathFor(newAbs, sizeof newAbs, newRel);
+        if (pathExistsA(oldAbs) && !pathExistsA(newAbs)
+            && CopyFileA(oldAbs, newAbs, TRUE)) {
+            stateAdd(&st, newRel);
+            note(L"Settings carried over: merge_select.ini -> "
+                 L"selective_mesh.ini.");
+        }
+    }
+
+    migrateRenamedIds(&ini);
     defaultSiblingKeys(&ini);
     iniSave(&ini, iniPath);
     stateAdd(&st, "modules.ini");
@@ -4882,13 +4964,13 @@ static void wallpaperPick(int idx)
 }
 
 /* ------------------------------------------------------------------ */
-/* common-mesh scan roster (Merge Selection card -> "Scan roster")     */
+/* common-mesh scan roster (Selective Mesh card -> "Scan roster")      */
 /*                                                                     */
-/* Companion window for the merge_select module: turns the scan roster */
-/* the module recorded (merge-select.map.txt) plus everything listed   */
-/* in merge-select.ini into a checkbox list and saves the selection    */
-/* back. The module re-reads the .ini on every gate call, so a saved   */
-/* change applies to the next common-mesh run with no restart.         */
+/* Companion window for the selective_mesh module: turns the scan      */
+/* roster the module recorded (selective-mesh.map.txt) plus everything  */
+/* in selective-mesh.ini into a checkbox list and saves the selection   */
+/* back. The module re-reads the .ini on every gate call, so a saved    */
+/* change applies to the next common-mesh run with no restart.          */
 /* ------------------------------------------------------------------ */
 
 #define MR_MAX      40
@@ -4996,14 +5078,29 @@ static void mrPaths(void)
 {
     char rel[MAX_PATH], abs[MAX_PATH], tmp[1024];
     wchar_t *dot, *slash;
+    const size_t iniCap = sizeof g_mrIni / sizeof g_mrIni[0];
 
-    iniPathFor(abs, sizeof abs, "modules\\merge_select.ini");
+    iniPathFor(abs, sizeof abs, "modules\\selective_mesh.ini");
     if (preKeyA(abs, "file", tmp, (int)sizeof tmp) && tmp[0])
-        a2w(tmp, g_mrIni, (int)(sizeof g_mrIni / sizeof g_mrIni[0]));
+        a2w(tmp, g_mrIni, (int)iniCap);
     else
-        wcscpy_s(g_mrIni, (sizeof g_mrIni / sizeof g_mrIni[0]),
+        wcscpy_s(g_mrIni, iniCap,
                  L"C:\\Users\\Public\\Shining3d\\EXStar Hub"
-                 L"\\merge-select.ini");
+                 L"\\selective-mesh.ini");
+    /* the file was named merge-select.ini until module 1.6.0: when the
+     * roster opens before any gated process migrated it, do the same
+     * one-time copy here (the old file stays as a backup), so the
+     * checkboxes show the state the module will read. */
+    if (GetFileAttributesW(g_mrIni) == INVALID_FILE_ATTRIBUTES) {
+        const wchar_t *oldIni =
+            L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.ini";
+        if (lstrcmpiW(g_mrIni,
+                      L"C:\\Users\\Public\\Shining3d\\EXStar Hub"
+                      L"\\selective-mesh.ini") == 0
+            && GetFileAttributesW(oldIni) != INVALID_FILE_ATTRIBUTES
+            && !CopyFileW(oldIni, g_mrIni, TRUE))
+            wcscpy_s(g_mrIni, iniCap, oldIni);   /* copy failed: read it */
+    }
     wcscpy_s(g_mrMap, (sizeof g_mrMap / sizeof g_mrMap[0]), g_mrIni);
     dot   = wcsrchr(g_mrMap, L'.');
     slash = wcsrchr(g_mrMap, L'\\');
@@ -5082,7 +5179,7 @@ static void rosterSave(void)
         swprintf(g_mrMsg, 256,
                  L"Saved %d scans - applies to the next common-mesh run.",
                  g_mrN);
-    status(L"Merge selection saved (%d scans).", g_mrN);
+    status(L"Selective mesh saved (%d scans).", g_mrN);
 }
 
 static void rosterOpenFolder(void)

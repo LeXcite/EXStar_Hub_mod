@@ -1,6 +1,6 @@
 /* func_str.c - what one function of a shipped DLL actually names.
  *
- * merge_select decides on the keys inside a scene command map, and guessing a
+ * selective_mesh decides on the keys inside a scene command map, and guessing a
  * key name is exactly how a filter starts withholding the wrong model.  This
  * tool walks the bytes of a function and prints every string it materialises
  * with a RIP-relative `lea`, plus the calls it makes, so the vocabulary of a

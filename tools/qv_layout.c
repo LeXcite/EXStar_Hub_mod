@@ -1,7 +1,7 @@
 /* qv_layout.c - what a QVariant actually looks like in the Qt build this
  * product ships.
  *
- * merge_select reads scene command arguments straight out of memory (it
+ * selective_mesh reads scene command arguments straight out of memory (it
  * must not call into Qt from inside a hook), so it needs to know where Qt
  * keeps a value's type tag and where the payload starts.  This tool asks no
  * questions: it loads the app's own Qt5Core.dll, builds real QVariants and
@@ -59,7 +59,7 @@ static void dump(const char *what, const unsigned char *p, int n)
     printf("\n");
 }
 
-/* one QString exactly as merge_select reads it: one pointer to QArrayData */
+/* one QString exactly as selective_mesh reads it: one pointer to QArrayData */
 static void showQStringObj(const char *what, const unsigned char *d)
 {
     int size;

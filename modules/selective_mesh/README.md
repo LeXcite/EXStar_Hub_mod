@@ -1,6 +1,18 @@
-# Merge Selection (`merge_select`)
+# Selective Mesh (`selective_mesh`)
 
-**Version 1.5.8 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
+**Version 1.6.0 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
+
+Until 1.6.0 this module was named `merge_select` ("Merge Selection"). The
+rename is identity only; the selection file moved with it
+(`merge-select.ini` → `selective-mesh.ini`, copied once automatically,
+old file kept as a backup) and the manager removes the old
+`merge_select.dll` on the next install so the two ids cannot both hook
+the same gate.
+
+The module map - every hook, anchor, thread, state table, config key and
+log line - is in [ARCHITECTURE.md](ARCHITECTURE.md) next to this file.
+The evidence chain behind every vendor fact used here is
+[docs/research/merge-common-mesh.md](../../docs/research/merge-common-mesh.md).
 
 ## What it does
 
@@ -9,10 +21,10 @@ that has "generate a point cloud" enabled into the single common mesh;
 the only stock way to drop one scan from that merge is to delete it,
 which also throws away its stored data.
 
-`merge_select` adds the missing switch. For any scan listed in
+Selective Mesh adds the missing switch. For any scan listed in
 
 ```
-C:\Users\Public\Shining3d\EXStar Hub\merge-select.ini
+C:\Users\Public\Shining3d\EXStar Hub\selective-mesh.ini
 ```
 
 with
@@ -33,15 +45,16 @@ exactly like stock.
 The everyday way: **hide the scan's row in the project list (eye
 icon)** - the next common-mesh build leaves it out. Show it again to
 bring it back. Once is enough: the choice is written into
-`merge-select.ini` and survives restarts, so later merges need no
-preparation at all. Everything below is the manual override for scripts
-and power users.
+`selective-mesh.ini` and survives restarts, so later merges need no
+preparation at all. Since 1.5.8 the scan also *stays* hidden on screen
+after the Mesh Model page redraws. Everything below is the manual
+override for scripts and power users.
 
 1. Install/enable the module in the Mod Manager and start a common-mesh
    run once so the hub sees each scan.
-2. Open `merge-select.map.txt` (same folder): the module records each
+2. Open `selective-mesh.map.txt` (same folder): the module records each
    scan with its ready-to-copy section name.
-3. Add the scan you want to drop to `merge-select.ini`, e.g.
+3. Add the scan you want to drop to `selective-mesh.ini`, e.g.
    `[Project_1\Scan_2]` / `included = 0`.
 4. Re-generate the common mesh. The scan is left out. Delete the section
    (or the file) to bring it back.
@@ -57,7 +70,7 @@ dump lands in the mod log if even that ever goes blank).
 Since 1.2.0 the module additionally **watches the eye icons** of the
 project list (the vendor slot `ProjectListControllerE7::setNodeVisible`,
 located at runtime through its Qt meta-object - no RVAs). Since 1.4.0
-every toggle is also **persisted into `merge-select.ini` as a
+every toggle is also **persisted into `selective-mesh.ini` as a
 `[<UUID>]` section** (`included = 0/1`) - the scan `QUuid` is the one
 at `HandlePrjFile+0x38`, the same bytes the community patchset keys its
 uuid sections with. The gate consults that section first, so the eye
@@ -147,18 +160,19 @@ falls back to the vendor's own answer; the module can only turn "yes"
 into "no" for an explicitly excluded scan, so live scanning and
 unlisted scans are provably unaffected.
 
-## Configuration (`modules\merge_select.ini`)
+## Configuration (`modules\selective_mesh.ini`)
 
 | key | default | meaning |
 |-----|---------|---------|
 | `verbose` | `1` | log each scan decision to the mod log (needs `[host] log = 1`) |
 | `eyewatch` | `1` | record project-list eye show/hide events (observation) |
 | `eye_gate` | `1` | hidden eye = scan left out of the common mesh, persisted as `[uuid]` sections (explicit `.ini` sections still win) |
+| `eye_reapply` | `1` | re-assert hidden eyes (toggle show+hide) after the scene's environment switch, so a hidden scan stays hidden on screen; needs `eyewatch` |
 | `gate_exes` | `EXStar Hub.exe,scanservice.exe,Sn3DprocessManager.exe` | processes allowed to hook the merge gate; every other host keeps an inert module |
 | `eyewatch_exes` | `EXStar Hub.exe` | processes allowed to watch the eye icons (the QML UI) |
 | `scene_watch` | `1` | log the scene's named commands (diagnostic: what the viewport is asked to show) |
 | `scene_filter` | `1` | withhold a `SetModelsVisible` that would show a hidden model again; on 2.1.0-10 nothing sends that command, so today it is inert (see the note above) |
-| `file` | stock path | full path to the selection `.ini` (the `.map.txt` sits next to it) |
+| `file` | stock path | full path to the selection `.ini` (the `.map.txt` sits next to it); the automatic migration from `merge-select.ini` only runs when this key is absent |
 
 Neither `scene_*` switch changes what ends up in the merged mesh - that
 is `eye_gate` and the `.ini` sections.
@@ -169,10 +183,10 @@ A shared community patchset implements a similar per-scan feature driven
 by `mesh-selection.ini` with UUID section names in the same folder. The
 two are independent and simply AND together: either mechanism excluding
 a scan takes it out of the merge. The eye binding writes its own
-`[uuid]` sections into `merge-select.ini`; the community file is never
+`[uuid]` sections into `selective-mesh.ini`; the community file is never
 touched.
 
 ## Files created at runtime (user-owned, safe to delete)
 
-- `...\EXStar Hub\merge-select.ini` - the selection (created with a header on first use)
-- `...\EXStar Hub\merge-select.map.txt` - the scan list seen during common-mesh runs
+- `...\EXStar Hub\selective-mesh.ini` - the selection (created with a header on first use; copied from `merge-select.ini` once if that older file exists)
+- `...\EXStar Hub\selective-mesh.map.txt` - the scan list seen during common-mesh runs

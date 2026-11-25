@@ -1,10 +1,16 @@
-# Common mesh: how scans are selected, and how `merge_select` steers it
+# Common mesh: how scans are selected, and how Selective Mesh steers it
 
-Research + design record for the `merge_select` module (manager 1.5.0).
-All RVAs are for **EXStar Hub 2.1.0-10** (image base 0x180000000); the
+Research + design record for the **Selective Mesh** module (manager
+1.5.0 onwards). Since 1.6.0 the module is named `selective_mesh` and its
+selection file is `selective-mesh.ini`; older sections below quote the
+original names (`merge_select`, `Merge Selection`, `merge-select.ini`)
+exactly as they appear in the evidence of the day - same module, same
+mechanism. All RVAs are for **EXStar Hub 2.1.0-10** (image base 0x180000000); the
 vendor files are unmodified - evidence comes from static analysis of the
 installed binaries (Ghidra/REA) plus one reconstructed community
-patchset used as a map, not as code.
+patchset used as a map, not as code. The implementation map of the
+module as it stands today:
+[modules/selective_mesh/ARCHITECTURE.md](../../modules/selective_mesh/ARCHITECTURE.md).
 
 ## 1. The vendor merge path (verified statically)
 
@@ -372,7 +378,8 @@ QVariant(double)   00 00 00 00 00 00 0c 40   06 00 .. tag 6, 3.5 inline
 ```
 
 **`QStringList` inside a `QVariant`, measured the same way.** The reader is
-`modules\merge_select\qt_read.h`; `tools\qlist_lab.c` includes that very
+`modules\selective_mesh\qt_read.h` (named `modules\merge_select\qt_read.h`
+when this was measured); `tools\qlist_lab.c` includes that very
 header, builds a list with the shipped Qt's own `QString::split()` and
 asserts what comes back:
 
@@ -647,7 +654,8 @@ still do not share a key.
 Settled by the above:
 
 * the merge side is done and verified live: eyes write `[uuid] included`
-  to `merge-select.ini` once, it survives restarts, and every press of
+  to the selection .ini once (`merge-select.ini` then,
+  `selective-mesh.ini` since 1.6.0), it survives restarts, and every press of
   **Mesh Model** excludes those scans in both collection loops;
 * the viewport side has nothing to intercept: the re-show is the
   environment's own redraw, not a command, and the plugin exposes no

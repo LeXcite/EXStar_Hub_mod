@@ -1,6 +1,6 @@
 /* scmd_lab.c - the full vocabulary of the scene's named commands.
  *
- * merge_select hooks commands by name and filters them by the model names
+ * selective_mesh hooks commands by name and filters them by the model names
  * inside, so guessing which commands exist is no longer good enough: the press
  * of a button turned out to re-show models through a command the module was
  * not watching.  This tool reads the scene plugin's bytes (nothing is

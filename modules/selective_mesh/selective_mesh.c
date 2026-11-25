@@ -1,7 +1,12 @@
 /*
- * merge_select.c - choose which scans feed the common mesh.
+ * selective_mesh.c - Selective Mesh: choose which scans feed the common mesh.
  *
- * Version 1.1.0
+ * Current version: see MOD_VERSION below.  The module map - every
+ * component, anchor, thread, state table, config key and log line - is
+ * in README.md and ARCHITECTURE.md in this folder; the evidence chain
+ * for every vendor fact used here is docs/research/merge-common-mesh.md.
+ * (Until 1.6.0 this module was named merge_select; the selection file
+ * migrated from merge-select.ini to selective-mesh.ini automatically.)
  *
  * The problem (verified on product 2.1.0-10):
  *   Several scans can live in one project, and the vendor's "generate
@@ -29,7 +34,7 @@
  * What this module does:
  *   One in-memory detour on that export. It answers "no cloud" for
  *   scans explicitly excluded in
- *      C:\Users\Public\Shining3d\EXStar Hub\merge-select.ini
+ *      C:\Users\Public\Shining3d\EXStar Hub\selective-mesh.ini
  *   so the vendor's own merge code skips them; the vendor's "yes" is
  *   never overridden towards "included", so live scanning, storage and
  *   every unlisted scan behave exactly like stock.
@@ -48,10 +53,10 @@
  *   the module off at runtime without uninstalling it.
  *
  * Discovery aid: every scan seen during a common-mesh run is appended
- * once to `merge-select.map.txt` (same folder) with its ready-to-copy
+ * once to `selective-mesh.map.txt` (same folder) with its ready-to-copy
  * section name and the decision, so exclusions can be written without
- * guessing any paths. The manager's "Scan roster" button (Merge
- * Selection card) turns that roster into include checkboxes and keeps
+ * guessing any paths. The manager's "Scan roster" button (Selective
+ * Mesh card) turns that roster into include checkboxes and keeps
  * this file in sync - ticking a box and saving needs no restart, the
  * detour re-reads the .ini on every decision.
  *
@@ -87,7 +92,7 @@
  * folder. The two mechanisms are independent and AND together (either
  * one excluding a scan takes it out of the merge). This module never
  * reads or writes that file; the eye state is stored as [uuid] sections
- * in merge-select.ini, the module's own file.
+ * in selective-mesh.ini, the module's own file.
  *
  * History:
  *   1.0.0  initial version; vendor merge path (common-mesh collection
@@ -167,6 +172,17 @@
  *          slot - which is the exact state-change sequence a hand click
  *          performs, plus one deferred pass 300 ms later (SetTimer on the
  *          Qt thread) for the env switch's own singleShot redraw work.
+ *          Live-verified 2026-11-26: after a Mesh Model press the viewport
+ *          holds only the scan that was left visible, the merge still
+ *          excludes the hidden ones, and no crash dump appeared.
+ *   1.6.0  renamed Selective Mesh (`selective_mesh`): behaviour is that
+ *          of 1.5.8, only the old `merge_select` / `Merge Selection`
+ *          name goes.  The selection file becomes `selective-mesh.ini`;
+ *          on first start the module copies `merge-select.ini` to it
+ *          once (the old file is left in place as a backup), so existing
+ *          exclusions carry over in every process.  The manager
+ *          registers the new id and removes the legacy `merge_select`
+ *          dll, ini and modules.ini section on the next install.
  */
 
 #include <windows.h>
@@ -180,10 +196,27 @@
 #include "exstar_sdk.h"
 #include "qt_read.h"
 
-#define MOD_VERSION   "1.5.8"
+#define MOD_VERSION   "1.6.0"
 
-#define SEL_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.ini"
-#define MAP_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.map.txt"
+/* one log call, one tag: MOD_LOG(fmt, ...) ==
+ * g_host->log("selective_mesh: " fmt, ...) - the literals concatenate */
+#define MOD_LOG(...)  g_host->log("selective_mesh: " __VA_ARGS__)
+
+/* one-shot logging budgets: every chatty log line owns a counter and may
+ * fire while it lasts, so a hot path can never flood mod.log.  The
+ * decrement is interlocked: with many callers racing, exactly the
+ * budget's worth of lines get through.  logBudget(&g_x) replaces the
+ * `InterlockedDecrement(&g_x) >= 0` it grew out of. */
+static int logBudget(volatile LONG *left)
+{
+    return InterlockedDecrement(left) >= 0;
+}
+
+#define SEL_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\selective-mesh.ini"
+#define MAP_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\selective-mesh.map.txt"
+/* name used before 1.6.0; copied to the new name once, never deleted */
+#define SEL_FILE_OLD \
+    L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.ini"
 
 #define PATH_CAP  512                    /* wchar path/key buffers      */
 #define SEEN_MAX  64                     /* dedupe window for map+log   */
@@ -246,7 +279,7 @@ static void probeLog(const char *tag, void *ra, void *self)
         }
     if (g_probeN < SITE_MAX)
         g_probe[g_probeN++] = ra;
-    if (g_verbose && InterlockedDecrement(&g_probeLeft) >= 0) {
+    if (g_verbose && logBudget(&g_probeLeft)) {
         char mod[64] = "?";
         unsigned off = 0;
         HMODULE h = NULL;
@@ -269,7 +302,7 @@ static void probeLog(const char *tag, void *ra, void *self)
                            ((unsigned char *)self + 0x18);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
-        g_host->log("merge_select: probe %s %s+0x%X  self=%p impl=%p",
+        MOD_LOG("probe %s %s+0x%X  self=%p impl=%p",
                     tag, mod, off, self, (void *)impl);
     }
     InterlockedExchange(&g_probeBusy, 0);
@@ -279,8 +312,8 @@ static void probeLog(const char *tag, void *ra, void *self)
  * tryInstall.  probeLog() above stays for the isGenerateCloud probe. */
 
 static const ExModuleInfo g_info = {
-    EX_ABI_VERSION, "merge_select", "Merge Selection", MOD_VERSION,
-    "per-scan include switch for the common mesh (merge-select.ini)"
+    EX_ABI_VERSION, "selective_mesh", "Selective Mesh", MOD_VERSION,
+    "per-scan include switch for the common mesh (selective-mesh.ini)"
 };
 
 /* ------------------------------------------------------------------ */
@@ -377,11 +410,29 @@ static void reportScan(const wchar_t *key, int included,
     mapAppend(msg);
 }
 
+/* one-time data migration: until 1.6.0 the selection lived in
+ * merge-select.ini.  When the new file does not exist yet and the old
+ * one does, copy it (the old file stays untouched as a backup).  Runs in
+ * every gated process, but CopyFileW(bFailIfExists) makes the race
+ * harmless: whoever gets there first writes the new file.  The .map.txt
+ * is not migrated - it is a generated roster that rebuilds itself on the
+ * next common-mesh run. */
+static void migrateSelFile(void)
+{
+    if (GetFileAttributesW(g_selFile) != INVALID_FILE_ATTRIBUTES)
+        return;                              /* new file already there  */
+    if (GetFileAttributesW(SEL_FILE_OLD) == INVALID_FILE_ATTRIBUTES)
+        return;                              /* nothing to inherit      */
+    if (CopyFileW(SEL_FILE_OLD, g_selFile, TRUE))
+        MOD_LOG("migrated %S -> %S (the old file stays as a backup)",
+                SEL_FILE_OLD, g_selFile);
+}
+
 /* create the selection file with a readable header once */
 static void ensureSelFile(void)
 {
     static const char hdr[] =
-        "; merge_select - which scans feed the common mesh\r\n"
+        "; selective_mesh - which scans feed the common mesh\r\n"
         ";\r\n"
         "; One section per scan; the section name is the scan folder\r\n"
         "; written as <project folder>\\<scan folder> (the full scan folder\r\n"
@@ -391,7 +442,7 @@ static void ensureSelFile(void)
         "; Scans that are not listed are kept, exactly like stock\r\n"
         "; behaviour.\r\n"
         ";\r\n"
-        "; merge-select.map.txt next to this file lists every scan the\r\n"
+        "; selective-mesh.map.txt next to this file lists every scan the\r\n"
         "; module has seen during common-mesh runs - copy a section name\r\n"
         "; from there and set included = 0 to drop that scan.\r\n"
         "\r\n"
@@ -484,7 +535,7 @@ static void idDump(unsigned long long impl)
 {
     int off;
 
-    if (InterlockedDecrement(&g_idLeft) < 0)
+    if (!logBudget(&g_idLeft))
         return;
     __try {
         for (off = 0; off <= 0x48; off += 8) {
@@ -497,7 +548,7 @@ static void idDump(unsigned long long impl)
             for (i = 0; s[i]; i++)
                 if (s[i] < 0x20 || s[i] == L'\\') { printable = 0; break; }
             if (printable)
-                g_host->log("merge_select: idmap impl=%p +0x%02X = %ls",
+                MOD_LOG("idmap impl=%p +0x%02X = %ls",
                             (void *)impl, off, s);
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -688,7 +739,7 @@ static unsigned char __fastcall det_isCloud(void *self, void *wrapper,
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         static volatile LONG faulted;
         if (InterlockedIncrement(&faulted) == 1)
-            g_host->log("merge_select: gate fault while reading the vendor "
+            MOD_LOG("gate fault while reading the vendor "
                         "object - this call keeps the stock answer");
         out = r;
     }
@@ -703,7 +754,6 @@ static const char *const g_whyN[] = {
 static unsigned char decideCloud(void *self, void *wrapper,
                                  unsigned char *ra, unsigned char r)
 {
-    const char *const *whyN = g_whyN;
     wchar_t key[PATH_CAP];
     unsigned long long impl = 0;
     unsigned char ub[16];
@@ -756,18 +806,18 @@ static unsigned char decideCloud(void *self, void *wrapper,
             reportScan(key, 1, NULL);
         InterlockedExchange(&g_reportBusy, 0);
     }
-    if (g_verbose && InterlockedDecrement(&g_logLeft) >= 0) {
+    if (g_verbose && logBudget(&g_logLeft)) {
         char u8[PATH_CAP * 2 + 96];
-        const char *whyS = r ? whyN[why] : "vendor flag off";
+        const char *whyS = r ? g_whyN[why] : "vendor flag off";
         if (key[0] &&
             WideCharToMultiByte(CP_UTF8, 0, key, -1, u8, (int)sizeof u8,
                                 NULL, NULL) > 0)
-            g_host->log("merge_select: gate %s  uuid=%s eye=%d  vendor=%d"
+            MOD_LOG("gate %s  uuid=%s eye=%d  vendor=%d"
                         "  %s  -> %s",
                         u8, haveU ? ustr : "-", eye, (int)r, whyS,
                         (!r || !inc) ? "SKIP" : "include");
         else
-            g_host->log("merge_select: gate <no id>  uuid=%s eye=%d"
+            MOD_LOG("gate <no id>  uuid=%s eye=%d"
                         "  ra=+0x%llX impl=%p  vendor=%d  %s  -> %s",
                         haveU ? ustr : "-", eye,
                         (unsigned long long)(ra - g_mpBase), (void *)impl,
@@ -836,7 +886,7 @@ static void tryInstall(void)
         return;
     if (!exeAllowed("gate_exes",
                     "EXStar Hub.exe,scanservice.exe,Sn3DprocessManager.exe")) {
-        g_host->log("merge_select: %s is not in gate_exes - module stays "
+        MOD_LOG("%s is not in gate_exes - module stays "
                     "inert here (no hooks, no files)", g_exeName);
         InterlockedExchange(&g_broken, 1);
         return;
@@ -869,19 +919,19 @@ static void tryInstall(void)
         target = NULL;
     }
     if (!target || !g_getFolderPath || !g_qUtf16 || !g_qDtor) {
-        g_host->log("merge_select: vendor exports not found "
+        MOD_LOG("vendor exports not found "
                     "(isGenerateCloud/getFolderPath/QString) "
                     "- staying out of it");
         InterlockedExchange(&g_broken, 1);
         return;
     }
     if (!g_thunk && !buildThunk((void *)det_isCloud)) {
-        g_host->log("merge_select: thunk alloc failed - app stays stock");
+        MOD_LOG("thunk alloc failed - app stays stock");
         InterlockedExchange(&g_broken, 1);
         return;
     }
     if (!g_host->hook(target, (void *)g_thunk, (void **)&g_origIsCloud)) {
-        g_host->log("merge_select: detour refused - app stays stock");
+        MOD_LOG("detour refused - app stays stock");
         InterlockedExchange(&g_broken, 1);
         return;
     }
@@ -891,7 +941,7 @@ static void tryInstall(void)
      * kept: it is off hot paths and already mapped the pipeline. */
     ensureSelFile();
     InterlockedExchange(&g_installed, 1);
-    g_host->log("merge_select: hooked HandlePrjFile::isGenerateCloud "
+    MOD_LOG("hooked HandlePrjFile::isGenerateCloud "
                 "(active for Sn3DMultiProjects.dll callers) - see %S",
                 g_selFile);
 }
@@ -994,7 +1044,6 @@ static FnMeta g_origMeta;
 static int                g_sceneWatch = 1;
 static int                g_sceneFilter = 1;
 static volatile LONG      g_sceneDone;
-static HMODULE            g_scMod;
 
 #define SCENE_N 3
 static const char *const  g_sceneCmd[SCENE_N]
@@ -1222,17 +1271,17 @@ static int uuidScan(void *self, unsigned long long impl,
         g_uLoc.lay   = hlay;
         memcpy(u, hu, 16);
         fmtUuid(u, ustr, cap);
-        if (InterlockedDecrement(&g_uScanLogged) >= 0)
-            g_host->log("merge_select: uuidscan: %s at %s+0x%X [%s]",
+        if (logBudget(&g_uScanLogged))
+            MOD_LOG("uuidscan: %s at %s+0x%X [%s]",
                         ustr, hlevel ? "impl" : "self", hoff, layN[hlay]);
         return 1;
     }
-    if (InterlockedDecrement(&g_uMissLogged) >= 0) {
+    if (logBudget(&g_uMissLogged)) {
         char hs[129];
         for (i = 0; i < 32; i++)
             _snprintf_s(hs + 2 * i, 3, _TRUNCATE, "%02X",
                         haveS ? sw[i] : iw[i]);
-        g_host->log("merge_select: uuidscan: no hit (targets=%d) "
+        MOD_LOG("uuidscan: no hit (targets=%d) "
                     "self[0..31]=%s self+0x38=%02X%02X%02X%02X",
                     n, hs,
                     haveS ? sw[0x38] : 0, haveS ? sw[0x39] : 0,
@@ -1346,7 +1395,7 @@ static void gateEyeUuid(void *self, unsigned long long impl, void *wrapper,
         if (g_eye[i].seq)
             n++;
     if (n > s_lastN
-        || (n > 0 && InterlockedDecrement(&g_uScanTries) >= 0)) {
+        || (n > 0 && logBudget(&g_uScanTries))) {
         s_lastN = n;
         if (uuidScan(self, impl, u, ustr, cap)) {
             *have = 1;
@@ -1405,8 +1454,8 @@ static void eyeRecord(const unsigned char *u, int visible)
         else
             WritePrivateProfileStringW(ws, L"included", L"0", g_selFile);
     }
-    if (g_verbose && InterlockedDecrement(&g_eyeLogged) >= 0)
-        g_host->log("merge_select: eye %s -> %s",
+    if (g_verbose && logBudget(&g_eyeLogged))
+        MOD_LOG("eye %s -> %s",
                     s, visible ? "VISIBLE" : "hidden");
 }
 
@@ -1436,7 +1485,7 @@ static void __fastcall det_meta(void *obj, int call, int idx, void **a)
                 char mod[64];
                 unsigned off;
                 modOf(_ReturnAddress(), mod, sizeof mod, &off);
-                g_host->log("merge_select: eye-meta %s idx=%d via %s+0x%X",
+                MOD_LOG("eye-meta %s idx=%d via %s+0x%X",
                             metaCallName(call), idx, mod, off);
             }
         }
@@ -1467,8 +1516,8 @@ static void CALLBACK eyeRetryTimer(HWND hwnd, UINT msg, UINT_PTR id,
     (void)hwnd; (void)msg; (void)tick;
     KillTimer(NULL, id);
     InterlockedExchange(&g_retryPending, 0);
-    if (g_verbose && InterlockedDecrement(&g_retryLogged) >= 0)
-        g_host->log("merge_select: reapply retry after the env work "
+    if (g_verbose && logBudget(&g_retryLogged))
+        MOD_LOG("reapply retry after the env work "
                     "settled");
     eyeReapply(0);
 }
@@ -1520,8 +1569,8 @@ static void eyeReapply(int allowRetry)
     obj = g_eyeCtrl;
     tid = g_eyeCtrlTid;
     if (!obj || tid != (LONG)GetCurrentThreadId()) {
-        if (InterlockedDecrement(&g_reapplyLogged) >= 0)
-            g_host->log("merge_select: reapply skipped (controller=%p "
+        if (logBudget(&g_reapplyLogged))
+            MOD_LOG("reapply skipped (controller=%p "
                         "thread=%ld, here=%ld)", obj, (long)tid,
                         (long)GetCurrentThreadId());
         return;
@@ -1547,21 +1596,21 @@ static void eyeReapply(int allowRetry)
             a[2] = &off;
             g_origMeta(obj, 0, g_eyeIdx, a);
             n++;
-            if (g_verbose && InterlockedDecrement(&g_reapplyToggled) >= 0) {
+            if (g_verbose && logBudget(&g_reapplyToggled)) {
                 char s[64];
                 fmtUuid(u, s, sizeof s);
-                g_host->log("merge_select: reapply toggled %s (show+hide)",
+                MOD_LOG("reapply toggled %s (show+hide)",
                             s);
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) {
-            g_host->log("merge_select: reapply faulted after %d eye(s) - "
+            MOD_LOG("reapply faulted after %d eye(s) - "
                         "stopped, viewport stays stock", n);
             break;
         }
     }
     InterlockedExchange(&g_reapplyBusy, 0);
-    if (n && InterlockedDecrement(&g_reapplyLogged) >= 0)
-        g_host->log("merge_select: re-applied %d hidden eye(s) after the "
+    if (n && logBudget(&g_reapplyLogged))
+        MOD_LOG("re-applied %d hidden eye(s) after the "
                     "environment switch", n);
 
     /* one deferred second pass per switch burst, same thread */
@@ -1679,7 +1728,7 @@ static int metaFind(HMODULE m, const char *cls, const char *mth,
             }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        g_host->log("merge_select: meta scan of %s faulted", cls);
+        MOD_LOG("meta scan of %s faulted", cls);
     }
     return 0;
 }
@@ -1699,22 +1748,22 @@ static int eyeTry(void)
     if (!metaFind(m, "ProjectListControllerE7", "setNodeVisible",
                   &F, &idx, &mo)) {
         if (g_verbose)
-            g_host->log("merge_select: eye controller not found in "
+            MOD_LOG("eye controller not found in "
                         "ScanPage_E7.dll - watch disabled");
         return 1;
     }
     g_eyeIdx = idx;
-    g_host->log("merge_select: eye controller found: "
+    MOD_LOG("eye controller found: "
                 "metaobject=+%llX metacall=+%llX setNodeVisible idx=%d",
                 mo, (unsigned long long)((unsigned char *)F
                                          - (unsigned char *)m), g_eyeIdx);
     if (g_host->hook(F, (void *)det_meta, (void **)&g_origMeta))
-        g_host->log("merge_select: eye watch armed (recording show/hide "
+        MOD_LOG("eye watch armed (recording show/hide "
                     "events%s)",
                     g_eyeReapply ? ", re-apply after env switch on"
                                  : ", re-apply off");
     else
-        g_host->log("merge_select: eye metacall hook refused");
+        MOD_LOG("eye metacall hook refused");
     return 1;
 }
 
@@ -2198,18 +2247,18 @@ static void sceneProbe(int idx, void *a0, void *a1, void *a2, void *a3,
             break;
         }
     if (which < 0) {
-        if (InterlockedDecrement(&g_sceneLogged[idx]) >= 0) {
+        if (logBudget(&g_sceneLogged[idx])) {
             char raw[80];
 
             qvRaw(a1, raw, (int)sizeof raw);
-            g_host->log("merge_select: scene %s - no command map among "
+            MOD_LOG("scene %s - no command map among "
                         "a0=%p a1=%p a2=%p a3=%p a4=%p a5=%p (a1 bytes: %s)",
                         g_sceneCmd[idx], a0, a1, a2, a3, a4, a5, raw);
         }
         return;
     }
-    if (InterlockedDecrement(&g_sceneLogged[idx]) >= 0)
-        g_host->log("merge_select: scene %s (arg%d) %s",
+    if (logBudget(&g_sceneLogged[idx]))
+        MOD_LOG("scene %s (arg%d) %s",
                     g_sceneCmd[idx], which, dump);
 }
 
@@ -2409,11 +2458,11 @@ static int sceneHideDecide(void *a0, void *a1, void *a2, void *a3,
         for (i = 0; i < total; i++)
             hidAdd(hs[i], tx[i]);
         ReleaseSRWLockExclusive(&g_hidLock);
-        if (InterlockedDecrement(&g_hideLogged) >= 0) {
+        if (logBudget(&g_hideLogged)) {
             if (total == 1)
-                g_host->log("merge_select: model hidden: %s", tx[0]);
+                MOD_LOG("model hidden: %s", tx[0]);
             else
-                g_host->log("merge_select: %d models hidden (first: %s)",
+                MOD_LOG("%d models hidden (first: %s)",
                             total, tx[0]);
         }
         return 0;
@@ -2438,14 +2487,14 @@ static int sceneHideDecide(void *a0, void *a1, void *a2, void *a3,
         /* exactly one model, and it is being shown: that is the user
          * clicking its eye again, so forget it and pass the request on */
         AcquireSRWLockExclusive(&g_hidLock);
-        if (hidDel(hs[0]) && InterlockedDecrement(&g_hideLogged) >= 0)
-            g_host->log("merge_select: model shown again: %s", tx[0]);
+        if (hidDel(hs[0]) && logBudget(&g_hideLogged))
+            MOD_LOG("model shown again: %s", tx[0]);
         ReleaseSRWLockExclusive(&g_hidLock);
         return 0;
     }
 
-    if (InterlockedDecrement(&g_filterLogged) >= 0)
-        g_host->log("merge_select: kept %d of %d models hidden (%s) - "
+    if (logBudget(&g_filterLogged))
+        MOD_LOG("kept %d of %d models hidden (%s) - "
                     "a show-everything request was not passed on; to bring "
                     "a model back show it on its own",
                     hidden, total, list[0] ? list : "?");
@@ -2498,10 +2547,10 @@ static int sceneNodeDecide(void *a0, void *a1, void *a2, void *a3,
         ReleaseSRWLockShared(&g_hidLock);
         if (i2 < 0)
             continue;                 /* a model the user did not hide */
-        if (InterlockedDecrement(&g_filterLogged) >= 0) {
+        if (logBudget(&g_filterLogged)) {
             if (!readQName5(qvModel, tx, (int)sizeof tx))
                 strcpy_s(tx, sizeof tx, "?");
-            g_host->log("merge_select: kept %s hidden - the mesh page asked "
+            MOD_LOG("kept %s hidden - the mesh page asked "
                         "to show its nodes and that request was not passed "
                         "on; to bring it back show it with its own eye", tx);
         }
@@ -2696,7 +2745,6 @@ static int sceneTry(void)
     if (!m)
         return 0;
     InterlockedExchange(&g_sceneDone, 1);
-    g_scMod = m;
 
     /* nothing to resolve: the command values are read as memory, the
      * handlers are found by name.  A watch that has to call Qt is a watch
@@ -2709,16 +2757,16 @@ static int sceneTry(void)
             continue;
         if (g_host->hook(fn, (void *)g_sceneDet[i], &g_sceneOrig[i])) {
             armed++;
-            g_host->log("merge_select: watching scene command %s "
+            MOD_LOG("watching scene command %s "
                         "(sn3d.digit.scenecontrol.dll+0x%llX)",
                         g_sceneCmd[i], rva);
         } else {
-            g_host->log("merge_select: scene command %s hook refused",
+            MOD_LOG("scene command %s hook refused",
                         g_sceneCmd[i]);
         }
     }
     if (!armed)
-        g_host->log("merge_select: no scene command handler found - "
+        MOD_LOG("no scene command handler found - "
                     "viewport stays stock");
     return 1;
 }
@@ -2775,7 +2823,7 @@ static unsigned WINAPI worker(LPVOID arg)
     (void)arg;
     notif = armNotify();
     if (!notif && g_verbose)
-        g_host->log("merge_select: dll notification unavailable, "
+        MOD_LOG("dll notification unavailable, "
                     "polling only");
 
     while (!g_installed && !g_broken) {
@@ -2784,7 +2832,7 @@ static unsigned WINAPI worker(LPVOID arg)
             break;
         if (GetTickCount64() - t0 > 900000) {
             if (g_verbose)
-                g_host->log("merge_select: Sn3DFile.dll never mapped in "
+                MOD_LOG("Sn3DFile.dll never mapped in "
                             "this process - nothing to do here");
             break;
         }
@@ -2795,7 +2843,7 @@ static unsigned WINAPI worker(LPVOID arg)
 
     /* UI-side watches, QML process only (an unneeded detour inside a
      * service process would be a pure risk):
-     *  - eye watch: ScanPage_E7's show/hide slot -> merge-select.ini;
+     *  - eye watch: ScanPage_E7's show/hide slot -> selective-mesh.ini;
      *  - scene watch: the scene plugin's named commands, which is where
      *    the vendor re-shows scans the user hid. */
     if (!g_broken && g_eyewatch) {
@@ -2817,7 +2865,7 @@ static unsigned WINAPI worker(LPVOID arg)
                 WaitForSingleObject(g_wake, 1000);
             }
         } else {
-            g_host->log("merge_select: eye watch not needed in %s "
+            MOD_LOG("eye watch not needed in %s "
                         "(eyewatch_exes)", g_exeName);
         }
     }
@@ -2872,6 +2920,9 @@ EX_EXPORT int ex_init(const ExHost *host)
     } else {
         wcscpy_s(g_selFile, PATH_CAP, SEL_FILE);
         wcscpy_s(g_mapFile, PATH_CAP, MAP_FILE);
+        /* default path only: never pour old data into a path the user
+         * chose themselves (it may already hold something else) */
+        migrateSelFile();
     }
 
     g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
@@ -2891,7 +2942,7 @@ EX_EXPORT int ex_init(const ExHost *host)
                     GetModuleHandleA("Sn3DFile.dll") != 0,
                     GetModuleHandleA("Qt5Core.dll") != 0,
                     GetModuleHandleA("Sn3DMultiProjects.dll") != 0);
-        host->log("merge_select v%s armed in pid=%lu exe=%s%s",
+        host->log("selective_mesh v%s armed in pid=%lu exe=%s%s",
                   MOD_VERSION, (unsigned long)GetCurrentProcessId(),
                   g_exeName, env);
     }

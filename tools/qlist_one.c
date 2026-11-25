@@ -7,7 +7,7 @@
  * which the reader is right to refuse.  This builds both cases with Qt's own
  * functions and prints what the reader sees.
  *
- *   cl /nologo /O2 /MT /utf-8 /I..\modules\merge_select qlist_one.c
+ *   cl /nologo /O2 /MT /utf-8 /I..\modules\selective_mesh qlist_one.c
  */
 
 #include <windows.h>

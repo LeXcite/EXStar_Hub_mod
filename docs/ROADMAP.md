@@ -35,8 +35,8 @@ not included in git).
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
 | fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
-| merge_select | 1.5.6 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch, hook allowlists); 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`); 1.5.6 reads nested command values and proved the viewport half has nothing to intercept (see 2026-11-25 below) |
-| ExStarModManager | 1.6.8 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist; 1.6.8 shows the current `merge_select` version |
+| selective_mesh | 1.6.0 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch, hook allowlists); 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`); 1.5.6 reads nested command values and proved the viewport half has nothing to intercept (see 2026-11-25 below); 1.5.8 keeps a hidden scan hidden on screen across the environment switch (live-verified 2026-11-26); 1.6.0 = renamed Selective Mesh, behaviour unchanged |
+| ExStarModManager | 1.6.9 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist (one exception: 1.6.9 renames the `merge_select` token of a hand-made list, never adds one); 1.6.9 removes the legacy `merge_select` files and carries its settings to `selective_mesh` |
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
 
@@ -336,7 +336,9 @@ real child control is the app-folder EDIT.
 
 Feature: choose which scans of a project participate in the **common
 mesh** without deleting anything. Shipped as module `merge_select`
-v1.0.0 + manager 1.5.0.
+v1.0.0 + manager 1.5.0 (since 1.6.0 this module is named
+`selective_mesh`, Selective Mesh - see the rename note at the end of the
+next batch; the names below are what shipped at the time).
 
 * Reverse-engineered the vendor selection: the whole product asks the
   single exported question `Sn3DFile!HandlePrjFile::isGenerateCloud`,
@@ -356,7 +358,7 @@ v1.0.0 + manager 1.5.0.
   race was caught in the self-test. Pending: one live multi-scan mesh
   run to confirm the excluded scan is gone from the merged result.
 
-## Batch "eye-bound mesh selection" (2026-11-24) — MERGE DONE, VIEWPORT CLOSED OUT (2026-11-25)
+## Batch "eye-bound mesh selection" (2026-11-24) — CLOSED BOTH HALVES (2026-11-26)
 
 Goal (user decision): the selection UI is the hub's own **eye icons** -
 a hidden scan row must not enter the common mesh. No manager clicks, no
@@ -366,9 +368,12 @@ Status: the merge half is live and user-verified repeatedly (1.4.7, and
 again with 1.5.6 on 2026-11-25): hidden eye rows are persisted as
 `[uuid] included = 0` and both merge loops in `scanservice.exe` answer
 `SKIP`, so the final mesh contains only the visible scans, on every press
-and across restarts. The viewport half is **closed as not implementable
-on this vendor build** - see the 1.5.0 entry below and
-[merge-common-mesh.md §§11-16](research/merge-common-mesh.md).
+and across restarts. The viewport half was closed out as "nothing to
+intercept" on 2026-11-25 (1.5.6 evidence, see below) and then **solved
+differently on 2026-11-26**: option C - re-issue the eyes after the
+environment switch - is live-verified in 1.5.8, so a hidden scan now also
+stays hidden on screen. Evidence:
+[merge-common-mesh.md §§11-18](research/merge-common-mesh.md).
 
 * Live diagnosis: the scan-page "Mesh" flow never queries
   `isGenerateCloud` (it applies visibility itself), a cached mesh is
@@ -379,7 +384,7 @@ on this vendor build** - see the 1.5.0 entry below and
   post-mesh collection in `scanservice.exe`
   (`getMeshData`, `ra=Sn3DMultiProjects+0x7E3BB`); the earlier negative
   reading came from runs without the module in that process.
-* merge_select 1.1.x/1.2.0: identity now also read as the embedded
+* selective_mesh (then named merge_select) 1.1.x/1.2.0: identity now also read as the embedded
   QString the vendor itself uses in `getProjInfo` (`**self+0x18 → +8`),
   one-shot `idmap` fallback dump; caller probes mapped who drives the
   mesh path; **eye watch** finds `ProjectListControllerE7`'s
@@ -389,25 +394,29 @@ on this vendor build** - see the 1.5.0 entry below and
 * Stability: the scanservice abort (vendor error `0x00000012`) was
   traced to running six modules inside sibling processes; reverted, and
   manager 1.6.1 refuses to enable sibling mode until modules are proven
-  there one by one. `merge_select` needs the UI process only.
+  there one by one. `selective_mesh` needs the UI process only (the eye
+  watch does; the gate half runs in the siblings).
 * Shipped in 1.3.0/1.4.0: the gate reads the scan `QUuid` straight from
   the `HandlePrjFile` object (offset +0x38, the exact bytes the
   community patchset keys its uuid sections with). Live diagnosis on
   2026-11-24 showed the scan-page "Mesh Model" never reaches the gate
   from the UI process - that merge runs in the **fusion engine**
   (`Sn3DprocessManager.exe`), so eye toggles are now persisted by the
-  hub into `merge-select.ini` as `[uuid] included = 0/1` sections
+  hub into `merge-select.ini` (the same file, named
+  `selective-mesh.ini` since 1.6.0) as `[uuid] included = 0/1` sections
   (1.4.0) and consulted by the gate in every process: hidden rows are
   left out of both the saved-project and the engine-built mesh, and
   the state survives restarts. `eye_gate = 0` restores stock
   behaviour.
-* Sibling mode: only `merge_select` is proven inside the sibling
+* Sibling mode: only this module (then `merge_select`, now
+  `selective_mesh`) is proven inside the sibling
   processes (it survived a full night there; the six-module config
   killed `scanservice.exe`). Since manager 1.6.4 the manager never
   rewrites `sibling_all`/`sibling_modules` at all - the proven pair
-  `sibling_all = 1` / `sibling_modules = merge_select` is set by hand
-  and left alone, and every future sibling module needs its own live
-  proof first.
+  `sibling_all = 1` / `sibling_modules = selective_mesh` is set by hand
+  and left alone (manager 1.6.9 renames an existing `merge_select` token
+  to the new id and nothing else), and every future sibling module needs
+  its own live proof first.
 * 1.4.6 (gate finally live): three defects of the 1.4.3-1.4.5 chain were
   found and fixed - the detour compared `_ReturnAddress()` (the address
   inside the hand-built thunk, never inside the vendor image), so every
@@ -476,15 +485,39 @@ on this vendor build** - see the 1.5.0 entry below and
   what hid the keys behind `nodes=1 [type8 …]` in the log); it builds
   clean and is **not deployed** - it ships with whichever of A/C below is
   chosen, so `mod.log` and the installed dll keep agreeing meanwhile.
-* Open decision on the viewport (user, 2026-11-25): **A** - keep the
-  verified merge behaviour, remove the inert `scene_filter`, leave
-  `scene_watch` as an opt-in diagnostic; or **C** - re-apply the eye
-  state after the environment switch by calling the project-list
-  controller's own `setNodeVisible(QUuid, bool)` metacall (controller,
-  metacall and uuids are already in hand), which needs the deferred
-  apply understood first and is the same class of vendor call that
-  caused the 1.5.0 start-up crashes. The merge result does not depend on
-  either.
+* **2026-11-26, viewport solved by option C - 1.5.7 then 1.5.8, both
+  live.** The open choice of 2026-11-25 (A: keep the merge behaviour and
+  drop the inert filter, C: re-issue the eyes through the controller's own
+  slot) went to **C**. 1.5.7 called `setNodeVisible(uuid, false)` after
+  the vendor's `SetCurrentEnv` handler returned; the live log proved it
+  sent **nothing** - the node was already flagged hidden and an unchanged
+  value produces no command anywhere between the model and the view (a
+  real click always produces two `SetModelNodesVisible` within 0..16 ms).
+  1.5.8 therefore *toggles*: show, then hide, through the same slot - the
+  exact sequence a hand click performs - plus one deferred pass 300 ms
+  later (`SetTimer(NULL, ...)` in the hub's own Qt thread) for the
+  environment switch's `singleShot` redraw. Guards: it runs only on the
+  thread that last entered the metacall, the borrowed controller pointer
+  is passed through and never dereferenced (the vendor slot goes through a
+  file-scope singleton), every vendor call is SEH-boxed, and it calls the
+  *original* metacall so the .ini write is bypassed - only the final state
+  is "hidden". User-verified 2026-11-26: after a Mesh Model press the
+  viewport holds only the scan left visible, the merge still excludes the
+  hidden ones, no crash dump. Switch `eye_reapply` (default on).
+  Evidence: [merge-common-mesh.md §18](research/merge-common-mesh.md).
+* **1.6.0 (2026-11-26): renamed Selective Mesh.** `merge_select` →
+  `selective_mesh`, "Merge Selection" → "Selective Mesh", data files
+  `merge-select.ini`/`.map.txt` → `selective-mesh.ini`/`.map.txt`.
+  Behaviour is exactly 1.5.8. The rename is not cosmetic at the deploy
+  layer: the host derives the module id from the DLL basename and defaults
+  every `modules.ini` section to enabled, so a leftover `merge_select.dll`
+  would hook the same gate twice - manager 1.6.9 therefore carries
+  `merge_select` in `g_legacy[]` (deletes its dll/ini and section), copies
+  its switch file to the new name first, renames the `merge_select` token
+  of a hand-written `sibling_modules` list, and the module copies the
+  user's selection file to the new name on first start (old file left as a
+  backup). Module map for anyone reading the source cold:
+  [ARCHITECTURE.md](../modules/selective_mesh/ARCHITECTURE.md).
 
 ## Open regressions
 

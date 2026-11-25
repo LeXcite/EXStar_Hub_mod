@@ -1,3 +1,6 @@
+# historical helper (2026-11-25): silences the scene watch on an install
+# that still carries the PRE-1.6.0 module, modules\merge_select.ini.
+# Current builds: tools\deploy_module.ps1 (modules\selective_mesh.ini).
 $ErrorActionPreference = 'Continue'
 $logf = 'C:\Users\LeX\AppData\Local\Temp\opencode\safeoff.txt'
 "start $(Get-Date -Format o)" | Out-File $logf -Encoding utf8
