@@ -658,7 +658,7 @@ Settled by the above:
   eye's command carries node keys the walk does not read and the press
   carries no names at all.
 
-Two ways forward, undecided as of this writing:
+Two ways forward, decided on 2026-11-25 in favour of **C**:
 
 * **A - stop at the merge.** Remove the inert filter, keep `scene_watch`
   as an opt-in diagnostic, ship the workflow the evidence supports.
@@ -669,6 +669,8 @@ Two ways forward, undecided as of this writing:
   and section 15 says the apply is deferred, so it needs the deferred
   path understood first. This is the same class of call that produced
   the five start-up crashes of section 9.
+
+What C took, and what it finally needed, is section 18.
 
 ## 17. Reproducing this evidence
 
@@ -692,4 +694,116 @@ these ranges:
 | `0x1800e2c90..0x1800e338f` | `SetModelsVisible` |
 | `0x1800e5760..0x1800e8f15` | `CutFaceSet`, where `keep_hide` is read (`0x1800e83f7`) |
 | `0x180110960..0x18011244e` | the `ConnectionDomain_PointCloud_FromClient` export |
+
+## 18. Option C: re-issuing the eyes (1.5.7, then 1.5.8)
+
+The decision from section 16 was C, and it took two builds. What made
+the difference is the difference between *calling the vendor slot* and
+*making the vendor state change*.
+
+**1.5.7 - the call, no effect.** The `SetCurrentEnv` detour passed the
+command through untouched and, once the vendor handler had returned,
+re-ran the eye slot for every hidden scan:
+
+```
+[100043421] scene SetCurrentEnv (arg4) cmd="SetCurrentEnv"
+[100043421] re-applied 2 hidden eye(s) after the environment switch
+```
+
+Nothing else. The scans stayed on screen. Compare the same log at an
+actual eye click, where the slot is followed by the scene commands the
+viewport acts on:
+
+```
+[100040812] eye-meta invoke idx=8 via ScanPage_E7.dll+0x3A521
+[100040812] eye 6966B795-... -> hidden
+[100040812] scene SetModelNodesVisible (arg4) nodes=1 [type8 ... ]
+[100040828] scene SetModelNodesVisible (arg4) nodes=1 [type8 ... ]
+```
+
+So the slot ran and emitted nothing. It was not a logging artifact: the
+`SetModelNodesVisible` log has its own budget of 400 lines, still
+unspent at that point (four of its lines appear 100 ms above the press).
+
+**Why.** The call was `setNodeVisible(uuid, false)` - the value the node
+already carried after the last eye click. QML and the scene act on a
+*transition*; a write of the same value never reaches the viewport, so
+the re-apply was a perfectly correct no-op. Section 14 already said the
+scene keeps its own visibility state: that state is what the environment
+switch resets, and the project list is the only place that still knows
+the user's intent. Re-asserting intent therefore has to look like a
+change.
+
+**1.5.8 - the change.** Same slot, same object, same thread - but each
+hidden scan is *toggled*: `true`, then `false`, through the same
+metacall. Both writes are transitions, so both emit, and the second
+leaves the scan hidden:
+
+```
+[123575765] reapply toggled 77B2D1F5-CDB3-42E8-80FF-4CEFD9EC23E4 (show+hide)
+[123575765] reapply toggled 6EF095DF-7ACF-4F9A-A471-13F7F10C1855 (show+hide)
+[123575765] re-applied 2 hidden eye(s) after the environment switch
+[123575796] scene SetModelNodesVisible (arg4) nodes=1 [type8 ... ]   x8
+```
+
+Plus one deferred pass 300 ms later. Section 15 showed the vendor's own
+apply runs through `QTimer::singleShotImpl`, so the first toggle can land
+before the new environment has finished building its node set; the retry
+runs in the message loop of the same Qt thread (a `SetTimer(NULL, …)`
+timer, armed once per press burst) and repeats the toggle after the work
+has settled:
+
+```
+[123576078] reapply retry after the env work settled
+[123576078] reapply toggled 77B2D1F5-... (show+hide)
+[123576078] reapply toggled 6EF095DF-... (show+hide)
+```
+
+Verified live on 2026-11-26 (1.5.8): after **Mesh Model** the viewport
+keeps only the scan that was left visible, the merge still logs
+`excluded in .ini -> SKIP` for both hidden scans, no crash dump.
+
+Safety notes worth repeating: the retry never re-arms itself (one pass
+per press), the whole vendor call is SEH-boxed, and `det_meta` is
+deliberately bypassed by calling the original trampoline - a re-apply
+must not rewrite the `.ini`, whose job is only to remember what the user
+clicked.
+
+**The metacall, proven from disk.** The eye slot has no export, so
+`tools\qmeta_dump.ps1` walks the image's initialized-data sections for a
+QMetaObject (four image pointers: `superdata, stringdata, data,
+static_metacall`) and prints the method table. On this `ScanPage_E7.dll`
+it yields, for `ProjectListControllerE7`, exactly the values the module
+resolves at run time:
+
+```
+class        : ProjectListControllerE7   (moc revision 8)
+metaobject   : RVA 0xA38210
+static meta  : RVA 0x42DF0
+  idx  argc  type                 name
+    6     0  Signal               totalModelChanged
+    8     2  Slot                 setNodeVisible
+```
+
+Three layout facts this tool had to get right, each of which silently
+returned nothing before it was fixed: `superdata` points at the base
+class' metaobject *in another module*, so on disk it reads 0 and is
+filled by a relocation - it cannot take part in the candidate filter;
+`SizeOfImage` lives at optional-header `+0x38`, not `+0x10`; and Qt's
+`data[]` section offsets (method table, property table) are counted in
+**uints**, not bytes. The method type is not a 3-bit field either: Qt5
+stores the `MethodType` enum (`Method 0x0`, `Signal 0x6`, `Slot 0xa`),
+which is why every entry read as `Method` until the mask was widened.
+
+For the senders of the scene command itself, `tools\xref_str.ps1` finds
+`lea reg,[rip+disp32]` references to a literal - the four places in
+`ScanPage_E7.dll` (RVAs `0x8E5D5`, `0x97543`, `0x9E253`, `0xA516B`, all
+inside `ProjectInfoUiManagerE7`, 110 methods, `static meta 0x41880`) that
+build a `SetModelNodesVisible` request. That is the fallback path if a
+future vendor build ever stops routing the eye through the metacall.
+
+```
+tools\qmeta_dump.ps1 -File 'C:\Program Files\Shining3d\EXStar Hub\ScanPage_E7.dll' -Class ProjectListControllerE7
+tools\xref_str.ps1   -File 'C:\Program Files\Shining3d\EXStar Hub\ScanPage_E7.dll' -Text 'SetModelNodesVisible'
+```
 

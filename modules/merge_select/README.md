@@ -1,6 +1,6 @@
 # Merge Selection (`merge_select`)
 
-**Version 1.5.6 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
+**Version 1.5.8 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
 
 ## What it does
 
@@ -88,6 +88,21 @@ never fires: the viewport coming back after a merge is the vendor's own
 environment redraw and does not change what ends up in the mesh.
 `scene_watch` stays useful as a diagnostic - it is what produced that
 evidence.
+
+**Since 1.5.8 the redraw no longer wins either: a hidden scan stays
+hidden on screen.** The environment switch drops the node-level hide,
+and re-asserting `setNodeVisible(uuid, false)` does nothing - neither
+QML nor the scene act until the value actually *changes*, which 1.5.7
+proved live (the re-issued slot emitted no command at all). So once the
+vendor's `SetCurrentEnv` handler returns, the module *toggles* every
+hidden eye - show, then hide - through the very slot a click uses, and
+the UI re-sends its own hide command for the new environment; one retry
+pass 300 ms later (a timer in the hub's own Qt thread) covers the
+vendor's deferred apply. Switch `eye_reapply` (default on, needs
+`eyewatch`). Verified live 2026-11-26: after a Mesh Model press the
+viewport holds only the scan left visible, and the merged mesh still
+excludes the hidden ones (`evidence: docs/research/merge-common-mesh.md
+section 18`).
 
 Version 1.5.1 is the startup fix for that feature. Reading a command has
 become **pure memory inspection**: the Qt type tag of every value and the

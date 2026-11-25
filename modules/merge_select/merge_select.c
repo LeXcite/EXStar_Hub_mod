@@ -139,6 +139,34 @@
  *            log (where the data pointer is, the header words, what each
  *            candidate element offset reads as) instead of being dropped,
  *            so a moved Qt shows up as data rather than as silence.
+ *   1.5.3-1.5.5  the QStringList layout was measured against the shipped
+ *          Qt with the reader that actually ships (qt_read.h,
+ *          tools\qlist_lab.c, tools\qlist_one.c), and the nested command
+ *          values a name filter would need became readable.
+ *   1.5.6  a command map is walked past an unreadable node (Qt's sentinel
+ *          used to end the walk, which hid the keys behind
+ *          "nodes=1 [type8 ...]"), and each reader reports the layout it
+ *          used.  The live check with this build is what closed out the
+ *          "withhold a show-everything command" idea: a Mesh Model press
+ *          sends no such command (docs/research/merge-common-mesh.md
+ *          sections 11-17).
+ *   1.5.7  option C, from that evidence: instead of withholding a command
+ *          that is never sent, the eyes are re-issued after the command
+ *          that does the redraw.  `SetCurrentEnv` is passed through
+ *          untouched and, once the vendor handler has returned, every scan
+ *          the user hid is put back through the project list's own
+ *          `setNodeVisible(QUuid, bool)` slot; that writes the model and
+ *          emits the vendor's dataChanged, and the QML re-sends
+ *          `SetModelNodesVisible` for the new environment.  Same thread as
+ *          the eye, same object the eye used, SEH-boxed, switch
+ *          `eye_reapply`.
+ *   1.5.8  the live log of 1.5.7 showed the re-issue firing but sending
+ *          nothing: the node was already flagged hidden, and an unchanged
+ *          value produces no command anywhere on the way to the scene.  So
+ *          the re-apply now *toggles* - show, then hide, through the same
+ *          slot - which is the exact state-change sequence a hand click
+ *          performs, plus one deferred pass 300 ms later (SetTimer on the
+ *          Qt thread) for the env switch's own singleShot redraw work.
  */
 
 #include <windows.h>
@@ -147,10 +175,12 @@
 #include <wchar.h>
 #include <intrin.h>
 
+#pragma comment(lib, "user32")     /* SetTimer/KillTimer for the retry */
+
 #include "exstar_sdk.h"
 #include "qt_read.h"
 
-#define MOD_VERSION   "1.5.6"
+#define MOD_VERSION   "1.5.8"
 
 #define SEL_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.ini"
 #define MAP_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.map.txt"
@@ -887,6 +917,23 @@ static volatile LONG  g_eyeSeq;
 static volatile LONG  g_eyeLogged = 40;
 static int            g_eyeIdx = 8;
 
+/* 1.5.7: re-issue the eyes after the scene switches environment.
+ * The controller instance is only borrowed as the `this` argument of the
+ * same metacall an eye click uses; nothing in it is dereferenced by us,
+ * and its setNodeVisible ignores that argument (verified in the
+ * decompiled body - it goes through a file-scope model singleton).  The
+ * thread id is the one that last called the metacall, so the re-apply
+ * never runs from a worker thread. */
+static int            g_eyeReapply = 1;
+static void *volatile g_eyeCtrl;
+static volatile LONG  g_eyeCtrlTid;
+static volatile LONG  g_reapplyBusy;
+static volatile LONG  g_reapplyLogged = 20;
+static volatile LONG  g_reapplyToggled = 40;
+static volatile LONG  g_retryPending;
+static volatile LONG  g_retryLogged = 20;
+#define RETRY_TIMER_ID ((UINT_PTR)0x00005CA7)
+
 #define EYE_MAX 64
 typedef struct { unsigned char uuid[16]; int visible; int seq; } EyeEnt;
 static EyeEnt g_eye[EYE_MAX];
@@ -1363,11 +1410,17 @@ static void eyeRecord(const unsigned char *u, int visible)
                     s, visible ? "VISIBLE" : "hidden");
 }
 
-/* detour on qt_static_metacall: observe, never interfere */
+/* detour on qt_static_metacall: observe the eye, and remember the live
+ * controller instance so the environment switch can re-issue the eyes
+ * through the very same slot. */
 static void __fastcall det_meta(void *obj, int call, int idx, void **a)
 {
     int i;
 
+    if (obj) {
+        g_eyeCtrl = obj;
+        g_eyeCtrlTid = (LONG)GetCurrentThreadId();
+    }
     if (g_verbose && InterlockedCompareExchange(&g_eyeBusy, 1, 0) == 0) {
         int fresh = 1;
         for (i = 0; i < g_metaSeenN && i < 32; i++)
@@ -1399,6 +1452,124 @@ static void __fastcall det_meta(void *obj, int call, int idx, void **a)
     }
     if (g_origMeta)
         g_origMeta(obj, call, idx, a);
+}
+
+/* forward: the deferred pass below calls it, the SetCurrentEnv detour
+ * calls it with allowRetry = 1 */
+static void eyeReapply(int allowRetry);
+
+/* SetTimer(NULL) callback: runs in the message loop of the thread that
+ * set it - the Qt UI thread - 300 ms after the environment switch, when
+ * the vendor's own singleShot redraw work has settled. */
+static void CALLBACK eyeRetryTimer(HWND hwnd, UINT msg, UINT_PTR id,
+                                   DWORD tick)
+{
+    (void)hwnd; (void)msg; (void)tick;
+    KillTimer(NULL, id);
+    InterlockedExchange(&g_retryPending, 0);
+    if (g_verbose && InterlockedDecrement(&g_retryLogged) >= 0)
+        g_host->log("merge_select: reapply retry after the env work "
+                    "settled");
+    eyeReapply(0);
+}
+
+/* ---- option C: put the eyes back after an environment switch --------
+ *
+ * Pressing Mesh Model switches the scene environment and the vendor
+ * re-draws the project's models; the eye's own hide is scene-node state
+ * that the new environment does not carry, so hidden scans reappear on
+ * screen (the merge gate is unaffected - see docs/research/
+ * merge-common-mesh.md sections 11-17).
+ *
+ * 1.5.7 called `setNodeVisible(uuid, false)` after the switch and the
+ * live log proved it did nothing: no `SetModelNodesVisible` followed
+ * `re-applied 2 hidden eye(s)`, while a real click always produces two
+ * commands within 0..16 ms.  The node was already flagged hidden, and
+ * the unchanged value is suppressed somewhere between the model and the
+ * view, so no command was ever sent.
+ *
+ * 1.5.8 therefore *toggles*: `setNodeVisible(uuid, true)` and then
+ * `(uuid, false)` through the same slot.  Both are real state changes,
+ * each emits, and QML re-sends its own commands - exactly the sequence
+ * a user performs by hand, ending hidden.  A single retry pass runs 300
+ * ms later on the same (Qt) thread via SetTimer(NULL), because the env
+ * switch's own redraw work (singleShot-based) may settle after the
+ * handler returns and re-show the models over our first pass.
+ *
+ * Safety, in order of importance:
+ *  - it runs only on the thread that last entered the metacall, i.e. the
+ *    Qt thread that owns the model, never our install worker (the timer
+ *    fires in that same thread's message loop);
+ *  - the object pointer is passed through but not trusted: the vendor's
+ *    setNodeVisible body goes through a file-scope singleton and never
+ *    touches it (verified in the decompiled body), so a stale value can
+ *    not be dereferenced here;
+ *  - the whole vendor call is SEH-boxed and a fault stops the loop;
+ *  - it only ever re-sends the user's own eye state, nothing is invented
+ *    and nothing is written to disk here - it calls the original
+ *    metacall trampoline, so det_meta (and with it the .ini write) is
+ *    deliberately bypassed; only the final state is "hidden". */
+static void eyeReapply(int allowRetry)
+{
+    void *obj;
+    LONG tid;
+    int i, n = 0;
+
+    if (!g_eyeReapply || !g_origMeta || g_eyeIdx <= 0)
+        return;
+    obj = g_eyeCtrl;
+    tid = g_eyeCtrlTid;
+    if (!obj || tid != (LONG)GetCurrentThreadId()) {
+        if (InterlockedDecrement(&g_reapplyLogged) >= 0)
+            g_host->log("merge_select: reapply skipped (controller=%p "
+                        "thread=%ld, here=%ld)", obj, (long)tid,
+                        (long)GetCurrentThreadId());
+        return;
+    }
+    if (InterlockedCompareExchange(&g_reapplyBusy, 1, 0) != 0)
+        return;
+
+    for (i = 0; i < EYE_MAX; i++) {
+        unsigned char u[16];
+        unsigned char on = 1, off = 0;
+        unsigned char rv[16];
+        void *a[3];
+
+        if (!g_eye[i].seq || g_eye[i].visible)
+            continue;
+        memcpy(u, g_eye[i].uuid, 16);
+        memset(rv, 0, sizeof rv);
+        a[0] = rv;
+        a[1] = u;
+        __try {
+            a[2] = &on;
+            g_origMeta(obj, 0, g_eyeIdx, a);
+            a[2] = &off;
+            g_origMeta(obj, 0, g_eyeIdx, a);
+            n++;
+            if (g_verbose && InterlockedDecrement(&g_reapplyToggled) >= 0) {
+                char s[64];
+                fmtUuid(u, s, sizeof s);
+                g_host->log("merge_select: reapply toggled %s (show+hide)",
+                            s);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            g_host->log("merge_select: reapply faulted after %d eye(s) - "
+                        "stopped, viewport stays stock", n);
+            break;
+        }
+    }
+    InterlockedExchange(&g_reapplyBusy, 0);
+    if (n && InterlockedDecrement(&g_reapplyLogged) >= 0)
+        g_host->log("merge_select: re-applied %d hidden eye(s) after the "
+                    "environment switch", n);
+
+    /* one deferred second pass per switch burst, same thread */
+    if (n && allowRetry && g_eyeReapply &&
+        InterlockedCompareExchange(&g_retryPending, 1, 0) == 0) {
+        if (!SetTimer(NULL, RETRY_TIMER_ID, 300, eyeRetryTimer))
+            InterlockedExchange(&g_retryPending, 0);
+    }
 }
 
 /* read the moc stringdata: Qt5 descriptor { ref, size, alloc, flags,
@@ -1538,8 +1709,10 @@ static int eyeTry(void)
                 mo, (unsigned long long)((unsigned char *)F
                                          - (unsigned char *)m), g_eyeIdx);
     if (g_host->hook(F, (void *)det_meta, (void **)&g_origMeta))
-        g_host->log("merge_select: eye watch armed "
-                    "(recording show/hide events, no behaviour change)");
+        g_host->log("merge_select: eye watch armed (recording show/hide "
+                    "events%s)",
+                    g_eyeReapply ? ", re-apply after env switch on"
+                                 : ", re-apply off");
     else
         g_host->log("merge_select: eye metacall hook refused");
     return 1;
@@ -2356,6 +2529,8 @@ typedef __int64 (*FnSceneCmd)(void *, void *, void *, void *,
 static __int64 sceneCall(int idx, void *a0, void *a1, void *a2, void *a3,
                          void *a4, void *a5, void *a6, void *a7)
 {
+    __int64 r;
+
     if (g_sceneWatch && g_verbose && g_sceneLogged[idx] > 0)
         sceneProbe(idx, a0, a1, a2, a3, a4, a5, a6, a7);
     /* `SetModelsVisible` is the project list's own command and the one an eye
@@ -2363,7 +2538,9 @@ static __int64 sceneCall(int idx, void *a0, void *a1, void *a2, void *a3,
      * `SetModelNodesVisible`, one command per model.  Both are filtered by
      * the same rule (a model the user hid stays hidden), each by the shape it
      * actually carries.  `SetCurrentEnv` switches the environment and is only
-     * watched: withholding it would leave the page on the wrong scene. */
+     * watched: withholding it would leave the page on the wrong scene.  On
+     * this vendor build it is also the moment the eyes have to be re-issued,
+     * because the environment redraw does not carry the eye's node state. */
     if (g_sceneFilter) {
         if (idx == 0 && sceneHideDecide(a0, a1, a2, a3, a4, a5, a6, a7))
             return 0;
@@ -2372,7 +2549,10 @@ static __int64 sceneCall(int idx, void *a0, void *a1, void *a2, void *a3,
     }
     if (!g_sceneOrig[idx])
         return 0;
-    return ((FnSceneCmd)g_sceneOrig[idx])(a0, a1, a2, a3, a4, a5, a6, a7);
+    r = ((FnSceneCmd)g_sceneOrig[idx])(a0, a1, a2, a3, a4, a5, a6, a7);
+    if (idx == 2)                       /* SetCurrentEnv: page is redrawn */
+        eyeReapply(1);
+    return r;
 }
 
 static __int64 __fastcall det_scene0(void *a0, void *a1, void *a2, void *a3,
@@ -2624,7 +2804,10 @@ static unsigned WINAPI worker(LPVOID arg)
 
             for (;;) {
                 eyeTry();
-                if (g_sceneWatch || g_sceneFilter)
+                /* the SetCurrentEnv hook is also what re-applies the eyes, so
+                 * it is armed for `eye_reapply` even with the watch and the
+                 * filter both off */
+                if (g_sceneWatch || g_sceneFilter || g_eyeReapply)
                     sceneTry();
                 if (g_eyeDone && (!(g_sceneWatch || g_sceneFilter)
                                    || g_sceneDone))
@@ -2662,6 +2845,7 @@ EX_EXPORT int ex_init(const ExHost *host)
     g_verbose = host->cfg_int(host, "verbose", 1);
     g_eyewatch = host->cfg_int(host, "eyewatch", 1);
     g_eyeGate = host->cfg_int(host, "eye_gate", 1);
+    g_eyeReapply = host->cfg_int(host, "eye_reapply", 1);
     g_sceneWatch = host->cfg_int(host, "scene_watch", 1);
     g_sceneFilter = host->cfg_int(host, "scene_filter", 1);
 
