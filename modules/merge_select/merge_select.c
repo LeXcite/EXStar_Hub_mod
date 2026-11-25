@@ -150,7 +150,7 @@
 #include "exstar_sdk.h"
 #include "qt_read.h"
 
-#define MOD_VERSION   "1.5.5"
+#define MOD_VERSION   "1.5.6"
 
 #define SEL_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.ini"
 #define MAP_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.map.txt"
@@ -924,17 +924,26 @@ static FnMeta g_origMeta;
  * walks its QVariantMap exactly as `qmapFind` below does (its own
  * decompiled body looks up "names"/"visible"/"reset" the same way).
  *
- * Verified live, in the hub's own log (three projects open):
+ * A hooked handler did log these two commands once (three projects
+ * open):
  *
  *   scene SetModelsVisible (arg1) names=[Project_2] reset=0 visible=0
  *   scene SetModelsVisible (arg1) names=[Project_1111, Project_2,
  *                                          Project_1000] reset=1 visible=1
  *
- * i.e. the eye icon hides by name, and entering the Mesh Model page asks
- * to show every project again - that second command is what used to bring
- * hidden scans back on screen.  Both switches are UI-process only:
- * `scene_watch` logs the commands, `scene_filter` keeps hidden models
- * hidden by not passing a show-everything request on.                   */
+ * STATUS, corrected by the 1.5.6 live check on 2026-11-25: neither line
+ * belongs to an eye click or to a Mesh Model press.  One eye click sends
+ * two `SetModelNodesVisible` (the geo nodes of one model on one view),
+ * a press sends `SetCurrentEnv` twice around the merge, and
+ * `SetModelsVisible` never appeared.  An offline enumeration of the
+ * plugin's registration blocks (tools/scmd_enum.ps1) lists 43 commands;
+ * exactly two touch model visibility and none keeps hidden models
+ * hidden, so `scene_filter` has nothing to withhold here and the
+ * viewport showing a hidden scan again is the vendor's own environment
+ * redraw.  Evidence and reproduction:
+ * docs/research/merge-common-mesh.md sections 11-17.  What remains true
+ * and useful is `scene_watch`: it is what produced that evidence.  Both
+ * switches are UI-process only.                              */
 static int                g_sceneWatch = 1;
 static int                g_sceneFilter = 1;
 static volatile LONG      g_sceneDone;
@@ -944,7 +953,9 @@ static HMODULE            g_scMod;
 static const char *const  g_sceneCmd[SCENE_N]
     = { "SetModelsVisible", "SetModelNodesVisible", "SetCurrentEnv" };
 static void              *g_sceneOrig[SCENE_N];
-static volatile LONG      g_sceneLogged[SCENE_N] = { 60, 30, 20 };
+/* generous budgets: the Mesh Model press sends a burst, and a run out of
+ * budget mid-press would hide exactly the command worth seeing */
+static volatile LONG      g_sceneLogged[SCENE_N] = { 60, 400, 60 };
 static volatile LONG      g_listHowLogged;      /* list layout named once */
 
 static const char *metaCallName(int c)
@@ -1629,18 +1640,16 @@ static void qvBytes(const void *p, int n, char *out, int cap)
     out[used] = 0;
 }
 
-/* A list this reader could NOT parse, described as bytes rather than as a
- * guess: the four header words, the raw block, and for each candidate
- * (entry offset, hop) how many leading entries read as a name.  One normal
- * start of the hub then says where Qt really keeps the items and which
- * reading came closest, so the search above can be corrected from a log
- * instead of from a debugger.  Guarded, bounded, reads only. */
+/* A list this reader could NOT parse, in as few characters as the answer
+ * needs: the four header words and, for each place the entries could start,
+ * how many entries are a QString and how many of those hold text.  A start
+ * log of the hub then says where Qt keeps the items, without the dump of one
+ * value squeezing the rest of the command out of the line.  Read-only. */
 static void qvListDiag(const void *qv, char *out, int cap)
 {
     static const int baseAt[3] = { 0x10, 0x18, 0x20 };
     static const int hops[2]   = { 0, 1 };
-    unsigned char *d;
-    char hex[97];
+    unsigned char *d = NULL;
     int b, h, used = 0;
 
     out[0] = 0;
@@ -1652,37 +1661,18 @@ static void qvListDiag(const void *qv, char *out, int cap)
             strcpy_s(out, cap, "no data pointer");
             return;
         }
-        qvBytes(d, 48, hex, (int)sizeof hex);
-        used += _snprintf_s(out, cap, _TRUNCATE,
-                            "d=%p{ref:%d alloc:%d +8:%d size:%d} %s", (void *)d,
-                            *(int *)(d + 0), *(int *)(d + 4),
-                            *(int *)(d + 8), *(int *)(d + 12), hex);
+        used += _snprintf_s(out, cap, _TRUNCATE, "d=%p{ref:%d alloc:%d b:%d"
+                            " size:%d}", (void *)d, *(int *)(d + 0),
+                            *(int *)(d + 4), *(int *)(d + 8),
+                            *(int *)(d + 12));
         if (used < 0)
             used = (int)strlen(out);
 
-        /* what sits behind the first entry answers the only open question -
-         * whether the entry IS the QString or points at it - so it comes
-         * first and is never squeezed out by the candidate counts below */
-        if (used < cap - 140) {
-            unsigned char *e = *(unsigned char **)(d + 0x10);
-
-            if (plausiblePtr(e)) {
-                int len = -1;
-
-                qvBytes(e, 32, hex, (int)sizeof hex);
-                used += _snprintf_s(out + used, cap - used, _TRUNCATE,
-                                    " | e=%p{size:%d off:%lld} %s valid:%d",
-                                    (void *)e, *(int *)(e + 8),
-                                    *(long long *)(e + 16), hex,
-                                    qStrSize5(d + 0x10, &len));
-            }
-        }
-
-        for (b = 0; b < 3 && used < cap - 40; b++) {
-            for (h = 0; h < 2 && used < cap - 40; h++) {
+        for (b = 0; b < 3 && used < cap - 32; b++) {
+            for (h = 0; h < 2 && used < cap - 32; h++) {
                 int i, named = 0;
 
-                for (i = 0; i < 4; i++) {
+                for (i = 0; i < 3; i++) {
                     const unsigned char *slot = d + baseAt[b] + (size_t)i * 8;
                     const void *at = slot;
                     int len = -1;
@@ -1697,9 +1687,11 @@ static void qvListDiag(const void *qv, char *out, int cap)
                     if (len > 0)
                         named++;
                 }
+                if (i == 0)
+                    continue;               /* nothing here, do not print it */
                 used += _snprintf_s(out + used, cap - used, _TRUNCATE,
-                                    " | +%X hop%d = %d/%d", baseAt[b], hops[h],
-                                    named, i);
+                                    " +%X/h%d=%d(%d)", baseAt[b], hops[h],
+                                    i, named);
             }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -1732,6 +1724,7 @@ static void qvListDiag(const void *qv, char *out, int cap)
  * value" - never a guess.                                                 */
 #define QT_VARIQLIST  9          /* QMetaType::QVariantList  */
 #define QT_BOOL       1          /* QMetaType::Bool          */
+#define QT_MAP        8          /* QMetaType::QVariantMap   */
 #define QT_STRING    10          /* QMetaType::QString       */
 #define QT_STRLIST   11          /* QMetaType::QStringList   */
 
@@ -1801,15 +1794,20 @@ static void qvRaw(const void *qv, char *out, int cap)
     }
 }
 
+/* a command value and a command map describe each other (a map's values are
+ * values, and a value may be a map), so each needs the other's name first */
+static int qmapDumpD(void *mapObj, char *out, int cap, int *cntOut, int depth);
+
 /* one command value as text: tag first, then the payload that tag
  * describes.  bool through qvBool5, QString inline in the variant,
- * QStringList as a QList of QString; anything else is its tag plus the raw
- * bytes.  Nothing here calls Qt, so a value that is not what it pretends
- * to be is only ever a line in the log, never a fault. */
-static void qvDescribe(const void *qv, char *out, int cap)
+ * QStringList as a QList of QString, QVariantList and maps walked to a
+ * bounded depth; anything else is its tag plus the raw bytes.  Nothing here
+ * calls Qt, so a value that is not what it pretends to be is only ever a
+ * line in the log, never a fault. */
+static void qvDescribeD(const void *qv, char *out, int cap, int depth)
 {
     unsigned tag = 0;
-    char s[200];
+    char s[700];
     int b = -1;
 
     out[0] = 0;
@@ -1848,33 +1846,93 @@ static void qvDescribe(const void *qv, char *out, int cap)
                 _snprintf_s(out, cap, _TRUNCATE, "%s via %s", s, how);
             else
                 _snprintf_s(out, cap, _TRUNCATE, "%s", s);
-        } else {
-            /* not readable as a list: say what it looks like instead, so a
-             * Qt that moved its QList shows up as data in the log */
-            char dg[420];
-
-            qvListDiag(qv, dg, (int)sizeof dg);
-            qvRaw(qv, s, (int)sizeof s);
-            _snprintf_s(out, cap, _TRUNCATE, "list? %s%s%s", s,
-                        dg[0] ? " ; " : "", dg);
+            return;
         }
+        /* Not a list of names. A QList<QVariant> is the other thing a command
+         * carries - SetModelNodesVisible keeps its per-model node lists that
+         * way - and its entries are QVariants, so describe each entry as a
+         * value and the nesting shows up in the log. */
+        if (depth < 2 && tag == QT_VARIQLIST) {
+            unsigned char *d = NULL;
+            int size = 0, i, u = 0;
+
+            __try {
+                d = *(unsigned char **)(void *)qv;
+                if (plausiblePtr(d)) {
+                    size = *(int *)(d + 0x0C);
+                    if (size < 1 || size > 64)
+                        size = 0;
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                size = 0;
+            }
+            if (size > 0) {
+                u += _snprintf_s(out + u, cap - u, _TRUNCATE, "%d [", size);
+                if (u < 0)
+                    u = (int)strlen(out);
+                for (i = 0; i < size && i < 3; i++) {
+                    char sub[220];
+                    const unsigned char *node = NULL;
+
+                    __try {
+                        node = *(const unsigned char *const *)(d + 0x10
+                                                               + i * 8);
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        node = NULL;
+                    }
+                    if (!plausiblePtr(node))
+                        break;
+                    qvDescribeD(node, sub, (int)sizeof sub, depth + 1);
+                    u += _snprintf_s(out + u, cap - u, _TRUNCATE, "%s%s",
+                                     i ? ", " : "", sub);
+                    if (u < 0)
+                        u = (int)strlen(out);
+                }
+                if (i < size)
+                    _snprintf_s(out + u, cap - u, _TRUNCATE, ", ...]");
+                else
+                    _snprintf_s(out + u, cap - u, _TRUNCATE, "]");
+                if (out[0])
+                    return;
+            }
+        }
+        /* nothing matched: say what it looks like in as few characters as
+         * the answer needs, so the rest of the command still fits the line */
+        qvListDiag(qv, s, (int)sizeof s);
+        _snprintf_s(out, cap, _TRUNCATE, "list? %s", s[0] ? s : "?");
         return;
     }
-    /* unknown tag: the tag plus the bytes behind it, so the layout of a
-     * value this reader does not know yet can be worked out from the log */
+    /* A value this reader has no tag for.  Before falling back to raw bytes,
+     * try it as a map: a map is self-validating (a key/value tree either
+     * walks or it does not), so a nested QVariantMap inside a command -
+     * which is what SetModelNodesVisible carries - reports its keys. */
+    if (depth < 2 && qmapDumpD((void *)qv, s, (int)sizeof s, NULL, depth + 1))
+    {
+        _snprintf_s(out, cap, _TRUNCATE, "{%s}", s);
+        return;
+    }
     qvRaw(qv, s, (int)sizeof s);
     _snprintf_s(out, cap, _TRUNCATE, "type%u %s", tag, s);
+}
+
+static void qvDescribe(const void *qv, char *out, int cap)
+{
+    qvDescribeD(qv, out, cap, 0);
 }
 
 /* is this argument a QVariantMap?  Rather than looking only for the keys
  * we already know, the tree is enumerated and every key present is
  * reported - so the probe is also useful for commands whose argument
  * names have not been read in the binary yet.  Bounded (nodes, keys,
- * output), read-only, guarded. */
-static int qmapDump(void *mapObj, char *out, int cap, int *cntOut)
+ * output, depth), read-only, guarded.
+ *
+ * An unreadable node must NOT end the walk: the hub's own command maps hold
+ * Qt's sentinel node next to the real ones, and stopping there once hid the
+ * keys the filter needs.  Such a node is counted and skipped instead. */
+static int qmapDumpD(void *mapObj, char *out, int cap, int *cntOut, int depth)
 {
-    char  *stack[40], *d = NULL, *n;
-    int    sp = 0, cnt = 0, used = 0;
+    char  *stack[64], *d = NULL, *n;
+    int    sp = 0, cnt = 0, skipped = 0, used = 0, r, roots[2];
 
     out[0] = 0;
     if (cntOut)
@@ -1882,41 +1940,70 @@ static int qmapDump(void *mapObj, char *out, int cap, int *cntOut)
     if (!plausiblePtr(mapObj))
         return 0;
 
-    __try {
-        d = *(char **)mapObj;
-        if (!plausiblePtr(d))
-            return 0;
-        n = *(char **)(d + 0x10);          /* the tree root */
-        if (!plausiblePtr(n))
-            return 0;
-        stack[sp++] = n;
-        while (sp > 0 && cnt < 8) {
-            char  key[48], val[220];
-            char *l, *r;
+    /* Qt5 keeps the tree root behind the array header; where that header ends
+     * depends on the container, so both candidates are tried and the one that
+     * walks is used. */
+    roots[0] = 0x10;
+    roots[1] = 0x18;
 
-            n = stack[--sp];
+    for (r = 0; r < 2; r++) {
+        sp = 0;
+        cnt = skipped = 0;
+        used = 0;
+        out[0] = 0;
+        __try {
+            d = *(char **)mapObj;
+            if (!plausiblePtr(d))
+                break;
+            n = *(char **)(d + roots[r]);
             if (!plausiblePtr(n))
                 continue;
-            l = *(char **)(n + 0x08);
-            r = *(char **)(n + 0x10);
-            if (!readQName5(n + 0x18, key, (int)sizeof key))
-                break;                     /* not a key/value tree */
-            qvDescribe(n + 0x20, val, (int)sizeof val);
-            used += _snprintf_s(out + used, cap - used, _TRUNCATE,
-                                "%s%s=%s", cnt ? " " : "", key, val);
-            if (used < 0)
-                used = (int)strlen(out);
-            cnt++;
-            if (plausiblePtr(l) && sp < (int)(sizeof stack) - 1)
-                stack[sp++] = l;
-            if (plausiblePtr(r) && sp < (int)(sizeof stack) - 1)
-                stack[sp++] = r;
+            stack[sp++] = n;
+            while (sp > 0 && cnt < 16) {
+                char  key[48], val[300];
+                char *l, *r2;
+
+                n = stack[--sp];
+                if (!plausiblePtr(n))
+                    continue;
+                l = *(char **)(n + 0x08);
+                r2 = *(char **)(n + 0x10);
+                if (plausiblePtr(l) && sp < (int)(sizeof stack) - 1)
+                    stack[sp++] = l;
+                if (plausiblePtr(r2) && sp < (int)(sizeof stack) - 1)
+                    stack[sp++] = r2;
+                if (!readQName5(n + 0x18, key, (int)sizeof key)) {
+                    skipped++;            /* Qt's sentinel, or another layout */
+                    continue;
+                }
+                qvDescribeD(n + 0x20, val, (int)sizeof val, depth + 1);
+                used += _snprintf_s(out + used, cap - used, _TRUNCATE,
+                                    "%s%s=%s", cnt ? " " : "", key, val);
+                if (used < 0)
+                    used = (int)strlen(out);
+                cnt++;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            cnt = 0;
         }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (cnt > 0) {
+            if (skipped && used < cap - 24)
+                _snprintf_s(out + strlen(out), cap - strlen(out), _TRUNCATE,
+                            " (+%d)", skipped);
+            if (roots[r] != 0x10 && used < cap - 12)
+                _snprintf_s(out + strlen(out), cap - strlen(out), _TRUNCATE,
+                            " root@+X%X", roots[r]);
+            break;
+        }
     }
     if (cntOut)
         *cntOut = cnt;
     return cnt > 0;
+}
+
+static int qmapDump(void *mapObj, char *out, int cap, int *cntOut)
+{
+    return qmapDumpD(mapObj, out, cap, cntOut, 0);
 }
 
 /* what a scene command was asked to do; purely diagnostic - the original
@@ -1955,29 +2042,47 @@ static void sceneProbe(int idx, void *a0, void *a1, void *a2, void *a3,
 
 /* ---- keeping the models you hid hidden ------------------------------
  *
- * The eye icon does not only hide a row in the project list, it also
- * tells the scene about it - through the very same command:
+ * STATUS on 2.1.0-10: inert, and kept that way deliberately.  The live
+ * check of 2026-11-25 (docs/research/merge-common-mesh.md sections
+ * 11-16) recorded no `SetModelsVisible` at all around a Mesh Model
+ * press, and the decompiled handler at +0xE1A80 reads `SetModelNodesVisible`
+ * as a `nodes` list of per-node entries (`model`, `type`, `node`,
+ * `marker`, `visible`) rather than one model name, so the set below is
+ * never populated and neither `sceneHideDecide` nor `sceneNodeDecide`
+ * ever decides anything.  Both fail open, cost nothing when the shape
+ * does not appear, and would filter a vendor build that does send it.
+ * Whether to remove this or to re-apply the eye state after the
+ * environment switch is the open A/C decision in docs/ROADMAP.md.
  *
- *   SetModelsVisible names=[Project_2] reset=0 visible=0        (hide)
- *   SetModelsVisible names=[Project_1111, Project_2, Project_1000]
- *                  reset=1 visible=1                    (Mesh Model page)
+ * The eye icon tells the scene about itself, and this build does it through
+ * `SetModelNodesVisible`, one command per model - `SetModelsVisible` only
+ * appears when the whole list is addressed:
  *
- * Both directions go through one handler, so a request that is not passed
- * on simply never happens: nothing has to be re-hidden afterwards and no
- * timer is involved.  Entering the Mesh Model page asks to show
- * everything, so a show request that includes a model the user hid is not
- * forwarded at all - and because the viewport is then not touched, the
- * models that were visible stay exactly as they were.
+ *   SetModelsVisible    names=[Project_2] reset=0 visible=0        (hide)
+ *   SetModelsVisible    names=[Project_1111, Project_2, ...]
+ *                       reset=1 visible=1                (show everything)
+ *   SetModelNodesVisible model="Project_2" nodes=[...] visible=0   (hide)
+ *   SetModelNodesVisible model="Project_2" nodes=[...] visible=1   (show)
  *
- * What the user hid is remembered as a hash of the model name (a hash,
- * not the text - the name itself is only ever written to the local log).
- * The set is learned from the commands themselves, so it needs no mapping
- * between the project tree's uuid and the scene's name.
+ * Both go through one handler each, so a request that is not passed on simply
+ * never happens: nothing has to be re-hidden afterwards and no timer is
+ * involved.  A command that shows models while one of them is hidden is
+ * therefore dropped whole, and because the viewport is not touched, the models
+ * that were visible stay exactly as they were.
  *
- * Showing one hidden model is the user's own command (one name,
- * visible=1): it is passed on and removed from the set.  Switch
- * `scene_filter`; everything here fails open - a command that cannot be
- * read completely is always passed through.                             */
+ * What the user hid is remembered as a hash of the model name (a hash, not the
+ * text - the name itself is only ever written to the local log).  The set is
+ * learned from the commands themselves, so nothing has to map the project
+ * tree's uuid onto the scene's name.
+ *
+ * Only keys that name a MODEL are recorded (`model`, `name`, `names`,
+ * `models`); the sub-node lists a command also carries are deliberately
+ * ignored, because recording those could withhold a model the user never hid.
+ *
+ * Showing one hidden model is the user's own command (one name, visible=1): it
+ * is passed on and removed from the set.  Switch `scene_filter`; everything
+ * here fails open - a command that cannot be read completely is always passed
+ * through.                                                                */
 #define HID_MAX 64
 #define HID_TX  48
 #define CMD_MAX 32
@@ -2174,6 +2279,64 @@ static int sceneHideDecide(void *a0, void *a1, void *a2, void *a3,
     return 1;
 }
 
+/* The same rule for `SetModelNodesVisible`, which is what the Mesh Model page
+ * really sends: one command per model (28 of them in one press), carrying the
+ * model's name under `model` and the nodes to show.  Nothing about it is a
+ * guess: it is only acted upon when the argument answers as a command map
+ * with a `visible` tagged as a bool by Qt AND a `model` that reads as a name;
+ * anything else is passed through untouched.
+ *
+ * Withholding the whole command is what the eye asked for: the user hid this
+ * model, so a request to show its nodes is not what they want to happen.  A
+ * model shown again through its own eye is a `SetModelsVisible` of one name,
+ * which removes it from the set first, so this never traps a model. */
+static int sceneNodeDecide(void *a0, void *a1, void *a2, void *a3,
+                           void *a4, void *a5, void *a6, void *a7)
+{
+    void *cand[8];
+    int   i, i2;
+
+    if (g_hidCount < 1)
+        return 0;                     /* nothing hidden: stock behaviour */
+    cand[0] = a0; cand[1] = a1; cand[2] = a2; cand[3] = a3;
+    cand[4] = a4; cand[5] = a5; cand[6] = a6; cand[7] = a7;
+
+    for (i = 0; i < 8; i++) {
+        void              *qvVis, *qvModel;
+        int                vis = -1;
+        unsigned           tag = 0;
+        unsigned long long h = 0;
+        char               tx[HID_TX];
+
+        if (!plausiblePtr(cand[i]))
+            continue;
+        qvVis = qmapFind(cand[i], "visible");
+        if (!qvVis || !qvBool5(qvVis, &vis))
+            continue;                 /* no readable flag: pass it on */
+        if (!vis)
+            continue;                 /* hiding nodes is never the problem */
+        qvModel = qmapFind(cand[i], "model");
+        if (!qvModel || !qvTag5(qvModel, &tag) || tag != QT_STRING)
+            continue;
+        if (!qHashName5(qvModel, &h))
+            continue;
+        AcquireSRWLockShared(&g_hidLock);
+        i2 = hidIndex(h);
+        ReleaseSRWLockShared(&g_hidLock);
+        if (i2 < 0)
+            continue;                 /* a model the user did not hide */
+        if (InterlockedDecrement(&g_filterLogged) >= 0) {
+            if (!readQName5(qvModel, tx, (int)sizeof tx))
+                strcpy_s(tx, sizeof tx, "?");
+            g_host->log("merge_select: kept %s hidden - the mesh page asked "
+                        "to show its nodes and that request was not passed "
+                        "on; to bring it back show it with its own eye", tx);
+        }
+        return 1;
+    }
+    return 0;
+}
+
 /* the plugin registers handlers as { function, object } pairs and calls
  * them f(object, ...), so forwarding the argument registers untouched is
  * correct for every command signature.
@@ -2195,13 +2358,18 @@ static __int64 sceneCall(int idx, void *a0, void *a1, void *a2, void *a3,
 {
     if (g_sceneWatch && g_verbose && g_sceneLogged[idx] > 0)
         sceneProbe(idx, a0, a1, a2, a3, a4, a5, a6, a7);
-    /* only SetModelsVisible is acted upon: it is the command the project
-     * list uses and the one the Mesh Model page uses to show everything
-     * again (SetModelNodesVisible carries a different, nested argument
-     * shape - it is watched and logged, never changed) */
-    if (g_sceneFilter && idx == 0 && sceneHideDecide(a0, a1, a2, a3,
-                                                     a4, a5, a6, a7))
-        return 0;
+    /* `SetModelsVisible` is the project list's own command and the one an eye
+     * uses in both directions; the Mesh Model page shows models through
+     * `SetModelNodesVisible`, one command per model.  Both are filtered by
+     * the same rule (a model the user hid stays hidden), each by the shape it
+     * actually carries.  `SetCurrentEnv` switches the environment and is only
+     * watched: withholding it would leave the page on the wrong scene. */
+    if (g_sceneFilter) {
+        if (idx == 0 && sceneHideDecide(a0, a1, a2, a3, a4, a5, a6, a7))
+            return 0;
+        if (idx == 1 && sceneNodeDecide(a0, a1, a2, a3, a4, a5, a6, a7))
+            return 0;
+    }
     if (!g_sceneOrig[idx])
         return 0;
     return ((FnSceneCmd)g_sceneOrig[idx])(a0, a1, a2, a3, a4, a5, a6, a7);

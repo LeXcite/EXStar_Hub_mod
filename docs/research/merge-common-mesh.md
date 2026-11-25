@@ -316,6 +316,16 @@ The first line is one eye click. The second is the Mesh Model page: a
 request to show *every* project, sent twice per press. That request is
 the whole reason hidden scans came back.
 
+> **Corrected 2026-11-25, section 11.** Pressing **Mesh Model** with a
+> hidden row on the same product version produced neither line: one eye
+> click produced two `SetModelNodesVisible` commands and no
+> `SetModelsVisible`, and the press produced only `SetCurrentEnv`. The
+> two lines above were read live from a hooked handler, so they are real
+> - but they belong to the project list addressing every model at once,
+> not to a single eye and not to the Mesh Model page. Everything else in
+> this section describes a filter that, in practice, never had anything
+> to withhold.
+
 **Why interception is enough.** In the decompiled apply path
 (`FUN_1800fcd70`, reached from the handler for both directions) `reset`
 only decides the starting set - `reset == 0` starts from an empty list,
@@ -454,10 +464,232 @@ it now reports which combination decoded - the log line carries
 vendor update that moves something is visible in an ordinary start log
 instead of being discovered as a missing filter.
 
-Still open: one press of **Mesh Model** with a hidden row, on this build, to
-see the filter fire on a live `names` list of real project names. The
-watching hooks and the eye recorder are already in place for that; the
-expected log lines are `model hidden: <name>` followed by `kept N of M
-models hidden (...)`, with the hidden project staying hidden and the others
-untouched.
+That experiment was run on 2026-11-25 with module 1.5.6 (the build that
+logs every command argument it can read). It did not come out the way
+this section expected, and what it came out with is the rest of this
+document.
+
+## 11. One press of Mesh Model, logged end to end
+
+Build under test: `merge_select` 1.5.6
+(sha256 `D01B7BB101305018B810E9AB2A50EB26BD9E37BBB86274A0475FD7A090DDDB77`),
+`verbose = scene_watch = scene_filter = eye_gate = 1`, one project with
+three scans, the hub and `scanservice.exe` both hosting the module.
+Two scans hidden with their eyes, then **Mesh Model** pressed. Trimmed
+`mod.log` (`…\ExStarHubMods\mod.log`, timestamps are host-relative ms):
+
+```
+[78850937] eye-meta invoke idx=8 via ScanPage_E7.dll+0x3A521
+[78850937] eye F7E075F3-… -> hidden
+[78850937] scene SetModelNodesVisible (arg4) cmd="SetModelNodesVisible" nodes=1 [type8 …]
+[78850953] scene SetModelNodesVisible (arg4) cmd="SetModelNodesVisible" nodes=1 [type8 …]
+[78852609] eye 0267F028-… -> hidden
+[78852609] scene SetModelNodesVisible (arg4) …
+[78852609] scene SetModelNodesVisible (arg4) …
+[78854734] scene SetCurrentEnv (arg4) env="(unreadable)" showgroups=list? {ref:2 alloc:2 b:0 size:1} +10/h0=1(0) cmd="SetCurrentEnv"
+[78854812] gate uuid=4026A480-… ra=+0x7E3BB  identity unreadable (fail-open)  -> include
+[78854812] gate uuid=F7E075F3-… ra=+0x7E3BB  excluded in .ini  -> SKIP
+[78854812] gate uuid=0267F028-… ra=+0x7E3BB  excluded in .ini  -> SKIP
+[78856562] gate uuid=4026A480-… ra=+0x83097  identity unreadable (fail-open)  -> include
+[78856875] gate uuid=F7E075F3-… ra=+0x83097  excluded in .ini  -> SKIP
+[78856890] gate uuid=0267F028-… ra=+0x83097  excluded in .ini  -> SKIP
+[78860453] scene SetCurrentEnv (arg4) env="(unreadable)" showgroups=list? … cmd="SetCurrentEnv"
+```
+
+Read line by line, a press is:
+
+1. `SetCurrentEnv` - the page switches to the mesh environment;
+2. the merge itself, i.e. the two collection loops of section 1
+   (`+0x7E3BB` and `+0x83097`), where the gate answers per scan;
+3. a second `SetCurrentEnv` a few seconds later, when the result lands.
+
+Nothing else. Across the whole session - two eyes hidden, four presses -
+`SetModelsVisible` never appeared once, and no command naming a model
+appeared anywhere near a press. The gate is the only thing that decided
+what went into the mesh, and it excluded both hidden scans on every
+press (`excluded in .ini -> SKIP`, both loops).
+
+The `identity unreadable (fail-open)` on the surviving scan is the
+known scanservice limitation (section 7): in that process the scan's
+folder path cannot be read, so the `[uuid]` section is what carries the
+choice. Scans the ini does not mention are included, as stock.
+
+## 12. The command surface, enumerated
+
+Because "does a show-everything command exist at all" is a question about
+the *whole* surface and not about the three names the module watches, the
+registration blocks were enumerated offline. `tools\scmd_enum.ps1` walks
+`.text` for the same pair the module anchors on
+(`lea rdx,[rip+name]` … `lea rcx,[rip+code]` + `mov [rsp+d8],rcx`) and
+prints every pair. No RVA is hardcoded, the file is only read.
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\scmd_enum.ps1 `
+    -Dll 'C:\Program Files\Shining3d\EXStar Hub\sn3d.digit.scenecontrol.dll'
+```
+
+On 2.1.0-10 (`sn3d.digit.scenecontrol.dll`,
+sha256 `4c1a6e12e8ec6264ce4ebdbbd46d0fe751d5909e46f55530bce91bff3cf7b961`)
+that is 43 commands:
+
+```
+addModuleObject             +0xB99A0    QueryClipplaneState         +0xDB270
+adjustMeshTexture           +0xBA050    registrationFinished        +0xD82F0
+ApplyManualAlign            +0xCDC60    reloadClipPlane             +0xDD3F0
+cancelPlaneAlign            +0xCF230    removeModelHoeScrap         +0xDE4D0
+changeDisplayType           +0xBB970    RotationCenter              +0xDED50
+checkedManualAlignType      +0xD5EE0    sceneMouse                  +0xDF080
+clearManualAlign            +0xCF8F0    sendUUid                    +0xE5640
+createCutPlane              +0xCFA70    setAllModelMarkerVisible    +0xDF2B0
+createOrLoadSolutionFinished+0x8E800    SetCameraAlign              +0xDF4F0
+createPlaneByDrawLine       +0xCFE30    SetCurrentEnv               +0xE06D0
+curPrjSliceNames            +0xE3FB0    SetModelNodesVisible        +0xE1A80
+CutFaceSet                  +0xE5760    SetModelsSelectState        +0xE2630
+DeleteAll                   +0xD03B0    SetModelsVisible            +0xE2C90
+deleteSceneBasePlane        +0xC9CB0    setProjectionType           +0xFE4F0
+downSamples                 +0xD1390    setTextureVisible           +0xE3690
+finishAlign                 +0xD9300    showEncodeMarker            +0xD1A10
+finishFillHoles             +0xD2F40    showFrameMarker             +0xD3FC0
+finishHoles                 +0xD5550    showManualAlignModel        +0xCCED0
+finishPostProcessPointCloud +0x88370    showOriginAxis              +0xE3D60
+getDeleteObjDataFinish      +0xD1240    updateModelColorShowType    +0xE4250
+manualAlignUndoRedo         +0xC9FE0    updateModelMarker           +0xE4710
+model_matrix_change         +0xD6070
+```
+
+(`-Table` prints exactly this block, so the list above can be diffed
+against a vendor update with one command.)
+
+Two earlier attempts at the same question are kept for the record and did
+not work: `tools\scmd_lab.c` looked for the registration blocks as *data*
+and found one hit out of 43 (the pattern is too strict there), and
+`tools\qmeta_lab.c` tried to resolve Qt type ids through an exported
+`QMetaType::typeName` and stops with `QMetaType::typeName not found` on
+this Qt build. `tools\func_str.c` (strings and calls referenced inside
+one function) was written before the decompiler path was available and
+was not needed.
+
+Model visibility is changed by exactly two of them - `SetModelsVisible`
+and `SetModelNodesVisible`. `setTextureVisible`,
+`setAllModelMarkerVisible` and `showManualAlignModel` are a texture, the
+markers and the alignment preview. There is no third door, and no
+command that says "keep the hidden ones hidden".
+
+## 13. `keep_hide` is a cut-plane flag
+
+The string `keep_hide` (0x1801ab770) looked like the native switch worth
+finding, and it is not. It has one code reference in the plugin,
+`0x1800e83f7`, which sits inside the handler for `CutFaceSet`
+(`+0xE5760`, body `+0xE5760..+0xE8F15`), and it is read the way every
+other command key is read:
+
+```c
+local_be8 = QString::fromAscii_helper("keep_hide", 9);
+lVar27    = FUN_18001ade0(*in_stack_00000028, &local_be8);  /* map lookup */
+…
+*(bool *)((longlong)param_1 + 0x3b9) = QVariant::toBool(…);  /* private field */
+```
+
+So it is the cut/`delete below` option ("leave the cut-away part hidden")
+stored as a field of the controller, one of the same family as
+`belowHideDataState`, `white_plane` and `editable` in that metaobject
+string table. Model eyes are not involved.
+
+## 14. What "hidden" means to the scene
+
+Two findings from the decompiled handlers explain why the name-keyed
+filter could never fire:
+
+* **The eye's command is node-level, not model-level.** The handler at
+  `+0xE1A80` reads `nodes` and, per entry, the keys `model`, `type`,
+  `node`, `marker` and `visible` (`QVariant::toBool` for the flag), and
+  turns them into `ModelGeoNodeKey`s for that view
+  (`ModelNode::markerGeometryNode`, `ModelGeoNodeKey::ModelGeoNodeKey`).
+  There is no "model is hidden" bit to flip - only geometry nodes on a
+  specific view, which is also why an environment switch can redraw them
+  as visible without any command contradicting the eye.
+* **What the scene says about visibility is outbound.** `+0xCB360`
+  iterates `Sn3DCanvasView::models()`, splits them by a per-model
+  predicate into two `QStringList`s and publishes
+  `{cmd: "mainview_model_visible_change", view: <view>, show: […], hide: […]}`
+  through `CommonLib::Sn3DQObject::publish`. That is a status report of
+  what the main view currently draws, not a switch anyone can set. It is
+  also not in the command registry of section 12, so it cannot be hooked
+  as a command.
+
+The only place the eye's intent exists in a readable form is the
+project-list metacall `setNodeVisible(QUuid, bool)` in
+`ScanPage_E7.dll`, which the module already watches (section 7). That is
+a uuid, and the scene commands never carry a uuid - so the two halves
+still do not share a key.
+
+## 15. Two side findings worth keeping
+
+* **The environment switch defers its own work.** `onRecvSetCurrentEnv`
+  (`+0xE06D0`, ~4.9 KB, the handler the module hooks as `SetCurrentEnv`)
+  reads `showgroups` with `QVariant::toStringList`, writes the
+  `Environment` property, logs ` environment value newenv = ` /
+  ` environment value is scan newenv = ` / `PostProcess.Mesh`, and
+  imports `QTimer::singleShotImpl`. Anything that wants to "fix the view
+  after the switch" therefore has to be later than the handler return,
+  which is exactly the timing we refused to guess at.
+* **Visible point clouds travel through shared memory.** `+0x110960` is
+  the only code that calls
+  `Sn3DViewSelector::getVisibleStatesObjects` (`QMap<QString, ModelStateObject>`).
+  It keeps the geo nodes whose flag byte at `+0x28` matches `& 0x16`,
+  sizes a block from their keys and matrices and writes a counted list
+  into a `QSharedMemory` segment named `ConnectionDomain_PointCloud_FromClient<number>`.
+  The decompiler resolves no callers (it is reached indirectly), so this
+  is recorded as a mechanism, not as part of the merge input.
+
+## 16. Consequences, and the open decision
+
+Settled by the above:
+
+* the merge side is done and verified live: eyes write `[uuid] included`
+  to `merge-select.ini` once, it survives restarts, and every press of
+  **Mesh Model** excludes those scans in both collection loops;
+* the viewport side has nothing to intercept: the re-show is the
+  environment's own redraw, not a command, and the plugin exposes no
+  "keep hidden" state (sections 12 to 15);
+* therefore a name-keyed viewport filter (`scene_filter`,
+  `sceneHideDecide`, `sceneNodeDecide`) cannot work as designed. It is
+  inert today: the hidden-by-name set is never populated, because the
+  eye's command carries node keys the walk does not read and the press
+  carries no names at all.
+
+Two ways forward, undecided as of this writing:
+
+* **A - stop at the merge.** Remove the inert filter, keep `scene_watch`
+  as an opt-in diagnostic, ship the workflow the evidence supports.
+* **C - re-apply the eyes after the switch.** The module already holds
+  the controller, the metacall and the uuids, so re-hiding is one
+  `setNodeVisible(uuid, false)` per scan on the hub's own object - but
+  it is a vendor call from inside a hook during an environment apply,
+  and section 15 says the apply is deferred, so it needs the deferred
+  path understood first. This is the same class of call that produced
+  the five start-up crashes of section 9.
+
+## 17. Reproducing this evidence
+
+Nothing from the vendor's pseudocode is committed; the addresses and one
+digest reproduce it.
+
+```
+tools\scmd_enum.ps1 -Dll 'C:\Program Files\Shining3d\EXStar Hub\sn3d.digit.scenecontrol.dll'
+```
+
+For the pseudocode, open the same file (sha256 above, image base
+0x180000000) with any decompiler - the REA toolchain was used here
+(`open_binary`, then `decompile_all` over one range at a time) - and read
+these ranges:
+
+| range | what it is |
+|---|---|
+| `0x1800cb360..0x1800cbd08` | publishes `mainview_model_visible_change` |
+| `0x1800e06d0..0x1800e1a2d` | `onRecvSetCurrentEnv` (`SetCurrentEnv`) |
+| `0x1800e1a80..0x1800e262f` | `SetModelNodesVisible`, the eye's command |
+| `0x1800e2c90..0x1800e338f` | `SetModelsVisible` |
+| `0x1800e5760..0x1800e8f15` | `CutFaceSet`, where `keep_hide` is read (`0x1800e83f7`) |
+| `0x180110960..0x18011244e` | the `ConnectionDomain_PointCloud_FromClient` export |
 

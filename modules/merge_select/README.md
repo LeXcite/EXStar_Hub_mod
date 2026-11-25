@@ -1,6 +1,6 @@
 # Merge Selection (`merge_select`)
 
-**Version 1.5.5 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
+**Version 1.5.6 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
 
 ## What it does
 
@@ -32,8 +32,10 @@ exactly like stock.
 
 The everyday way: **hide the scan's row in the project list (eye
 icon)** - the next common-mesh build leaves it out. Show it again to
-bring it back. Everything below is the manual override for scripts and
-power users.
+bring it back. Once is enough: the choice is written into
+`merge-select.ini` and survives restarts, so later merges need no
+preparation at all. Everything below is the manual override for scripts
+and power users.
 
 1. Install/enable the module in the Mod Manager and start a common-mesh
    run once so the hub sees each scan.
@@ -66,20 +68,26 @@ hub is the only writer; the merge processes are readers.
 `eye_gate = 0` restores stock behaviour, explicit `[folder]` sections
 keep working, and everything stays fail-open.
 
-Since 1.5.0 the same hidden row also **stays hidden in the 3D view**.
-Opening the Mesh Model page used to redraw every scan of the project,
-because that page never asks the project tree - it sends the scene a
-named command instead (`SetModelsVisible names=[all projects]
-reset=1 visible=1`). The module resolves that command's handler at
-runtime from the command's *name* inside the scene plugin (again no
-RVAs), reads the request the way the vendor's own handler reads it, and
-simply does not pass on a request to show several models while one of
-them is hidden. Nothing is re-hidden afterwards, no timers are
-involved, and the models you left visible are not touched. Showing a
-single model is always your own click, so it goes through and is
-forgotten. `scene_filter = 0` restores stock behaviour; `scene_watch`
-only logs these commands. Neither switch affects what ends up in the
-merged mesh - that is `eye_gate`.
+Since 1.5.0 the module can also watch what the viewport is asked to
+show. The intent was to keep a hidden row hidden: opening the Mesh Model
+page appears to redraw every scan of the project, so 1.5.0 resolved the
+scene's `SetModelsVisible` handler at runtime from the command's *name*
+inside the scene plugin (no RVAs), read the request the way the vendor's
+own handler reads it, and did not pass on a request to show several
+models while one of them was hidden. Nothing re-hidden afterwards, no
+timers.
+
+**Live evidence for 1.5.6 says that request is not what the Mesh Model
+page sends** (`docs/research/merge-common-mesh.md`, sections 11 to 16):
+one eye click sends `SetModelNodesVisible` (node keys of one model on one
+view, no uuid), the press sends only `SetCurrentEnv` twice around the
+merge, and a full offline enumeration of the plugin's command registry
+(`tools\scmd_enum.ps1`, 43 commands) shows no command that keeps hidden
+models hidden. So on 2.1.0-10 `scene_filter` has nothing to withhold and
+never fires: the viewport coming back after a merge is the vendor's own
+environment redraw and does not change what ends up in the mesh.
+`scene_watch` stays useful as a diagnostic - it is what produced that
+evidence.
 
 Version 1.5.1 is the startup fix for that feature. Reading a command has
 become **pure memory inspection**: the Qt type tag of every value and the
@@ -133,9 +141,12 @@ unlisted scans are provably unaffected.
 | `eye_gate` | `1` | hidden eye = scan left out of the common mesh, persisted as `[uuid]` sections (explicit `.ini` sections still win) |
 | `gate_exes` | `EXStar Hub.exe,scanservice.exe,Sn3DprocessManager.exe` | processes allowed to hook the merge gate; every other host keeps an inert module |
 | `eyewatch_exes` | `EXStar Hub.exe` | processes allowed to watch the eye icons (the QML UI) |
-| `scene_watch` | `1` | log the scene's named commands (what the viewport is asked to show) |
-| `scene_filter` | `1` | keep models you hid hidden in the 3D view: a show-several-at-once request that includes a hidden model is not passed on |
+| `scene_watch` | `1` | log the scene's named commands (diagnostic: what the viewport is asked to show) |
+| `scene_filter` | `1` | withhold a `SetModelsVisible` that would show a hidden model again; on 2.1.0-10 nothing sends that command, so today it is inert (see the note above) |
 | `file` | stock path | full path to the selection `.ini` (the `.map.txt` sits next to it) |
+
+Neither `scene_*` switch changes what ends up in the merged mesh - that
+is `eye_gate` and the `.ini` sections.
 
 ## Relationship to a community patchset
 

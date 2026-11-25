@@ -35,7 +35,7 @@ not included in git).
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
 | fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
-| merge_select | 1.5.5 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch, hook allowlists) + the scene's own `SetModelsVisible` command filtered, so eye-hidden models stay hidden in the 3D view; 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`) |
+| merge_select | 1.5.6 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch, hook allowlists); 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`); 1.5.6 reads nested command values and proved the viewport half has nothing to intercept (see 2026-11-25 below) |
 | ExStarModManager | 1.6.8 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist; 1.6.8 shows the current `merge_select` version |
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
@@ -356,17 +356,19 @@ v1.0.0 + manager 1.5.0.
   race was caught in the self-test. Pending: one live multi-scan mesh
   run to confirm the excluded scan is gone from the merged result.
 
-## Batch "eye-bound mesh selection" (2026-11-24) — MERGE + VIEWPORT DONE
+## Batch "eye-bound mesh selection" (2026-11-24) — MERGE DONE, VIEWPORT CLOSED OUT (2026-11-25)
 
 Goal (user decision): the selection UI is the hub's own **eye icons** -
 a hidden scan row must not enter the common mesh. No manager clicks, no
 ini editing during work.
 
-Status: the merge half is live and user-verified twice (v1.4.7): hidden
-eye rows are persisted as `[uuid] included = 0` and both merge loops in
-`scanservice.exe` answer `SKIP`, so the final mesh contains only the
-visible scans. The viewport half shipped in 1.5.0 (scene command
-interception, see below) and is waiting for the same live check.
+Status: the merge half is live and user-verified repeatedly (1.4.7, and
+again with 1.5.6 on 2026-11-25): hidden eye rows are persisted as
+`[uuid] included = 0` and both merge loops in `scanservice.exe` answer
+`SKIP`, so the final mesh contains only the visible scans, on every press
+and across restarts. The viewport half is **closed as not implementable
+on this vendor build** - see the 1.5.0 entry below and
+[merge-common-mesh.md §§11-16](research/merge-common-mesh.md).
 
 * Live diagnosis: the scan-page "Mesh" flow never queries
   `isGenerateCloud` (it applies visibility itself), a cached mesh is
@@ -426,26 +428,63 @@ interception, see below) and is waiting for the same live check.
   contained only the scan left visible; project folders untouched.
 * 1.5.0 (viewport): the force-show is not a tree call at all. The scene
   is driven by **named commands** registered inside
-  `sn3d.digit.scenecontrol.dll`; the eye icon sends
-  `SetModelsVisible names=[Project_2] reset=0 visible=0`, and entering
-  the Mesh Model page sends `names=[Project_1111, Project_2,
-  Project_1000] reset=1 visible=1` - "show every project again" (live
-  log, three projects open). The module locates that handler by
-  anchoring on the command *name* in the plugin (no RVAs), reads the
-  `QVariantMap` with the vendor's own container layout, and does not
-  pass on a show-several-at-once request while one of the named models
-  is hidden - so the viewport is never touched and nothing has to be
-  re-hidden (no timers: that approach was rejected by the user). Hidden
-  models are remembered by a hash of the model name, in RAM; the scene
-  names models while the project tree uses QUuids, and the merge gate
-  keeps using the `[uuid]` sections. Analysis:
+  `sn3d.digit.scenecontrol.dll`; a hooked handler logged
+  `SetModelsVisible names=[Project_2] reset=0 visible=0` and, with
+  several projects open, `names=[Project_1111, Project_2, Project_1000]
+  reset=1 visible=1` - "show every project again". The module locates
+  that handler by anchoring on the command *name* in the plugin (no
+  RVAs), reads the `QVariantMap` with the vendor's own container layout,
+  and does not pass on a show-several-at-once request while one of the
+  named models is hidden - so the viewport is never touched and nothing
+  has to be re-hidden (no timers: that approach was rejected by the
+  user). Hidden models are remembered by a hash of the model name, in
+  RAM; the scene names models while the project tree uses QUuids, and
+  the merge gate keeps using the `[uuid]` sections. Analysis:
   [merge-common-mesh.md §8](research/merge-common-mesh.md). Switches:
   `scene_watch` (log), `scene_filter` (act).
-* Open: with models hidden, a show-everything request is dropped as a
-  whole, so a project that was hidden first and should come back with
-  the others has to be shown on its own. Live check of the new build
-  still due, including that a normal (nothing hidden) Mesh Model press
-  behaves exactly like stock.
+  **Those two log lines do not belong to an eye click or to a Mesh Model
+  press** - see the 2026-11-25 entry; the filter built on them has never
+  had anything to withhold.
+* 1.5.1-1.5.6 (hardening the read path): the argument readers became
+  pure memory inspection (1.5.0 handed a self-derived pointer to
+  `QVariant::typeName`/`toBool` and the hub faulted in `Qt5Core.dll` at
+  start-up - five dumps), the detour forwards all eight Microsoft x64
+  slots instead of four (`SetCurrentEnv` keeps its map beyond the
+  registers), the `QStringList` layout was measured against the shipped
+  Qt with the shipping reader (`qt_read.h`, `tools/qlist_lab.c`,
+  `tools/qlist_one.c`), and 1.5.6 walks nested values and reports the
+  layout it used. No crash dump since.
+* **2026-11-25, viewport closed out.** The live check (1.5.6, one
+  project, three scans, eyes hidden, four presses) showed neither
+  `SetModelsVisible` nor any model-naming command near a press: an eye
+  click sends two `SetModelNodesVisible` (node keys of one model on one
+  view), a press sends `SetCurrentEnv` twice around the merge, and the
+  gate excluded both hidden scans every time. An offline enumeration of
+  the plugin's registration blocks (`tools/scmd_enum.ps1`) lists **43
+  commands**, of which exactly two touch model visibility and none keeps
+  hidden models hidden; `keep_hide` turned out to be a
+  cut-plane/`CutFaceSet` flag written to a private field, and what the
+  scene says about visibility (`mainview_model_visible_change
+  {cmd, view, show[], hide[]}`) is an outbound status report, not a
+  switch. `onRecvSetCurrentEnv` even defers its own apply through
+  `QTimer::singleShotImpl`. Conclusion: the scans coming back on screen
+  are the vendor's environment redraw, not a request we can decline.
+  Full evidence, ranges and reproduction recipe:
+  [merge-common-mesh.md §§11-17](research/merge-common-mesh.md).
+  The 1.5.6 source additionally walks a command map past an unreadable
+  node (Qt's sentinel used to end the walk on the first one, which is
+  what hid the keys behind `nodes=1 [type8 …]` in the log); it builds
+  clean and is **not deployed** - it ships with whichever of A/C below is
+  chosen, so `mod.log` and the installed dll keep agreeing meanwhile.
+* Open decision on the viewport (user, 2026-11-25): **A** - keep the
+  verified merge behaviour, remove the inert `scene_filter`, leave
+  `scene_watch` as an opt-in diagnostic; or **C** - re-apply the eye
+  state after the environment switch by calling the project-list
+  controller's own `setNodeVisible(QUuid, bool)` metacall (controller,
+  metacall and uuids are already in hand), which needs the deferred
+  apply understood first and is the same class of vendor call that
+  caused the 1.5.0 start-up crashes. The merge result does not depend on
+  either.
 
 ## Open regressions
 
