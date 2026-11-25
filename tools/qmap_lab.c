@@ -101,9 +101,43 @@ static void walk(const void *node, const void *header, int depth)
         int n = try_str((const char *) node + koff, s, (int) sizeof s);
         printf("   key@+%d -> %s\n", koff, n >= 0 ? s : "(no)");
     }
-    for (int voff = 32; voff <= 48; voff += 8)
-        printf("   val@+%d -> userType=%d\n", voff,
-               try_type((const char *) node + voff));
+    for (int voff = 32; voff <= 48; voff += 8) {
+        int t = try_type((const char *) node + voff);
+
+        printf("   val@+%d -> userType=%d\n", voff, t);
+        if (t != 9 && t != 11)
+            continue;
+        /* a list value: dump the container header and every block the
+         * elements could live in, so the element position is measured
+         * rather than remembered from documentation */
+        {
+            const unsigned char *d = NULL;
+
+            __try {
+                d = *(const unsigned char *const *) ((const char *) node
+                                                      + voff);
+            } __except (EXCEPTION_EXECUTE_HANDLER) { d = NULL; }
+            printf("   LIST type=%d d=%p\n", t, (void *) d);
+            if (!d)
+                continue;
+            hdump("     d[0..0x30]", d, 0x30);
+            printf("     dwords 0=%d 4=%d 8=%d C=%d\n",
+                   *(const int *)(d + 0), *(const int *)(d + 4),
+                   *(const int *)(d + 8), *(const int *)(d + 12));
+            for (int o = 0x10; o <= 0x20; o += 8) {
+                const unsigned char *p = NULL;
+
+                __try {
+                    p = *(const unsigned char *const *)(d + o);
+                } __except (EXCEPTION_EXECUTE_HANDLER) { p = NULL; }
+                printf("     qword +%X = %p", o, (void *) p);
+                if (p && (uintptr_t) p > 0x10000)
+                    hdump(" block", p, 0x30);
+                else
+                    printf("\n");
+            }
+        }
+    }
     walk(r, header, depth + 1);
 }
 
@@ -115,7 +149,9 @@ int main(void)
     unsigned char *d, *h;
     unsigned char *root = NULL;
     static const char json[] =
-        "{\"alpha\":1,\"beta\":\"two\",\"gamma\":3.5,\"delta\":\"four\"}";
+        "{\"alpha\":1,\"beta\":\"two\",\"gamma\":3.5,\"delta\":\"four\","
+        "\"names\":[\"Project_1111\",\"Project_2\",\"Project_1000\"],"
+        "\"visible\":true}";
     char parseErr[16];
 
     memset(parseErr, 0, sizeof parseErr);

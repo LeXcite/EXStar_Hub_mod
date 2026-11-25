@@ -64,12 +64,15 @@
  *   the module log that once and stay out of the way.
  *
  * Safety:
- *   - the detour adds no failure paths of its own: the folder query
- *     and QString reads run under SEH and any fault falls back to the
- *     vendor's own answer;
- *   - it can only turn "yes" into "no" for an explicitly excluded,
- *   - existing scan, never the other way and never for an unlisted
+ *   - the detour adds no failure paths of its own: the folder query and
+ *     the whole decision half run under SEH, and any fault falls back to
+ *     the vendor's own answer;
+ *   - it can only turn "yes" into "no" for an explicitly excluded or
+ *     eye-hidden scan, never the other way and never for an unlisted
  *     scan;
+ *   - hooks are installed only in the processes named by `gate_exes` and
+ *     `eyewatch_exes`; every other host of the module stays completely
+ *     inert (a hook in an unrelated service can take that service down);
  *   - installation happens on one module thread only (the DLL-load
  *     notification merely wakes it): MinHook is never touched while
  *     the loader lock is held, and concurrent install races cannot
@@ -83,7 +86,8 @@
  * driven by `mesh-selection.ini` with scan-UUID sections in the same
  * folder. The two mechanisms are independent and AND together (either
  * one excluding a scan takes it out of the merge). This module never
- * reads or writes those UUID sections.
+ * reads or writes that file; the eye state is stored as [uuid] sections
+ * in merge-select.ini, the module's own file.
  *
  * History:
  *   1.0.0  initial version; vendor merge path (common-mesh collection
@@ -94,6 +98,47 @@
  *          "sendPrjsMeshDataToFZ" senders and the uuidHideList payload
  *          key verified in the disassembly; manager gains the roster
  *          dialog that edits the selection file.
+ *   1.5.0  scene command watch: the 3D view is driven by NAMED commands
+ *          registered inside sn3d.digit.scenecontrol.dll, and that is
+ *          where the vendor re-shows scans the user hid (the Mesh Model
+ *          page never touches the project tree).  Handlers are found by
+ *          anchoring on the command name - no RVAs - and their
+ *          QVariantMap argument is read the way the vendor's own handler
+ *          reads it.  Switch `scene_watch`.
+ *   1.5.1  startup fix, two faults of 1.5.0 found in the crash dumps
+ *          (Qt5Core access violation, same RVA on every start):
+ *          - command values were read by calling Qt itself
+ *            (QVariant::typeName/toBool).  A pointer this module derived
+ *            from its own idea of a tree was handed to vendor code, and
+ *            vendor code walked off it.  Values are read as memory now:
+ *            the type tag at +0x08 (from the disassembly of the shipped
+ *            Qt5Core).  No Qt call anywhere.
+ *          - the detour forwarded four argument registers only, so a
+ *            handler that reads a fifth argument from the shadow area got
+ *            the detour's frame instead of the caller's.  All eight
+ *            parameter slots are handed on now.
+ *          Switch `scene_filter` keeps a model the user hid hidden: a
+ *          show-everything request that includes it is not passed on, and
+ *          since the viewport is not touched, nothing has to be re-shown.
+ *   1.5.2  the value layout measured instead of inferred, with
+ *          tools\qv_layout.c and tools\qmap_lab.c run against the shipped
+ *          Qt5Core (they build real QVariants / a real QVariantMap out of
+ *          exported functions and print the bytes):
+ *          - the payload is at +0x00, not +0x10 (a bool is the first byte,
+ *            a QString is the one pointer Qt itself stores there), so the
+ *            tag at +0x08 and the payload at +0x00 are all that is read.
+ *          - a QString is copied up to the NUL that Qt counts inside
+ *            `size`; keys that had arrived as "cmd\0" never matched.
+ *          - a QList header is accepted with either word order, and the
+ *            empty list (the state at startup) stays a pass-through.
+ *          - the probe and the filter look at all eight argument slots.
+ *            Live proof they are needed: SetCurrentEnv carries its command
+ *            map in arg4, which is exactly the argument 1.5.0 replaced with
+ *            its own stack.
+ *          - a list that cannot be parsed is now described as bytes in the
+ *            log (where the data pointer is, the header words, what each
+ *            candidate element offset reads as) instead of being dropped,
+ *            so a moved Qt shows up as data rather than as silence.
  */
 
 #include <windows.h>
@@ -103,8 +148,9 @@
 #include <intrin.h>
 
 #include "exstar_sdk.h"
+#include "qt_read.h"
 
-#define MOD_VERSION   "1.4.7"
+#define MOD_VERSION   "1.5.5"
 
 #define SEL_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.ini"
 #define MAP_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.map.txt"
@@ -851,6 +897,56 @@ static int g_metaSeenN;
 typedef void (*FnMeta)(void *, int, int, void **);
 static FnMeta g_origMeta;
 
+/* ---- scene command watch (v1.5.0) -----------------------------------
+ * What the Mesh Model page does to the viewport is not a project-tree
+ * call: no `setNodeVisible` happens there (verified in the vendor log
+ * around `handleBtnMesh`).  It switches the *scene environment*
+ * (`ScanSceneView_E7.qml: setCurrentEnvironment PostProcessPointCloud`
+ * -> `ScanSceneViewController.qml: setCurrentEnvironment showgroups`
+ * -> `SceneControllerPrivate::onRecvSetCurrentEnv`), and the scene
+ * draws the scans of the project again.
+ *
+ * The scene is driven by NAMED commands.  `sn3d.digit.scenecontrol.dll`
+ * registers its handlers in one constructor, as repeated blocks:
+ *
+ *     lea rdx,[rip+"SetModelsVisible"]     ; command name
+ *     lea rcx,[rbp+var]  /  call [QString::QString]
+ *     ...
+ *     lea rcx,[rip+handler]                ; the handler itself
+ *     mov [rsp+30],rcx
+ *
+ * So the handler is found by anchoring on the *name* - no RVA anywhere.
+ * Hooking it is what the user asked for: the vendor's own "show these
+ * models" request is read where it is made, and a scan the user hid
+ * through the eye icon is simply never re-shown.
+ *
+ * Reading the argument needs no guessing either: the vendor's handler
+ * walks its QVariantMap exactly as `qmapFind` below does (its own
+ * decompiled body looks up "names"/"visible"/"reset" the same way).
+ *
+ * Verified live, in the hub's own log (three projects open):
+ *
+ *   scene SetModelsVisible (arg1) names=[Project_2] reset=0 visible=0
+ *   scene SetModelsVisible (arg1) names=[Project_1111, Project_2,
+ *                                          Project_1000] reset=1 visible=1
+ *
+ * i.e. the eye icon hides by name, and entering the Mesh Model page asks
+ * to show every project again - that second command is what used to bring
+ * hidden scans back on screen.  Both switches are UI-process only:
+ * `scene_watch` logs the commands, `scene_filter` keeps hidden models
+ * hidden by not passing a show-everything request on.                   */
+static int                g_sceneWatch = 1;
+static int                g_sceneFilter = 1;
+static volatile LONG      g_sceneDone;
+static HMODULE            g_scMod;
+
+#define SCENE_N 3
+static const char *const  g_sceneCmd[SCENE_N]
+    = { "SetModelsVisible", "SetModelNodesVisible", "SetCurrentEnv" };
+static void              *g_sceneOrig[SCENE_N];
+static volatile LONG      g_sceneLogged[SCENE_N] = { 60, 30, 20 };
+static volatile LONG      g_listHowLogged;      /* list layout named once */
+
 static const char *metaCallName(int c)
 {
     switch (c) {
@@ -1321,20 +1417,19 @@ static int metaStr(const unsigned char *D, int idx, char *out, int cap)
     return 1;
 }
 
-/* one pass over the ScanPage_E7 image looking for the controller's
- * QMetaObject; 1 = done (hooked or definitively not here) */
-static int eyeTry(void)
+/* one pass over an image looking for the QMetaObject of class `cls`,
+ * returning its qt_static_metacall plus the index of method `mth`.
+ * Everything is found at runtime (no hard-coded RVAs), so a vendor
+ * update that moves code cannot make the module hook the wrong bytes;
+ * the whole walk is SEH-guarded and simply reports "not found". */
+static int metaFind(HMODULE m, const char *cls, const char *mth,
+                    void **fOut, int *idxOut,
+                    unsigned long long *moRvaOut)
 {
-    HMODULE m = GetModuleHandleA("ScanPage_E7.dll");
-    unsigned char *base;
+    unsigned char *base = (unsigned char *)m;
     IMAGE_NT_HEADERS *nt;
     IMAGE_SECTION_HEADER *sec;
-    int s, found = 0;
-
-    if (!m)
-        return 0;
-    base = (unsigned char *)m;
-    InterlockedExchange(&g_eyeDone, 1);       /* one attempt is enough */
+    int s;
 
     __try {
         nt = (IMAGE_NT_HEADERS *)(base + *(const int *)(base + 0x3C));
@@ -1355,7 +1450,7 @@ static int eyeTry(void)
                 const unsigned char *D;
                 void *F;
                 int revision, cidx, methodCount;
-                char cls[64], name[64];
+                char got[64], name[64];
 
                 U = *(const unsigned int *const *)(q + 0x10);
                 D = *(const unsigned char *const *)(q + 0x08);
@@ -1377,11 +1472,11 @@ static int eyeTry(void)
                 if (revision < 7 || revision > 200)
                     continue;
                 cidx = (int)U[1];
-                if (!metaStr(D, cidx, cls, sizeof cls)
-                    || strcmp(cls, "ProjectListControllerE7") != 0)
+                if (!metaStr(D, cidx, got, sizeof got)
+                    || strcmp(got, cls) != 0)
                     continue;
                 methodCount = (int)U[4];
-                if (methodCount < 9)
+                if (methodCount <= 0)
                     continue;
                 /* this vendor's moc layout: 5 uints per method entry,
                  * table starts at U[U[5]]; entry 0 is index 0 */
@@ -1390,40 +1485,895 @@ static int eyeTry(void)
                     int e;
                     for (e = 0; e < methodCount; e++)
                         if (metaStr(D, (int)md[e * 5], name, sizeof name)
-                            && strcmp(name, "setNodeVisible") == 0)
+                            && strcmp(name, mth) == 0)
                             break;
                     if (e >= methodCount)
                         continue;
-                    g_eyeIdx = e;
+                    *idxOut = e;
                 }
-                g_host->log("merge_select: eye controller found: "
-                            "metaobject=+%llX metacall=+%llX "
-                            "setNodeVisible idx=%d",
-                            (unsigned long long)(q - base),
-                            (unsigned long long)
-                                ((unsigned char *)F - base),
-                            g_eyeIdx);
-                if (g_host->hook(F, (void *)det_meta, (void **)&g_origMeta))
-                    g_host->log("merge_select: eye watch armed "
-                                "(recording show/hide events, "
-                                "no behaviour change)");
-                else
-                    g_host->log("merge_select: eye metacall hook refused");
-                found = 1;
-                break;
+                *fOut = F;
+                *moRvaOut = (unsigned long long)(q - base);
+                return 1;
             }
-            if (found)
-                break;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        g_host->log("merge_select: eye scan faulted - watch disabled");
+        g_host->log("merge_select: meta scan of %s faulted", cls);
     }
-    if (!found && g_verbose)
-        g_host->log("merge_select: eye controller not found in "
-                    "ScanPage_E7.dll - watch disabled");
+    return 0;
+}
+
+/* 1 = done (hooked or definitively not here) */
+static int eyeTry(void)
+{
+    HMODULE m = GetModuleHandleA("ScanPage_E7.dll");
+    void *F = NULL;
+    int idx = -1;
+    unsigned long long mo = 0;
+
+    if (!m)
+        return 0;
+    InterlockedExchange(&g_eyeDone, 1);       /* one attempt is enough */
+
+    if (!metaFind(m, "ProjectListControllerE7", "setNodeVisible",
+                  &F, &idx, &mo)) {
+        if (g_verbose)
+            g_host->log("merge_select: eye controller not found in "
+                        "ScanPage_E7.dll - watch disabled");
+        return 1;
+    }
+    g_eyeIdx = idx;
+    g_host->log("merge_select: eye controller found: "
+                "metaobject=+%llX metacall=+%llX setNodeVisible idx=%d",
+                mo, (unsigned long long)((unsigned char *)F
+                                         - (unsigned char *)m), g_eyeIdx);
+    if (g_host->hook(F, (void *)det_meta, (void **)&g_origMeta))
+        g_host->log("merge_select: eye watch armed "
+                    "(recording show/hide events, no behaviour change)");
+    else
+        g_host->log("merge_select: eye metacall hook refused");
     return 1;
 }
 
+/* ---- scene command watch (v1.5.0) ---------------------------------- */
+
+/* readQName5() and plausiblePtr(): see qt_read.h (measured by tools\qlist_lab.c) */
+/* QMap<QString,QVariant>: the map object is one pointer to its data, the
+ * root sits at data+0x10 and a node is { left = +0x8, right = +0x10,
+ * key QString = +0x18, value QVariant = +0x20 } - the vendor's own
+ * handlers walk exactly these offsets when they look up "names",
+ * "visible" and "reset".  Returns the address of the value, or NULL. */
+static void *qmapFind(void *mapObj, const char *key)
+{
+    char *d = NULL, *n = NULL;
+    int guard = 0;
+
+    if (!plausiblePtr(mapObj) || !key)
+        return NULL;
+    __try {
+        d = *(char **)mapObj;
+        if (!plausiblePtr(d))
+            return NULL;
+        n = *(char **)(d + 0x10);
+        while (plausiblePtr(n) && ++guard < 64) {
+            char k[48];
+            int c;
+
+            if (!readQName5(n + 0x18, k, (int)sizeof k))
+                break;
+            c = strcmp(k, key);
+            if (c == 0)
+                return n + 0x20;
+            n = *(char **)(n + (c < 0 ? 0x10 : 0x08));
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return NULL;
+}
+
+/* QLIST, qlistRead() and qlistElem(): see qt_read.h */
+
+/* the same list as text, for the log (up to six entries).  `howOut`, when
+ * given, also names the layout that decoded, which is how the offsets in
+ * qt_read.h get confirmed - or corrected - from the log of a real run. */
+static int qvListDump(const void *qv, char *out, int cap,
+                      char *howOut, int howCap)
+{
+    QLIST L;
+    int i, used;
+
+    out[0] = 0;
+    if (howOut && howCap > 0)
+        howOut[0] = 0;
+    if (!qlistRead(qv, &L, howOut, howCap))
+        return 0;
+
+    __try {
+        used = _snprintf_s(out, cap, _TRUNCATE, "%d [", L.size);
+        used = used < 0 ? (int)strlen(out) : used;
+        for (i = 0; i < L.size && i < 6; i++) {
+            char nm[160];
+
+            if (!readQName5(qlistElem(&L, i), nm, sizeof nm))
+                nm[0] = 0;
+            _snprintf_s(out + used, cap - used, _TRUNCATE,
+                        "%s%s", i ? ", " : "", nm);
+            used += (int)strlen(out + used);
+            if (used >= cap - 40)
+                break;
+        }
+        _snprintf_s(out + used, cap - used, _TRUNCATE,
+                    i < L.size ? ", ...]" : "]");
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    return 1;
+}
+
+/* a guarded hex dump of n bytes; "" when the memory cannot be read */
+static void qvBytes(const void *p, int n, char *out, int cap)
+{
+    const unsigned char *b = (const unsigned char *)p;
+    int i, used = 0;
+
+    out[0] = 0;
+    if (!plausiblePtr(b) || n < 1)
+        return;
+    __try {
+        for (i = 0; i < n && used < cap - 4; i++)
+            used += _snprintf_s(out + used, cap - used, _TRUNCATE,
+                                "%02X", b[i]);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out[0] = 0;
+        return;
+    }
+    out[used] = 0;
+}
+
+/* A list this reader could NOT parse, described as bytes rather than as a
+ * guess: the four header words, the raw block, and for each candidate
+ * (entry offset, hop) how many leading entries read as a name.  One normal
+ * start of the hub then says where Qt really keeps the items and which
+ * reading came closest, so the search above can be corrected from a log
+ * instead of from a debugger.  Guarded, bounded, reads only. */
+static void qvListDiag(const void *qv, char *out, int cap)
+{
+    static const int baseAt[3] = { 0x10, 0x18, 0x20 };
+    static const int hops[2]   = { 0, 1 };
+    unsigned char *d;
+    char hex[97];
+    int b, h, used = 0;
+
+    out[0] = 0;
+    if (!plausiblePtr(qv))
+        return;
+    __try {
+        d = *(unsigned char **)(void *)qv;
+        if (!plausiblePtr(d)) {
+            strcpy_s(out, cap, "no data pointer");
+            return;
+        }
+        qvBytes(d, 48, hex, (int)sizeof hex);
+        used += _snprintf_s(out, cap, _TRUNCATE,
+                            "d=%p{ref:%d alloc:%d +8:%d size:%d} %s", (void *)d,
+                            *(int *)(d + 0), *(int *)(d + 4),
+                            *(int *)(d + 8), *(int *)(d + 12), hex);
+        if (used < 0)
+            used = (int)strlen(out);
+
+        /* what sits behind the first entry answers the only open question -
+         * whether the entry IS the QString or points at it - so it comes
+         * first and is never squeezed out by the candidate counts below */
+        if (used < cap - 140) {
+            unsigned char *e = *(unsigned char **)(d + 0x10);
+
+            if (plausiblePtr(e)) {
+                int len = -1;
+
+                qvBytes(e, 32, hex, (int)sizeof hex);
+                used += _snprintf_s(out + used, cap - used, _TRUNCATE,
+                                    " | e=%p{size:%d off:%lld} %s valid:%d",
+                                    (void *)e, *(int *)(e + 8),
+                                    *(long long *)(e + 16), hex,
+                                    qStrSize5(d + 0x10, &len));
+            }
+        }
+
+        for (b = 0; b < 3 && used < cap - 40; b++) {
+            for (h = 0; h < 2 && used < cap - 40; h++) {
+                int i, named = 0;
+
+                for (i = 0; i < 4; i++) {
+                    const unsigned char *slot = d + baseAt[b] + (size_t)i * 8;
+                    const void *at = slot;
+                    int len = -1;
+
+                    if (hops[h]) {
+                        at = *(const void *const *)slot;
+                        if (!plausiblePtr(at))
+                            break;
+                    }
+                    if (!qStrSize5(at, &len))
+                        break;
+                    if (len > 0)
+                        named++;
+                }
+                used += _snprintf_s(out + used, cap - used, _TRUNCATE,
+                                    " | +%X hop%d = %d/%d", baseAt[b], hops[h],
+                                    named, i);
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    if (used < 0)
+        out[0] = 0;
+    out[cap - 1] = 0;
+}
+
+/* ---- QVariant read as data (v1.5.1) ---------------------------------
+ * v1.5.0 asked Qt what a value was (QVariant::typeName, QVariant::toBool).
+ * That is a call into vendor code with a pointer this module derived from
+ * its own idea of a tree, and the hub died in Qt5Core with an access
+ * violation on every start.  Qt is not called here any more.
+ *
+ * The layout is MEASURED, not recalled.  `tools\qv_layout.c` loads the very
+ * Qt5Core.dll the product ships, builds QVariants through their exported
+ * constructors and prints the bytes:
+ *
+ *   QVariant(true)    01 cd..   01 00 00 00 cd..   payload +0x00, tag +0x08
+ *   QVariant(false)   00 cd..   01 00 00 00 cd..
+ *   QVariant(QString) <ptr>     0A 00 00 00 cd..   tag 10 = QString
+ *
+ * so a QVariant is 16 bytes: payload in the first qword, type tag in the 30
+ * low bits of the dword at +0x08 - which is also what Qt's own accessors
+ * read (`typeName` and `toBool` both begin with mov edx,[rcx+8] / and
+ * edx,3FFFFFFF).  A QString in this build is a single pointer, with its
+ * data behind the array header, exactly as readQName5() assumes.  Every
+ * read is guarded, and a tag or a payload byte that does not fit means "no
+ * value" - never a guess.                                                 */
+#define QT_VARIQLIST  9          /* QMetaType::QVariantList  */
+#define QT_BOOL       1          /* QMetaType::Bool          */
+#define QT_STRING    10          /* QMetaType::QString       */
+#define QT_STRLIST   11          /* QMetaType::QStringList   */
+
+/* 1 = this looks like a QVariant, *tagOut is its Qt type id */
+static int qvTag5(const void *qv, unsigned *tagOut)
+{
+    unsigned t = 0;
+
+    if (tagOut)
+        *tagOut = 0;
+    if (!plausiblePtr(qv))
+        return 0;
+    __try {
+        t = *(const unsigned *)((const char *)qv + 0x08) & 0x3FFFFFFFu;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    if (tagOut)
+        *tagOut = t;
+    return t != 0;
+}
+
+/* the bool a command asked for.  Only a value Qt itself tagged Bool has a
+ * say: any other tag, or a payload byte that is not 0/1, leaves the caller
+ * with no decision (which always means stock behaviour). */
+static int qvBool5(const void *qv, int *valOut)
+{
+    unsigned tag = 0;
+    int b = 2;
+
+    if (valOut)
+        *valOut = -1;
+    if (!qvTag5(qv, &tag) || tag != QT_BOOL)
+        return 0;
+    __try {
+        b = *(const unsigned char *)qv;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    if (b > 1)
+        return 0;                     /* not a bool after all */
+    if (valOut)
+        *valOut = b;
+    return 1;
+}
+
+/* raw bytes of a value, for the log: what the reader sees, so a layout
+ * that stops matching is visible in one line instead of being silent */
+static void qvRaw(const void *qv, char *out, int cap)
+{
+    const unsigned char *b = (const unsigned char *)qv;
+    int i, used = 0;
+
+    out[0] = 0;
+    if (!plausiblePtr(qv)) {
+        strcpy_s(out, cap, "?");
+        return;
+    }
+    __try {
+        for (i = 0; i < 8; i++)          /* the payload qword and the tag */
+            used += _snprintf_s(out + used, cap - used, _TRUNCATE,
+                                "%02X%02X ", b[i * 2], b[i * 2 + 1]);
+        if (used < 0)
+            used = (int)strlen(out);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out[0] = 0;
+    }
+}
+
+/* one command value as text: tag first, then the payload that tag
+ * describes.  bool through qvBool5, QString inline in the variant,
+ * QStringList as a QList of QString; anything else is its tag plus the raw
+ * bytes.  Nothing here calls Qt, so a value that is not what it pretends
+ * to be is only ever a line in the log, never a fault. */
+static void qvDescribe(const void *qv, char *out, int cap)
+{
+    unsigned tag = 0;
+    char s[200];
+    int b = -1;
+
+    out[0] = 0;
+    if (!plausiblePtr(qv)) {
+        strcpy_s(out, cap, "?");
+        return;
+    }
+    if (!qvTag5(qv, &tag)) {
+        qvRaw(qv, s, (int)sizeof s);
+        _snprintf_s(out, cap, _TRUNCATE, "raw %s", s);
+        return;
+    }
+
+    if (tag == QT_BOOL) {
+        if (qvBool5(qv, &b))
+            strcpy_s(out, cap, b ? "1" : "0");
+        else
+            strcpy_s(out, cap, "bool?");
+        return;
+    }
+    if (tag == QT_STRING) {
+        if (!readQName5(qv, s, (int)sizeof s)
+            && !readQName5((const char *)qv + 0x10, s, (int)sizeof s))
+            strcpy_s(s, sizeof s, "(unreadable)");
+        _snprintf_s(out, cap, _TRUNCATE, "\"%s\"", s);
+        return;
+    }
+    if (tag == QT_STRLIST || tag == QT_VARIQLIST) {
+        char how[64];
+
+        if (qvListDump(qv, s, (int)sizeof s, how, (int)sizeof how)) {
+            /* naming the layout once proves the offsets against a real list
+             * of the hub's own model names; repeating it on every command
+             * would only fill the log */
+            if (InterlockedExchange(&g_listHowLogged, 1) == 0)
+                _snprintf_s(out, cap, _TRUNCATE, "%s via %s", s, how);
+            else
+                _snprintf_s(out, cap, _TRUNCATE, "%s", s);
+        } else {
+            /* not readable as a list: say what it looks like instead, so a
+             * Qt that moved its QList shows up as data in the log */
+            char dg[420];
+
+            qvListDiag(qv, dg, (int)sizeof dg);
+            qvRaw(qv, s, (int)sizeof s);
+            _snprintf_s(out, cap, _TRUNCATE, "list? %s%s%s", s,
+                        dg[0] ? " ; " : "", dg);
+        }
+        return;
+    }
+    /* unknown tag: the tag plus the bytes behind it, so the layout of a
+     * value this reader does not know yet can be worked out from the log */
+    qvRaw(qv, s, (int)sizeof s);
+    _snprintf_s(out, cap, _TRUNCATE, "type%u %s", tag, s);
+}
+
+/* is this argument a QVariantMap?  Rather than looking only for the keys
+ * we already know, the tree is enumerated and every key present is
+ * reported - so the probe is also useful for commands whose argument
+ * names have not been read in the binary yet.  Bounded (nodes, keys,
+ * output), read-only, guarded. */
+static int qmapDump(void *mapObj, char *out, int cap, int *cntOut)
+{
+    char  *stack[40], *d = NULL, *n;
+    int    sp = 0, cnt = 0, used = 0;
+
+    out[0] = 0;
+    if (cntOut)
+        *cntOut = 0;
+    if (!plausiblePtr(mapObj))
+        return 0;
+
+    __try {
+        d = *(char **)mapObj;
+        if (!plausiblePtr(d))
+            return 0;
+        n = *(char **)(d + 0x10);          /* the tree root */
+        if (!plausiblePtr(n))
+            return 0;
+        stack[sp++] = n;
+        while (sp > 0 && cnt < 8) {
+            char  key[48], val[220];
+            char *l, *r;
+
+            n = stack[--sp];
+            if (!plausiblePtr(n))
+                continue;
+            l = *(char **)(n + 0x08);
+            r = *(char **)(n + 0x10);
+            if (!readQName5(n + 0x18, key, (int)sizeof key))
+                break;                     /* not a key/value tree */
+            qvDescribe(n + 0x20, val, (int)sizeof val);
+            used += _snprintf_s(out + used, cap - used, _TRUNCATE,
+                                "%s%s=%s", cnt ? " " : "", key, val);
+            if (used < 0)
+                used = (int)strlen(out);
+            cnt++;
+            if (plausiblePtr(l) && sp < (int)(sizeof stack) - 1)
+                stack[sp++] = l;
+            if (plausiblePtr(r) && sp < (int)(sizeof stack) - 1)
+                stack[sp++] = r;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    if (cntOut)
+        *cntOut = cnt;
+    return cnt > 0;
+}
+
+/* what a scene command was asked to do; purely diagnostic - the original
+ * handler always runs afterwards.  All eight argument slots are offered:
+ * SetCurrentEnv keeps its command map beyond the four registers, which is
+ * exactly why a detour that forwards four of them broke the hub. */
+static void sceneProbe(int idx, void *a0, void *a1, void *a2, void *a3,
+                       void *a4, void *a5, void *a6, void *a7)
+{
+    void *cand[8];
+    char  dump[900];
+    int   i, which = -1, cnt = 0;
+
+    cand[0] = a0; cand[1] = a1; cand[2] = a2; cand[3] = a3;
+    cand[4] = a4; cand[5] = a5; cand[6] = a6; cand[7] = a7;
+    for (i = 0; i < 8; i++)
+        if (qmapDump(cand[i], dump, (int)sizeof dump, &cnt) && cnt > 0) {
+            which = i;
+            break;
+        }
+    if (which < 0) {
+        if (InterlockedDecrement(&g_sceneLogged[idx]) >= 0) {
+            char raw[80];
+
+            qvRaw(a1, raw, (int)sizeof raw);
+            g_host->log("merge_select: scene %s - no command map among "
+                        "a0=%p a1=%p a2=%p a3=%p a4=%p a5=%p (a1 bytes: %s)",
+                        g_sceneCmd[idx], a0, a1, a2, a3, a4, a5, raw);
+        }
+        return;
+    }
+    if (InterlockedDecrement(&g_sceneLogged[idx]) >= 0)
+        g_host->log("merge_select: scene %s (arg%d) %s",
+                    g_sceneCmd[idx], which, dump);
+}
+
+/* ---- keeping the models you hid hidden ------------------------------
+ *
+ * The eye icon does not only hide a row in the project list, it also
+ * tells the scene about it - through the very same command:
+ *
+ *   SetModelsVisible names=[Project_2] reset=0 visible=0        (hide)
+ *   SetModelsVisible names=[Project_1111, Project_2, Project_1000]
+ *                  reset=1 visible=1                    (Mesh Model page)
+ *
+ * Both directions go through one handler, so a request that is not passed
+ * on simply never happens: nothing has to be re-hidden afterwards and no
+ * timer is involved.  Entering the Mesh Model page asks to show
+ * everything, so a show request that includes a model the user hid is not
+ * forwarded at all - and because the viewport is then not touched, the
+ * models that were visible stay exactly as they were.
+ *
+ * What the user hid is remembered as a hash of the model name (a hash,
+ * not the text - the name itself is only ever written to the local log).
+ * The set is learned from the commands themselves, so it needs no mapping
+ * between the project tree's uuid and the scene's name.
+ *
+ * Showing one hidden model is the user's own command (one name,
+ * visible=1): it is passed on and removed from the set.  Switch
+ * `scene_filter`; everything here fails open - a command that cannot be
+ * read completely is always passed through.                             */
+#define HID_MAX 64
+#define HID_TX  48
+#define CMD_MAX 32
+
+typedef struct {
+    unsigned long long h;
+    char               text[HID_TX];
+} HidEnt;
+
+static HidEnt          g_hid[HID_MAX];
+static int             g_hidCount;
+static SRWLOCK         g_hidLock = SRWLOCK_INIT;
+static volatile LONG   g_hideLogged   = 80;
+static volatile LONG   g_filterLogged = 200;
+
+/* FNV-1a over the QString's UTF-16 units, read under a guard */
+static int qHashName5(const void *qstr, unsigned long long *hOut)
+{
+    const unsigned char *d = NULL, *pl = NULL;
+    unsigned long long h = 14695981039346656037ULL;
+    long long off = 0;
+    int size = -1, i;
+
+    __try {
+        if (!qstr)
+            return 0;
+        d = *(const unsigned char *const *)qstr;
+        if (!d)
+            return 0;
+        size = *(const int *)(d + 8);
+        off  = *(const long long *)(d + 16);
+        pl   = d + (off ? off : 24);
+        if (size <= 0 || size > 4096)
+            return 0;
+        {
+            const unsigned short *u = (const unsigned short *)pl;
+
+            for (i = 0; i < size; i++) {
+                h ^= u[i];
+                h *= 1099511628211ULL;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    *hOut = h;
+    return 1;
+}
+
+/* every name in a command's `names` list: hash plus (for the log) text */
+static int cmdNames(void *qv, unsigned long long *hs, char (*tx)[HID_TX],
+                    int *cntOut)
+{
+    QLIST L;
+    int i, n = 0;
+
+    if (cntOut)
+        *cntOut = 0;
+    if (!qlistRead(qv, &L, NULL, 0) || L.size > CMD_MAX)
+        return 0;
+    __try {
+        for (i = 0; i < L.size; i++) {
+            unsigned long long h = 0;
+            const void *item = qlistElem(&L, i);
+
+            if (!item || !qHashName5(item, &h))
+                continue;               /* an empty entry names nothing */
+            if (n < CMD_MAX) {
+                hs[n] = h;
+                if (!readQName5(item, tx[n], HID_TX))
+                    tx[n][0] = 0;
+            }
+            n++;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    if (n != L.named)
+        return 0;                     /* partial read: decide nothing */
+    *cntOut = n;
+    return 1;
+}
+
+/* the set operations run with g_hidLock held */
+static int hidIndex(unsigned long long h)
+{
+    int i;
+
+    for (i = 0; i < g_hidCount; i++)
+        if (g_hid[i].h == h)
+            return i;
+    return -1;
+}
+
+static void hidAdd(unsigned long long h, const char *text)
+{
+    if (g_hidCount >= HID_MAX || hidIndex(h) >= 0)
+        return;
+    g_hid[g_hidCount].h = h;
+    strcpy_s(g_hid[g_hidCount].text, HID_TX, text ? text : "");
+    g_hidCount++;
+}
+
+static int hidDel(unsigned long long h)
+{
+    int i = hidIndex(h);
+
+    if (i < 0)
+        return 0;
+    g_hid[i] = g_hid[g_hidCount - 1];
+    g_hidCount--;
+    return 1;
+}
+
+/* 1 = this SetModelsVisible must not reach the vendor's handler.
+ *
+ * Nothing is assumed about which register carries the map: every argument
+ * is offered and the one that answers as a command map wins - it has a
+ * `visible` that Qt tagged as a bool and a `names` list whose every entry
+ * reads as a string.  A command that cannot be read completely is passed
+ * through untouched, which is also what happens when nothing answers. */
+static int sceneHideDecide(void *a0, void *a1, void *a2, void *a3,
+                           void *a4, void *a5, void *a6, void *a7)
+{
+    void *cand[8], *qvVis = NULL, *qvNames = NULL, *map = NULL;
+    unsigned long long hs[CMD_MAX];
+    char  tx[CMD_MAX][HID_TX];
+    char  list[192];
+    int   total = 0, hidden = 0, listed = 0, i, vis = -1;
+
+    cand[0] = a0; cand[1] = a1; cand[2] = a2; cand[3] = a3;
+    cand[4] = a4; cand[5] = a5; cand[6] = a6; cand[7] = a7;
+    for (i = 0; i < 8 && !map; i++) {
+        if (!plausiblePtr(cand[i]))
+            continue;
+        qvVis = qmapFind(cand[i], "visible");
+        if (!qvVis || !qvBool5(qvVis, &vis))
+            continue;
+        qvNames = qmapFind(cand[i], "names");
+        if (!qvNames || !cmdNames(qvNames, hs, tx, &total))
+            continue;
+        map = cand[i];
+    }
+    if (!map)
+        return 0;
+
+    if (!vis) {
+        /* these models are being hidden: remember them, then let the
+         * vendor's handler do its own work as usual */
+        AcquireSRWLockExclusive(&g_hidLock);
+        for (i = 0; i < total; i++)
+            hidAdd(hs[i], tx[i]);
+        ReleaseSRWLockExclusive(&g_hidLock);
+        if (InterlockedDecrement(&g_hideLogged) >= 0) {
+            if (total == 1)
+                g_host->log("merge_select: model hidden: %s", tx[0]);
+            else
+                g_host->log("merge_select: %d models hidden (first: %s)",
+                            total, tx[0]);
+        }
+        return 0;
+    }
+
+    list[0] = 0;
+    AcquireSRWLockShared(&g_hidLock);
+    for (i = 0; i < total; i++)
+        if (hidIndex(hs[i]) >= 0) {
+            hidden++;
+            if (listed < 4) {
+                _snprintf_s(list + strlen(list), sizeof list - strlen(list),
+                            _TRUNCATE, "%s%s", listed ? ", " : "", tx[i]);
+                listed++;
+            }
+        }
+    ReleaseSRWLockShared(&g_hidLock);
+    if (!hidden)
+        return 0;                     /* nothing hidden: stock behaviour */
+
+    if (total == 1) {
+        /* exactly one model, and it is being shown: that is the user
+         * clicking its eye again, so forget it and pass the request on */
+        AcquireSRWLockExclusive(&g_hidLock);
+        if (hidDel(hs[0]) && InterlockedDecrement(&g_hideLogged) >= 0)
+            g_host->log("merge_select: model shown again: %s", tx[0]);
+        ReleaseSRWLockExclusive(&g_hidLock);
+        return 0;
+    }
+
+    if (InterlockedDecrement(&g_filterLogged) >= 0)
+        g_host->log("merge_select: kept %d of %d models hidden (%s) - "
+                    "a show-everything request was not passed on; to bring "
+                    "a model back show it on its own",
+                    hidden, total, list[0] ? list : "?");
+    return 1;
+}
+
+/* the plugin registers handlers as { function, object } pairs and calls
+ * them f(object, ...), so forwarding the argument registers untouched is
+ * correct for every command signature.
+ *
+ * v1.5.0 forwarded four registers and nothing else.  A handler that also
+ * reads its fifth argument - which the Microsoft x64 convention keeps in
+ * the caller's shadow area, at [rsp+28h] on entry - then read this
+ * detour's own frame instead of the caller's, and the hub died inside
+ * Qt5Core at startup with an access violation.  Eight parameters is the
+ * whole convention: the first four come from registers, the rest are read
+ * from the caller's stack at the very addresses the handler would have
+ * read unhooked, and handing them on stores those same bytes back where
+ * the handler looks for them.                                            */
+typedef __int64 (*FnSceneCmd)(void *, void *, void *, void *,
+                              void *, void *, void *, void *);
+
+static __int64 sceneCall(int idx, void *a0, void *a1, void *a2, void *a3,
+                         void *a4, void *a5, void *a6, void *a7)
+{
+    if (g_sceneWatch && g_verbose && g_sceneLogged[idx] > 0)
+        sceneProbe(idx, a0, a1, a2, a3, a4, a5, a6, a7);
+    /* only SetModelsVisible is acted upon: it is the command the project
+     * list uses and the one the Mesh Model page uses to show everything
+     * again (SetModelNodesVisible carries a different, nested argument
+     * shape - it is watched and logged, never changed) */
+    if (g_sceneFilter && idx == 0 && sceneHideDecide(a0, a1, a2, a3,
+                                                     a4, a5, a6, a7))
+        return 0;
+    if (!g_sceneOrig[idx])
+        return 0;
+    return ((FnSceneCmd)g_sceneOrig[idx])(a0, a1, a2, a3, a4, a5, a6, a7);
+}
+
+static __int64 __fastcall det_scene0(void *a0, void *a1, void *a2, void *a3,
+                                     void *a4, void *a5, void *a6, void *a7)
+{ return sceneCall(0, a0, a1, a2, a3, a4, a5, a6, a7); }
+static __int64 __fastcall det_scene1(void *a0, void *a1, void *a2, void *a3,
+                                     void *a4, void *a5, void *a6, void *a7)
+{ return sceneCall(1, a0, a1, a2, a3, a4, a5, a6, a7); }
+static __int64 __fastcall det_scene2(void *a0, void *a1, void *a2, void *a3,
+                                     void *a4, void *a5, void *a6, void *a7)
+{ return sceneCall(2, a0, a1, a2, a3, a4, a5, a6, a7); }
+
+static void *const g_sceneDet[SCENE_N]
+    = { (void *)det_scene0, (void *)det_scene1, (void *)det_scene2 };
+
+/* 1 = p is `lea <reg>,[rip+disp32]` (48 8D modrm disp32) */
+static int leaRip(const unsigned char *p, int *reg,
+                  const unsigned char **tgt)
+{
+    unsigned char modrm;
+    int disp;
+
+    if (p[0] != 0x48 || p[1] != 0x8D)
+        return 0;
+    modrm = p[2];
+    if ((modrm >> 6) != 0 || (modrm & 7) != 5)
+        return 0;
+    memcpy(&disp, p + 3, 4);
+    *reg = (modrm >> 3) & 7;
+    *tgt = p + 7 + disp;
+    return 1;
+}
+
+/* 1 = p points into an executable section of this image */
+static int scInExec(const IMAGE_NT_HEADERS *nt,
+                    const IMAGE_SECTION_HEADER *sec,
+                    const unsigned char *base, const unsigned char *p)
+{
+    int s;
+
+    for (s = 0; s < nt->FileHeader.NumberOfSections; s++) {
+        const IMAGE_SECTION_HEADER *sh = sec + s;
+        const unsigned char *sv = base + sh->VirtualAddress;
+
+        if (!(sh->Characteristics & IMAGE_SCN_MEM_EXECUTE))
+            continue;
+        if (p >= sv && p < sv + sh->Misc.VirtualSize)
+            return 1;
+    }
+    return 0;
+}
+
+/* find the handler a plugin registered for a NAMED command.
+ * sn3d.digit.scenecontrol.dll wires its commands in one constructor, as
+ * repeated blocks:
+ *     lea rdx,[rip+"SetModelsVisible"]     the command name
+ *     lea rcx,[rbp+var]  /  call [QString::QString]
+ *     ...
+ *     lea rcx,[rip+handler]                the handler itself
+ *     mov [rsp+0x30],rcx                   stored with the pair
+ * Anchoring on the name keeps this free of hardcoded RVAs: locate the
+ * string, find the lea that materialises it, take the next rip-relative
+ * lea into the code section whose store matches the same pattern. */
+static int sceneAnchor(HMODULE m, const char *cmd, void **fnOut,
+                       unsigned long long *rvaOut)
+{
+    unsigned char *base = (unsigned char *)m;
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_SECTION_HEADER *sec;
+    unsigned char *strVa = NULL;
+    size_t n = strlen(cmd);
+    int s;
+
+    __try {
+        nt = (IMAGE_NT_HEADERS *)(base + *(const int *)(base + 0x3C));
+        sec = (IMAGE_SECTION_HEADER *)
+              ((unsigned char *)&nt->OptionalHeader
+               + nt->FileHeader.SizeOfOptionalHeader);
+
+        for (s = 0; s < nt->FileHeader.NumberOfSections && !strVa; s++) {
+            IMAGE_SECTION_HEADER *sh = sec + s;
+            unsigned char *sv, *se, *q;
+
+            if (!(sh->Characteristics & IMAGE_SCN_CNT_INITIALIZED_DATA))
+                continue;
+            sv = base + sh->VirtualAddress;
+            se = sv + sh->Misc.VirtualSize;
+            for (q = sv; q + n + 1 <= se; q++)
+                if (q[n] == 0 && memcmp(q, cmd, n) == 0
+                    && (q == sv || q[-1] == 0)) {
+                    strVa = q;
+                    break;
+                }
+        }
+        if (!strVa)
+            return 0;
+
+        for (s = 0; s < nt->FileHeader.NumberOfSections; s++) {
+            IMAGE_SECTION_HEADER *sh = sec + s;
+            unsigned char *sv, *se, *q;
+            const unsigned char *end, *tgt;
+            int reg;
+
+            if (!(sh->Characteristics & IMAGE_SCN_MEM_EXECUTE))
+                continue;
+            sv = base + sh->VirtualAddress;
+            se = sv + sh->Misc.VirtualSize;
+            for (q = sv; q + 7 <= se; q++) {
+                if (!leaRip(q, &reg, &tgt) || reg != 2 || tgt != strVa)
+                    continue;
+                end = (q + 0x60 < se) ? q + 0x60 : se;
+                for (; q + 0x0C <= end; q++) {
+                    const unsigned char *h;
+
+                    if (!leaRip(q, &reg, &h) || reg != 1)
+                        continue;
+                    /* the registration stores it: mov [rsp+disp8],rcx */
+                    if (q[7] != 0x48 || q[8] != 0x89 || q[9] != 0x4C
+                        || q[10] != 0x24)
+                        continue;
+                    if (!scInExec(nt, sec, base, h))
+                        continue;
+                    *fnOut = (void *)h;
+                    *rvaOut = (unsigned long long)(h - base);
+                    return 1;
+                }
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return 0;
+}
+
+/* 1 = done (hooked what could be found; the plugin is not loaded yet
+ * only when it returns 0) */
+static int sceneTry(void)
+{
+    HMODULE m = GetModuleHandleA("sn3d.digit.scenecontrol.dll");
+    int i, armed = 0;
+
+    if (!m)
+        return 0;
+    InterlockedExchange(&g_sceneDone, 1);
+    g_scMod = m;
+
+    /* nothing to resolve: the command values are read as memory, the
+     * handlers are found by name.  A watch that has to call Qt is a watch
+     * that can bring the app down, see qvTag5() above. */
+    for (i = 0; i < SCENE_N; i++) {
+        void *fn = NULL;
+        unsigned long long rva = 0;
+
+        if (!sceneAnchor(m, g_sceneCmd[i], &fn, &rva))
+            continue;
+        if (g_host->hook(fn, (void *)g_sceneDet[i], &g_sceneOrig[i])) {
+            armed++;
+            g_host->log("merge_select: watching scene command %s "
+                        "(sn3d.digit.scenecontrol.dll+0x%llX)",
+                        g_sceneCmd[i], rva);
+        } else {
+            g_host->log("merge_select: scene command %s hook refused",
+                        g_sceneCmd[i]);
+        }
+    }
+    if (!armed)
+        g_host->log("merge_select: no scene command handler found - "
+                    "viewport stays stock");
+    return 1;
+}
 /* ------------------------------------------------------------------ */
 /* DLL load notification: only wakes the worker; the worker owns ALL   */
 /* install work (MinHook must never run while the loader lock is held) */
@@ -1495,15 +2445,23 @@ static unsigned WINAPI worker(LPVOID arg)
                             GetTickCount64() - t0 < 10000 ? 50 : 500);
     }
 
-    /* eye watch: wait until ScanPage_E7.dll is mapped, then find and
-     * observe the vendor's show/hide slot (record-only, ini switch).
-     * The icons live in the QML UI process only; arming the metacall
-     * detour inside a service process would be an unnecessary risk. */
+    /* UI-side watches, QML process only (an unneeded detour inside a
+     * service process would be a pure risk):
+     *  - eye watch: ScanPage_E7's show/hide slot -> merge-select.ini;
+     *  - scene watch: the scene plugin's named commands, which is where
+     *    the vendor re-shows scans the user hid. */
     if (!g_broken && g_eyewatch) {
         if (exeAllowed("eyewatch_exes", "EXStar Hub.exe")) {
             ULONGLONG t1 = GetTickCount64();
-            while (!g_eyeDone && GetTickCount64() - t1 < 600000) {
-                if (eyeTry())
+
+            for (;;) {
+                eyeTry();
+                if (g_sceneWatch || g_sceneFilter)
+                    sceneTry();
+                if (g_eyeDone && (!(g_sceneWatch || g_sceneFilter)
+                                   || g_sceneDone))
+                    break;
+                if (GetTickCount64() - t1 >= 600000)
                     break;
                 WaitForSingleObject(g_wake, 1000);
             }
@@ -1536,6 +2494,8 @@ EX_EXPORT int ex_init(const ExHost *host)
     g_verbose = host->cfg_int(host, "verbose", 1);
     g_eyewatch = host->cfg_int(host, "eyewatch", 1);
     g_eyeGate = host->cfg_int(host, "eye_gate", 1);
+    g_sceneWatch = host->cfg_int(host, "scene_watch", 1);
+    g_sceneFilter = host->cfg_int(host, "scene_filter", 1);
 
     {   /* the exe name drives the hook allowlists - resolve it before the
          * worker thread starts */
@@ -1572,24 +2532,23 @@ EX_EXPORT int ex_init(const ExHost *host)
     }
     CloseHandle(th);
 
-    {
-        char exe[MAX_PATH] = "?", *b;
+    {   /* one-line start-up proof: which merge DLLs are already mapped */
         char env[64];
-        if (GetModuleFileNameA(NULL, exe, sizeof exe) > 0
-            && (b = strrchr(exe, '\\')) != NULL)
-            memmove(exe, b + 1, strlen(b + 1) + 1);
+
         _snprintf_s(env, sizeof env, _TRUNCATE, " sf=%d qt=%d mp=%d",
                     GetModuleHandleA("Sn3DFile.dll") != 0,
                     GetModuleHandleA("Qt5Core.dll") != 0,
                     GetModuleHandleA("Sn3DMultiProjects.dll") != 0);
         host->log("merge_select v%s armed in pid=%lu exe=%s%s",
                   MOD_VERSION, (unsigned long)GetCurrentProcessId(),
-                  exe, env);
+                  g_exeName, env);
     }
     return 0;
 }
 
 EX_EXPORT void ex_shutdown(void)
 {
-    /* the detour is owned by the host's MinHook teardown; nothing here */
+    /* the detours are owned by the host's MinHook teardown; the scene
+     * command hooks go with them */
 }
+

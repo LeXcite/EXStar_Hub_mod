@@ -81,7 +81,7 @@ $managerMods = @(
     @{ id = 'merge_select';   ini = 'modules\merge_select\merge_select.ini' }
 )
 
-$version = '1.6.6'   # product version; release exe is copied as ExStarModManager_<version>.exe
+$version = '1.6.8'   # product version; release exe is copied as ExStarModManager_<version>.exe
 
 function New-VersionRes($path, $desc, $origName) {
     $vq = ($version -split '\.').Trim()

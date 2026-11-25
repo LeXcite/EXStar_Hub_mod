@@ -1,6 +1,6 @@
 # Merge Selection (`merge_select`)
 
-**Version 1.4.0 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
+**Version 1.5.5 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
 
 ## What it does
 
@@ -64,10 +64,46 @@ including the fusion engine (`Sn3DprocessManager.exe`), which builds
 the scan-page mesh in its own process and has no UI of its own. The
 hub is the only writer; the merge processes are readers.
 `eye_gate = 0` restores stock behaviour, explicit `[folder]` sections
-keep working, and everything stays fail-open. The mesh dialog's own
-"show everything" burst is direct vendor C++ (bypasses the meta-call),
-so it never writes a section - a hidden scan stays excluded even while
-the dialog momentarily re-shows it in the 3D view.
+keep working, and everything stays fail-open.
+
+Since 1.5.0 the same hidden row also **stays hidden in the 3D view**.
+Opening the Mesh Model page used to redraw every scan of the project,
+because that page never asks the project tree - it sends the scene a
+named command instead (`SetModelsVisible names=[all projects]
+reset=1 visible=1`). The module resolves that command's handler at
+runtime from the command's *name* inside the scene plugin (again no
+RVAs), reads the request the way the vendor's own handler reads it, and
+simply does not pass on a request to show several models while one of
+them is hidden. Nothing is re-hidden afterwards, no timers are
+involved, and the models you left visible are not touched. Showing a
+single model is always your own click, so it goes through and is
+forgotten. `scene_filter = 0` restores stock behaviour; `scene_watch`
+only logs these commands. Neither switch affects what ends up in the
+merged mesh - that is `eye_gate`.
+
+Version 1.5.1 is the startup fix for that feature. Reading a command has
+become **pure memory inspection**: the Qt type tag of every value and the
+bytes behind it are read where they are stored, and the module calls no
+vendor function at all while a scene command is in flight (1.5.0 asked
+`QVariant::typeName`/`toBool` what a value was - an address the module
+had derived itself, handed to Qt, and the hub faulted in `Qt5Core.dll`
+during start-up). The detour also hands the handler all eight argument
+slots of the Microsoft x64 convention instead of four, so a handler that
+reads a fifth argument from the shadow area gets the caller's value
+rather than the detour's frame. Anything the module cannot read
+completely is passed through untouched.
+
+Versions 1.5.2 to 1.5.5 made the reading of a command's `names` list match
+*this* Qt build rather than a remembered one. The layout is measured, not
+recalled: `tools\qlist_lab.c` builds a real `QStringList` with the shipped
+`Qt5Core.dll`'s own `QString::split()` and runs the very reader the module
+uses (`qt_read.h`, shared so the tool cannot drift from the shipping code).
+In this build the payload qword of the value is the list's data pointer, the
+count is the dword at `+0x0C`, and pointer-sized items - a QString is one -
+lie inline from `+0x10`; a list of larger values keeps a node array one hop
+further out, which is read too. An empty entry is a valid entry and simply
+names nothing; anything that is not fully readable is passed through, as
+everything else here is.
 
 ## How it works
 
@@ -97,6 +133,8 @@ unlisted scans are provably unaffected.
 | `eye_gate` | `1` | hidden eye = scan left out of the common mesh, persisted as `[uuid]` sections (explicit `.ini` sections still win) |
 | `gate_exes` | `EXStar Hub.exe,scanservice.exe,Sn3DprocessManager.exe` | processes allowed to hook the merge gate; every other host keeps an inert module |
 | `eyewatch_exes` | `EXStar Hub.exe` | processes allowed to watch the eye icons (the QML UI) |
+| `scene_watch` | `1` | log the scene's named commands (what the viewport is asked to show) |
+| `scene_filter` | `1` | keep models you hid hidden in the 3D view: a show-several-at-once request that includes a hidden model is not passed on |
 | `file` | stock path | full path to the selection `.ini` (the `.map.txt` sits next to it) |
 
 ## Relationship to a community patchset

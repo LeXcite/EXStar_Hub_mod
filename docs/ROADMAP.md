@@ -35,8 +35,8 @@ not included in git).
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
 | fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
-| merge_select | 1.4.6 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch, hook allowlists) |
-| ExStarModManager | 1.6.6 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist |
+| merge_select | 1.5.5 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch, hook allowlists) + the scene's own `SetModelsVisible` command filtered, so eye-hidden models stay hidden in the 3D view; 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`) |
+| ExStarModManager | 1.6.8 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist; 1.6.8 shows the current `merge_select` version |
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
 
@@ -356,7 +356,7 @@ v1.0.0 + manager 1.5.0.
   race was caught in the self-test. Pending: one live multi-scan mesh
   run to confirm the excluded scan is gone from the merged result.
 
-## Batch "eye-bound mesh selection" (2026-11-24) — MERGE DONE, row force-show open
+## Batch "eye-bound mesh selection" (2026-11-24) — MERGE + VIEWPORT DONE
 
 Goal (user decision): the selection UI is the hub's own **eye icons** -
 a hidden scan row must not enter the common mesh. No manager clicks, no
@@ -365,9 +365,8 @@ ini editing during work.
 Status: the merge half is live and user-verified twice (v1.4.7): hidden
 eye rows are persisted as `[uuid] included = 0` and both merge loops in
 `scanservice.exe` answer `SKIP`, so the final mesh contains only the
-visible scans. What is still stock: pressing Mesh Model re-shows every
-hidden row in the tree (the vendor's direct `setNodeVisible` call, which
-bypasses the QML metacall the module watches).
+visible scans. The viewport half shipped in 1.5.0 (scene command
+interception, see below) and is waiting for the same live check.
 
 * Live diagnosis: the scan-page "Mesh" flow never queries
   `isGenerateCloud` (it applies visibility itself), a cached mesh is
@@ -425,11 +424,28 @@ bypasses the QML metacall the module watches).
   `gate … excluded in .ini -> SKIP` for both merge loops
   (`ra=+0x7E3BB` collection, `ra=+0x83097` processing). The final mesh
   contained only the scan left visible; project folders untouched.
-* Next (open): the Mesh Model press still **re-shows hidden rows** in
-  the project tree. That is a direct C++ `setNodeVisible(uuid, true)`
-  call inside `ScanPage_E7.dll`, not the QML metacall, so the eye watch
-  never sees it. Needs the caller identified and a RAM-only suppress
-  (hook or call-site patch) that leaves the QML eye path intact.
+* 1.5.0 (viewport): the force-show is not a tree call at all. The scene
+  is driven by **named commands** registered inside
+  `sn3d.digit.scenecontrol.dll`; the eye icon sends
+  `SetModelsVisible names=[Project_2] reset=0 visible=0`, and entering
+  the Mesh Model page sends `names=[Project_1111, Project_2,
+  Project_1000] reset=1 visible=1` - "show every project again" (live
+  log, three projects open). The module locates that handler by
+  anchoring on the command *name* in the plugin (no RVAs), reads the
+  `QVariantMap` with the vendor's own container layout, and does not
+  pass on a show-several-at-once request while one of the named models
+  is hidden - so the viewport is never touched and nothing has to be
+  re-hidden (no timers: that approach was rejected by the user). Hidden
+  models are remembered by a hash of the model name, in RAM; the scene
+  names models while the project tree uses QUuids, and the merge gate
+  keeps using the `[uuid]` sections. Analysis:
+  [merge-common-mesh.md §8](research/merge-common-mesh.md). Switches:
+  `scene_watch` (log), `scene_filter` (act).
+* Open: with models hidden, a show-everything request is dropped as a
+  whole, so a project that was hidden first and should come back with
+  the others has to be shown on its own. Live check of the new build
+  still due, including that a normal (nothing hidden) Mesh Model press
+  behaves exactly like stock.
 
 ## Open regressions
 
