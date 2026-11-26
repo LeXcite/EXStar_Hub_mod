@@ -53,10 +53,10 @@ once `algorithmLzy.dll` appears.
 
 ## 4. Three layers of intervention (why the export was chosen)
 
-1. **Caller globals** (the friend's path, `STATE.md` of the private base: patching
+1. **Caller globals** (the community patchset's path, its `STATE.md`: patching
    `(3,21,3,21)`→`(0,24,0,24)` in the importer's data, target `cbcd3f42…`) —
    dead at the very first update, the victim process/module is known only for a
-   specific version; never verified live by the friend.
+   specific version; never verified live by the patchset author.
 2. **Algorithm context** `ctx+0x25534` — requires the instance pointer and a race
    with every new `set_...`.
 3. **The exported setter** — a named ABI contract; a single point; other calls

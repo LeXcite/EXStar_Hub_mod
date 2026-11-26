@@ -14,7 +14,7 @@
 | Key source file | `modules/wallpaper/wallpaper.c` (`jpegSlotSize`, `patchImage`, `loadImage`) |
 | Offline check | `tools\wp_dryrun.c` - same scan on the DLL file; must print `SOI @0x643F95 slot=837517  MATCH known-good` |
 | Runtime proof | `%LOCALAPPDATA%\ExStarHubMods\mod.log`: `wallpaper: AppUi.dll slot +6572949 x 837517 B <- <n> B image (ok)` |
-| Do not ever | store the slot by offset/RVA (it moves with vendor updates - the friend's disk patch died exactly this way); write more than the slot size; assume the last `FF D9` ends a JPEG (byte stuffing makes the **first** unescaped `FF D9` the true EOI) |
+| Do not ever | store the slot by offset/RVA (it moves with vendor updates - the community patchset's disk patch died exactly this way); write more than the slot size; assume the last `FF D9` ends a JPEG (byte stuffing makes the **first** unescaped `FF D9` the true EOI) |
 
 EXStar Hub always paints the same photo behind the whole UI. The picture
 is not a themeable asset - it is raw JPEG bytes inside `AppUi.dll`. This

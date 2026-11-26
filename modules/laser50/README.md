@@ -20,7 +20,7 @@
 | Key source file | `modules/laser50/laser50.c` (`detour`, `tryInstall`, `capRecord`); export lookup via the shared `include\exstar_export.h`, the caption's qrc write path via the shared `include\exstar_qrc.h` |
 | Offline check | lines: `dumpbin /exports algorithmLzy.dll` shows exactly one `?set_match_plane_id_vulkan@Sn3DAlgorithm@@YA?AW4RetVal@1@PEAXAEBH111@Z`; Ghidra: log + tail-call to the four-dword store; the only importing module is `SnAlgAppPlat.dll` (loaded dynamically by scan processes - no EXE links it). Caption: `tools\replace_lab.exe "<ScanPage_E7.dll>" "ScanSettingModelProviderLaser" pat_from.bin pat_to.bin` - exactly one record (`@file 0x98C90E raw=67753 lc=9777 pattern=1`), `patched=9587 FITS` (slack 194 B) |
 | Runtime proof | `%LOCALAPPDATA%\ExStarHubMods\mod.log`: `laser50: hooked ?set_match_plane_id_vulkan@... strict=1 (3,21,3,21) -> (0,24,0,24)` + per-scan `laser50: call N: (3,21,3,21) -> remap`; `laser50: caption ScanPage_E7.dll stream @0x98DB0E raw 67753->67711, packed 9777<-9587, 1 caption(s) rewritten (ok)` (live VA = file +0x1200, never hardcoded); visually: 25×25 lines in a real scan + `50 lines` / `7 lines` buttons (user screenshots, 2026-11-17) |
-| Do not ever | hardcode the export RVA/ordinal (build-specific); rewrite the vendor's caller globals (the friend's disk patch - version-bound, never live-verified); reword the **translated** qsTr source string instead of its argument (v1.0.0 caption bug, see below); use `strict=0` carelessly (rewrites *every* call including other line modes); hook before `algorithmLzy.dll` is mapped (dynamic LoadLibrary - poll for the module) |
+| Do not ever | hardcode the export RVA/ordinal (build-specific); rewrite the vendor's caller globals (the community patchset's disk patch - version-bound, never live-verified); reword the **translated** qsTr source string instead of its argument (v1.0.0 caption bug, see below); use `strict=0` carelessly (rewrites *every* call including other line modes); hook before `algorithmLzy.dll` is mapped (dynamic LoadLibrary - poll for the module) |
 
 | | |
 |---|---|
@@ -43,7 +43,7 @@ without the label.
 
 Three candidate layers existed:
 
-1. **caller globals** (friend's way: rewrite `(3,21,3,21)` in the
+1. **caller globals** (community patchset's way: rewrite `(3,21,3,21)` in the
    importing module's data section) - dead on the first vendor update,
    and the "importing module" is only known per version;
 2. **the algorithm context** (`ctx+0x25534`, discovered via Ghidra) -
@@ -64,10 +64,10 @@ mismatch once - the app keeps its stock behaviour, the ini is exposed
 
 ## Why the caption changes the argument, not the string
 
-The vendor retranslated these strings once already (the friend's
+The vendor retranslated these strings once already (the community patchset's
 2.0.0-45 build had literal `qsTr("50线")`/`qsTr("7线")`; our build (file stamp 3.1.x) has the
 dynamic `qsTr("%1线").arg(model)` form - discovered by dumping the qrc
-record at file offset `0x98C90E`, ≈ the friend's `H=0x98C906`). Content
+record at file offset `0x98C90E`, ≈ the community patchset's `H=0x98C906`). Content
 gating (`anchor`×1 **and** `pattern`×`cap_expected`) makes any further
 restructure skip silently instead of patching blind.
 

@@ -8,12 +8,12 @@ The knowledge behind the `fitfill` module. Status journal: `batch-2026-11-17-sta
 
 After Ctrl+D / "Zoom to Fit" the part takes up about 35 % of the window's width and about
 45 % of its height, the center is shifted down-right; pressing again changes nothing
-(the friend's screenshots, confirmed by the user).
+(the community patchset's screenshots, confirmed by the user).
 
 ## 2. False lead (documented so we don't step on it again)
 
 The QML chain `fitView()` → `Sn3DCanvasView::fitView` → `FitOperationAuto`
-was verified live by the friend and is NOT the multiplier for the menu item:
+was verified live by the patchset author and is NOT the multiplier for the menu item:
 
 - the constant `3.5` @ RVA 0x25F8C0 (librenderkit.extensions.digit,
   `SceneCamera::fit`): 3.5→1.6 gave +4 pp of height;
@@ -65,7 +65,7 @@ void CustomizeManipulator::setIsZoomOptimization(bool v) { this[0x138] = v; }
 bool CustomizeManipulator::getIsZoomOptimization()       { return this[0x138]; }
 ```
 
-The only call found is that same `init`. The friend's byte patch =
+The only call found is that same `init`. The community patchset's byte patch =
 `mov r10b, 0` at one site; our equivalent — the same effect for **all** callers.
 
 ## 4. Implementation (`modules/fitfill`)
@@ -84,7 +84,7 @@ confirmed: Ctrl+D fits the model.
 ## 5. Accepted risk and rollback
 
 The optimization mode is the vendor default; disabling it globally may change how
-interactive zoom feels. In the friend's final build this lived, no complaints; the log
+interactive zoom feels. In the community patchset's final build this lived, no complaints; the log
 shows every force. Rollback: `force = 1` (the vendor value) or
 `enabled = 0`, nothing on disk.
 

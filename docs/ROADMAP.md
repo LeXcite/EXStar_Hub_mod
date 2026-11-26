@@ -3,7 +3,7 @@
 Standing work-plan document. Lifecycle: feature card → status
 `planned → implementing → tested → shipped`. After a feature is closed, its card
 collapses into one line under "Done" (details live in the module's README).
-Porting knowledge: private external RE-base (not published,
+Porting knowledge: a community patchset (not published,
 not included in git).
 
 ## Rules (reminder, always in force)
@@ -44,8 +44,8 @@ All five cards shipped 2026-11-17 and re-verified live on vendor update
 2.1.0-10 on 2026-11-18 (manager 1.3.8/1.3.9). Cards kept below as the
 historical record.
 
-Knowledge source: private external RE-base (`STATE.md`, a research
-journal, `patches-history.md` — his patches are version-locked and died
+Knowledge source: a community patchset (`STATE.md`, a research
+journal, `patches-history.md` — its patches are version-locked and died
 in the update —
 we port the logic, not the bytes). Work order: 1 → 2 → 3 → 4 → 5.
 
@@ -87,7 +87,7 @@ a human run-through of the manager GUI (install/choose file in one click).
 statistics from the C++ model `real_time_info` (the string `FPS: %1` in AppCommon_E7.dll),
 not the UI frame rate.
 
-**Friend's knowledge.** His `displayFps` timer overrode the stock label;
+Knowledge from the community patchset. Its `displayFps` timer overrode the stock label;
 later — a `QString::number` hook with fixed call-site RVAs; final form —
 a single line `FPS: N` at the bottom right (right 62, bottom 56). The RVA approach
 is version-locked, we do not repeat it.
@@ -118,7 +118,7 @@ laser50 [caption]). Into git — upon "put it in git".
 **Goal.** Widen the line range: `(3,21,3,21)` → `(0,24,0,24)`;
 the cloud includes all 25+25 lines.
 
-**Friend's knowledge.** `algorithmLzy.dll`, function `set_match_plane_id_vulkan`;
+Knowledge from the community patchset. `algorithmLzy.dll`, function `set_match_plane_id_vulkan`;
 his was a static edit of values in the calling module's data, never
 verified live, tied to a version.
 
@@ -178,7 +178,7 @@ Status: ✅ verified live inside laser50 v1.1.0 (2026-11-17).
 **Goal.** Ctrl+D / "Zoom to Fit" fills the frame by width/height,
 a repeat press correctly re-fits.
 
-**Friend's knowledge.** The chain QML → `Sn3DCanvasView::fitView` →
+Knowledge from the community patchset. The chain QML → `Sn3DCanvasView::fitView` →
 `FitOperationAuto` — a false lead: the constants 3.5/0.25 had no effect on the
 menu item (verified live). His final edit — the byte `01→00` in
 `librenderkit.extensions.digit.dll` (file offset 0x171D68);
@@ -193,7 +193,7 @@ same place (pattern `B2 01 48 8B C8 FF 15 96 FA 0C 00`, file↔RVA delta
 the import disassembled from the import table). The setter = `this[0x138] = flag`
 (Ghidra). So the vendor turns on "zoom optimization" (a fixed camera
 distance) when creating the view — when disabled, fit fits the model
-entirely (which is exactly what the friend got with his byte).
+entirely (which is exactly what the patchset author got with that byte).
 
 **Implementation.** `modules/fitfill` (v1.0.0): a detour via `host->hook` on
 the exported setter (found by export name, no RVAs needed),
@@ -203,7 +203,7 @@ by name. `needsSiblings=TRUE` (3D views are also rendered in
 sibling processes).
 
 **Risk.** The optimization mode is the vendor default; globally turning it
-off may change how interactive zooming feels (it lived in the friend's final
+off may change how interactive zooming feels (it lived in the community patchset's final
 edit, no complaints). Rollback `force = 1` / `enabled = 0`.
 
 **Verification.** Live (2026-11-17): `fitfill: hooked ... forcing value 0`
@@ -647,6 +647,23 @@ stays hidden on screen. Evidence:
    outlives the icon that produced it (the eye is open, the module still says
    hidden). Showing the eye or restarting the hub settles it; the `eye <uuid>
    -> VISIBLE` log line is what would prove the vendor resets it by itself.
+ * **2026-11-26, pre-release sweep (same manager 1.7.0 build).** A last pass
+   for leftovers found one thing a user could read wrong: the card for Zoom to
+   Fit Fill showed `1.0.0` while `fitfill.c` and the arm log say `1.1.0` -
+   corrected. Six defines nothing referenced are gone (`KNOWN_GOOD_PRODUCT`,
+   `CKIND_NAV`, `IDC_STATUS`, `C_BADG`, `C_INK`, `LMARG`, `CD_GAPX`; the
+   compile is the proof they were unreferenced), `WIN32_LEAN_AND_MEAN` stays
+   because the headers read it themselves. Recorded rather than deleted on a
+   release cut: thirteen `static` functions in `src/manager.c` that no code
+   calls (`iniGetKeyS`, `cardHover`, `mkStatic`, `rr`, `textEllW`,
+   `cardCollapsedH`, `a64Cmp`, `a64CmpR`, `a64SubR`, `a64AddR`, `a64MovR`,
+   `fanGetLE64`, `fanMap2Va`) - the linker drops them, so they cost nothing
+   at run time; they go out with the next UI change, where a rebuild is
+   already under review anyway. The module itself has nothing left: no
+   unreferenced define, no debug print, no TODO, ASCII only, and at `/W4`
+   only the two C4057 annotation notices around `CreateThread` that every
+   module here carries. Docs now name the borrowed source one way
+   everywhere: community patchset, never a person, never a private base.
 
 ## Open regressions
 
@@ -659,7 +676,7 @@ stays hidden on screen. Evidence:
 
 - **6. English keyboard layout on the pre-start screen** (PrestartCheck.dll) —
   the user does not need it (decision 2026-11-14).
-- Contour during supplemental scanning (the unstable setFrameMatrix chain, the friend
+- Contour during supplemental scanning (the unstable setFrameMatrix chain, the patchset author
   himself rolled it back) — not taken without an explicit need.
 - Bypassing the resolution check on import, forcing Mesh Editing's isEnabled
   (breaks the left panel), edition/terminology cosmetics.

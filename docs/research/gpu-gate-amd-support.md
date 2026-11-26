@@ -170,7 +170,7 @@ new box shows any prompt from it.
 | **A. pattern memory-patch (recommended, built as `modules/gpu_gate`)** | load-image notify on `Sn3DSpeckleNew.dll` in every injected process; find the unique 11-byte pattern in the mapped image, flip `0F 85`->`0F 87` in the private page copy, log the RVA (popup_dim/wallpaper architecture; no hooks, no disk writes, Authenticode intact; disable+restart = stock) | 1:1 with the field-verified file patch; pattern-anchored = survives vendor rebuilds as long as the code is unchanged. Live 2.1.0-10 observation: the DLL is mapped by `scanservice.exe` **and** the hub UI process, so the module must run everywhere the host injects (it does); the patch is neutral in every process on discrete GPUs. NVIDIA self-test passed: unique hit, gate relaxed in both processes at RVA `0x1AB6B5`, vendor flow byte-identical (`init_speckle gpu test result: 1`, hub `errorCode 1`) |
 | B. hook the `device_detect` export, return 1 | skips the whole vendor branch | vendor's own caution path already returns 1 legitimately; a hook would skip side effects (kernel-variant globals) - riskier, no benefit |
 | C. spoof `vkGetPhysicalDeviceProperties` (deviceType=2 + discrete-sounding name) | gate never sees INTEGRATED | broadest blast radius (every Vulkan user in-process), can mislead real device selection; last resort |
-| D. patch files on disk | friend-style single-byte installer | contradicts this project's injection-only principle |
+| D. patch files on disk | community-patchset-style single-byte installer | contradicts this project's injection-only principle |
 
 Hub-side changes are **not** needed for the 780M case: the hub only consumes
 `errorCode`, and with option A the value arrives as 1 (caution path).

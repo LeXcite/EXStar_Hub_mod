@@ -3,14 +3,19 @@ EXStar Hub mods (Mod Manager)
 
 Download the single file ExStarModManager_<version>.exe from Releases:
 https://github.com/LeXcite/EXStar_Hub_mod/releases
-(one file, no install, x64; it asks for admin rights once, everything
-else is done by the built-in Windows UAC prompt).
+(one file, no install, x64; the host and every module are inside it, so
+there is nothing else to download; it asks for admin rights once, through
+the built-in Windows UAC prompt).
 
-The application version shown in the manager is the vendor product
-number (e.g. 2.1.0-10) from the uninstall registry key; the file stamp
-of EXStar Hub.exe is frozen by the vendor, so the manager shows both.
+The file is not code-signed, so SmartScreen may warn on the first run:
+<More info> then <Run anyway>.
 
-Mods (each has its own switch):
+The application version shown in the manager is the vendor product number
+(e.g. 2.1.0-10) from the uninstall registry key; the file stamp of
+EXStar Hub.exe is frozen by the vendor, so the manager shows both.
+
+Mods (each has its own switch)
+------------------------------
 
   Marker Quality   - marker color reflects tracking quality:
                      red = weak, yellow = decent, green = reliable
@@ -27,6 +32,14 @@ Mods (each has its own switch):
                      reads <50 lines> (the stock 7-line mode is kept)
   Zoom to Fit Fill - <Zoom to Fit> (Ctrl+D) frames the model into the
                      whole viewport, not just its center
+  GPU Gate         - a computer with an integrated GPU (e.g. Radeon
+                     780M) passes the startup GPU check instead of
+                     refusing to start the scan software
+  Selective Mesh   - close the eye icon of one scan in the project list
+                     and that scan is left out of the common mesh
+                     (<Mesh Model>); its data stays in the project.
+                     The product has no other way to exclude a single
+                     scan, so the eye is the whole interface here.
 
 Install
 -------
@@ -53,11 +66,14 @@ Tunables (per module card, apply after restart)
 - Wallpaper: <Choose file...> - any jpg/png/bmp, converted to a
   1920x1080 JPEG fitted to the vendor slot; <Reset> - back to the
   stock background.
-
-Every change is applied on the next start of EXStar Hub and lives only
-in process memory. The mod never modifies vendor files - the vendor
-update will simply overwrite them, and the mods keep working; deleting
-a few files (or the *Restore stock* button) reverts everything.
+- Selective Mesh: nothing to set. Each scan's switch is the eye icon in
+  the project list. Exclusions are kept in
+  C:\Users\Public\Shining3d\EXStar Hub\selective-mesh.ini while that run
+  of the hub lives, because the mesh is built in another process, and
+  every exclusion is dropped when the hub starts - a fresh hub means
+  open eyes. If the eyes of a merge are ALL closed, the module ignores
+  the exclusions and merges every scan, because the vendor dead-ends an
+  empty selection (Processing stops near 80 %).
 
 Uninstall
 ---------
@@ -74,6 +90,23 @@ Command line (same as the GUI, no UI)
   ExStarModManager_<version>.exe --remove  --modules id1,id2
   ExStarModManager_<version>.exe --restore
 Module ids: marker_quality, marker_inframe, popup_dim, wallpaper,
-fps, laser50, fitfill.
+fps, laser50, fitfill, gpu_gate, selective_mesh.
+
+How to see that a module did something
+--------------------------------------
+Every module writes one line to
+%LOCALAPPDATA%\ExStarHubMods\mod.log when it attaches, for example
+"selective_mesh v1.8.0 armed in pid=27920 exe=EXStar Hub.exe". Selective
+Mesh also logs each eye it sees toggled ("eye <uuid> -> HIDDEN") and
+each merge decision ("gate uuid=... -> include|SKIP"), so a scan that
+was left out is explained there.
+
+Nothing here modifies vendor files
+----------------------------------
+Every change is applied on the next start of EXStar Hub and lives only
+in process memory. A vendor update simply overwrites its own files, and
+the mods keep working after it; deleting a few files (or the *Restore
+stock* button) reverts everything. No project data, no user data is
+read or copied, and the log files stay on this computer.
 
 Repository: https://github.com/LeXcite/EXStar_Hub_mod

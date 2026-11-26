@@ -59,7 +59,6 @@
  * decided by the file stamp (that is what the anchors bind to); the
  * product number is what the user sees. */
 #define KNOWN_GOOD_STAMP   L"3.1."   /* tested file stamp prefix */
-#define KNOWN_GOOD_PRODUCT L"2."     /* tested product family    */
 
 #define MAX_MODS         9
 #define MAX_SLIDERS      6   /* slider rows per module card               */
@@ -163,7 +162,7 @@ static const ModDef g_mods[MAX_MODS] = {
       L"all 25+25 laser lines (plane range (3,21) \u2192 (0,24)); the button shows \u00AB50 lines\u00BB right away",
       L"MOD_LASER50", L"MOD_LASER50_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
-    { "fitfill", L"Zoom to Fit Fill", "1.0.0",
+    { "fitfill", L"Zoom to Fit Fill", "1.1.0",
       L"\u00ABZoom to Fit\u00BB (Ctrl+D) fits the model into the whole frame, not a third of the window",
       L"MOD_FITFILL", L"MOD_FITFILL_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
@@ -977,7 +976,6 @@ static COLORREF mix(COLORREF a, COLORREF b, float t)
 #define CKIND_SLIDER  3
 #define CKIND_PRESET  4
 #define CKIND_FILEBTN 5
-#define CKIND_NAV     6
 typedef struct {
     int                kind;
     int                idx;
@@ -1497,7 +1495,6 @@ static void doList(void)
 #define IDC_APPEDIT   101
 #define IDC_BROWSE    102
 #define IDC_RESTORE   105
-#define IDC_STATUS    106
 #define IDC_MODBASE   200
 #define IDC_SCBASE    300   /* slider (id - IDC_SCBASE = mod*MAX_SLIDERS+s) */
 #define IDC_PRBASE    700   /* preset pill (id - IDC_PRBASE = mod*MAX_PRESETS+p) */
@@ -1650,7 +1647,6 @@ static void journalAppend(const SYSTEMTIME *t, int lvl, const wchar_t *txt)
 #define C_CHIP    RGB(36, 36, 36)     /* chips / buttons #242424         */
 #define C_FIELD   RGB(33, 33, 33)     /* input wells #212121             */
 #define C_PILL    RGB(35, 35, 35)     /* preset pills #232323            */
-#define C_BADG    RGB(48, 48, 48)     /* switch track (off)   #303030    */
 #define C_LOG     RGB(21, 21, 21)     /* journal #151515                 */
 #define C_LOGLN   RGB(42, 42, 42)     /* journal border #2a2a2a          */
 #define C_LOGTX   RGB(201, 201, 201)  /* journal text #c9c9c9            */
@@ -1659,7 +1655,6 @@ static void journalAppend(const SYSTEMTIME *t, int lvl, const wchar_t *txt)
 #define C_GRAD1   RGB(76, 194, 255)
 #define C_GRAD2   RGB(125, 139, 255)
 #define C_GRAD3   RGB(168, 85, 247)
-#define C_INK     RGB(4, 18, 28)      /* glyph on a gradient fill #06131e*/
 #define C_OK      RGB(122, 213, 113)
 #define C_WARN    RGB(242, 197, 94)
 #define C_ERR     RGB(255, 122, 122)
@@ -1767,7 +1762,6 @@ static BOOL g_fileHas;                   /* modules\wallpaper.jpg exists   */
 #define KPI_H      U(96)         /* KPI tile height                        */
 #define KPI_GAP    U(12)
 #define GRID_TOP   (KPI_TOP + KPI_H + U(22) + U(26)) /* first card row     */
-#define LMARG      PAGE_PAD      /* legacy name kept: page side margin     */
 #define CARD_GAP   U(12)         /* grid gap                               */
 
 static void cardHover(int i, BOOL on)
@@ -2188,7 +2182,6 @@ static void stampText(const SYSTEMTIME *t, wchar_t *out)
 #define CD_PAD_R   U(18)
 #define CD_PAD_B   U(15)
 #define CD_MINH   U(40)
-#define CD_GAPX    U(12)
 #define CD_RAD     U(14)
 #define CD_SW_W    U(46)
 #define CD_SW_H    U(25)

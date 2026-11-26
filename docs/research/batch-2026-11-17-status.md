@@ -111,7 +111,7 @@ strict=1`, `fitfill: ... forwarding 0` ×5 — identical to the pre-revision one
 Ready to commit: modules fps/laser50/fitfill, `include\*.h`, `src\host.c`
 (+ ini quotes), `src\manager.c` (1.3.7, 7 cards), `build.ps1`, docs,
 `tools\` (replace_lab, new3_deploy, zrc_lab), `.gitignore`. Not published:
-the private external RE-base (gitignored), screenshots/`Artboard 1.jpg`.
+the community patchset (gitignored), screenshots/`Artboard 1.jpg`.
 EXEs are no longer committed to the repository at all (including historical ones —
 untracked): binaries are published only as GitHub Releases assets,
 `release\` in git keeps only one `HOWTO-INSTALL.txt` pointing to the Releases

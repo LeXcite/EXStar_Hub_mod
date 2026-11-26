@@ -16,7 +16,7 @@
 | Key source file | `modules/fps/fps.c` (`fpsRecord`); the shared qrc write path lives in `include\exstar_qrc.h` (also used by laser50's caption half) |
 | Offline check | `tools\replace_lab.exe "<ScanPage_E7.dll>" "/// ScanPage_E7" fps_from.bin fps_to.bin` - `from` = `id: root\r\n`, `to` = same + the rendered snippet; must show `record @file 0x97D318 raw=137735 lc=22753 anchor=1 pattern=1 ... stock=22392 (slack 361) -> patched=22610 FITS` |
 | Runtime proof | `%LOCALAPPDATA%\ExStarHubMods\mod.log`: `fps: ScanPage_E7.dll stream @0x97E518 raw 137735->138526, packed 22753<-22610 (ok)` |
-| Do not ever | move the next record's stream boundary (write > `lc` corrupts the neighbour); forget the `[u32 BE rawSize]` header update; feed the write back unchecked (this module re-inflates the patched record from the image and byte-compares, restoring a byte-exact backup on any mismatch); reuse the friend's `ScreenFpsProbe.inc` (IAT hook on `QString::number` + fixed caller RVAs `0x1620cd/0x16218b` - version-bound, died in an update); put a bare `#` value in an ini (see bugs) |
+| Do not ever | move the next record's stream boundary (write > `lc` corrupts the neighbour); forget the `[u32 BE rawSize]` header update; feed the write back unchecked (this module re-inflates the patched record from the image and byte-compares, restoring a byte-exact backup on any mismatch); reuse the community patchset's `ScreenFpsProbe.inc` (IAT hook on `QString::number` + fixed caller RVAs `0x1620cd/0x16218b` - version-bound, died in an update); put a bare `#` value in an ini (see bugs) |
 
 The scan page UI lives in **compressed QML resources inside the vendor
 DLL**: `[u32 BE rawSize][zlib stream]` records in a read-only section
@@ -120,7 +120,7 @@ scan page, moving when the view redraws (rotate the model; idle = hidden).
   resource - blank scan page). Rejected: the write path now takes a
   byte-exact backup of `4 + lc` bytes before `VirtualProtect` and
   restores it verbatim when the re-inflate check fails;
-- the friend's FPS approach (`ScreenFpsProbe.inc`): IAT hook
+- the community patchset's FPS approach (`ScreenFpsProbe.inc`): IAT hook
   `QString::number`, formatting call sites selected by **fixed caller
   RVAs** - the first thing a vendor update invalidates. The QML-level
   insertion above is version-agnostic by construction.

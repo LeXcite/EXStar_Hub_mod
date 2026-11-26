@@ -38,7 +38,7 @@ decompression — readable QML text. dump mode: `zrc_lab.exe <dll> dump <fileoff
 
 The file↔VA delta depends on the sections and drifts with updates — the modules work only with
 content (text anchor), offsets are never hardcoded.
-On the friend's build (2.0.0-45) the laser provider lay at `H=0x98C906` — the record
+On the community patchset's build (2.0.0-45) the laser provider lay at `H=0x98C906` — the record
 structure survives between versions, the content changed (see §5).
 
 ## 3. Injection window: before DllMain
@@ -84,7 +84,7 @@ the `.qm` catalog gives for EN `"%1线" → "%1 lines"`. Consequences:
 - if a string genuinely isn't translated (no key in the catalog) — it shows hanzi even in
   EN; verify with a screenshot of the actual localized UI, not a QML dump.
 
-This also explains the "different shape" of the strings on the friend's build (2.0.0-45:
+This also explains the "different shape" of the strings on the community patchset's build (2.0.0-45:
 literals `qsTr("50线")`) versus ours, 2.x (file stamp 3.1.x) (`qsTr("%1线").arg(<model field>)`):
 between versions the vendor moved the captions to dynamic numbers from the C++ model.
 
