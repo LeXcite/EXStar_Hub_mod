@@ -52,8 +52,11 @@
 .NOTES
     Writes C:\Users\LeX\AppData\Local\Temp\opencode\deploy_module.txt.
     Nothing in Program Files is touched except the module dlls, their
-    .ini files and modules.ini.  The user's selection file under
-    C:\Users\Public is never deleted, only copied by the module itself.
+    .ini files and modules.ini.  The user's session file under
+    C:\Users\Public is never deleted by this script: since 1.8.0 the
+    module itself drops its [uuid] exclusions when the hub starts, and
+    deleting the file by hand would only remove the evidence of what the
+    last session did.
 
     Hashes: the printed sha256 identifies THIS file, not a build of a
     commit.  MSVC link is not byte-reproducible here - two builds of one
