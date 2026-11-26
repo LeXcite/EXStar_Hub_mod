@@ -1050,3 +1050,74 @@ a `uuidHideList` that disagree; and *keeping one eye open* (the obvious
 guard) was refused by the user - the eye is allowed to hide everything,
 the merge just must not hang on it.
 
+## 21. The interface decision: the eye, and nothing else (1.8.0, 2026-11-26)
+
+The question came from the manager's own card: *what are the "Scan roster"
+and "Open folder" buttons for, if the eye already does the job?*  Answering
+it properly meant admitting that three layers of this module predate the eye
+binding and had never been removed afterwards.
+
+**The premise, re-checked.** The product ships no way to leave one scan out
+of a common mesh (§1: the answer comes from `HandlePrjFile::isGenerateCloud`,
+the flag is fixed in the project data, no UI control edits it, and deleting
+the scan is the only stock "exclusion"), and the eye is not that way either
+(§6, §12: an eye click sends `SetModelNodesVisible` to the scene, and none of
+the scene plugin's 43 commands reaches the merge; neither merge sender reads
+visibility). So the module's eye-to-gate path is not one option among
+several - it is the only tool there is. Everything else in the module is
+either that path, or scaffolding around it.
+
+**What the scaffolding was, and why it existed.** Before 1.4.0 the eye could
+not be tied to a scan: the click carried a `QUuid` that appeared nowhere near
+the `HandlePrjFile` the gate was asked about. Selection therefore had to be
+written by hand, which needed (a) an identity a human could read - the scan's
+folder, then the embedded project name, then the project-file path, read
+through the vendor's own `QString` getters - and (b) a discovery aid, since
+nobody knows the folder layout of a live session: `selective-mesh.map.txt`,
+one line per scan seen at the gate, with the section name ready to copy, plus
+the manager's roster window to tick boxes instead of editing text. Once the
+uuid binding worked (§7), all three became a *second* way to say what one
+click already says.
+
+**The trap they became - measured, not imagined.** On the development
+machine, 2026-11-26, `selective-mesh.ini` held 2,733 bytes and 41 uuid
+sections from every project opened since the module was written: 36 of them
+`included = 0`, including scans that are not in any current project, and 5
+`included = 1`, which is the default and pure noise. Because an explicit
+section was consulted *before* the eye, one of those leftovers could leave a
+scan out of a merge the user had just looked at - the screen said "visible",
+the mesh said "no". Worse, an eye hidden in a session that ended weeks ago
+was still hidden, while the vendor itself shows every scan again when a
+project is re-opened: the module remembered what the product deliberately
+forgot.
+
+**The decision (the user's, restated precisely).** The eye is the only
+interface. Its state lives exactly as long as a run of EXStar Hub: hiding an
+eye writes `[uuid] included = 0`, showing it deletes the section, and every
+non-`Settings` section is dropped when the hub process starts
+(`clearStaleEyeState()`, hub only - the sibling processes read the file and
+must never write it). `[Settings] enabled` stays, because that one is the
+user's own statement about the module, not about a scan. The folder/name
+identity channels, the `idDump` object map, the roster file and its dedupe
+table, the `merge-select.ini` migration and the roster window are removed;
+the manager's card button pair belongs to the wallpaper module again.
+
+**What stays, and why it is not the same thing.** The `.ini` itself is not
+ceremony: the mesh is built in `scanservice.exe` / `Sn3DprocessManager.exe`,
+which have no project list, no QML and no eyes, and the answer is needed at
+the moment the merge payload is assembled. A file that one process writes and
+the others read is the shortest mechanism that crosses that boundary without
+a synchronisation object, and it is the one artefact a user can open when a
+merge did not take the expected shape. `file` remains as a config key purely
+so a lab run can point the two halves at a scratch path.
+
+**The side effect on the hook.** Retiring the folder lookup removed the last
+vendor calls from the gate's decision: `getFolderPath`,
+`getTXProjFullPath`, `QString::utf16` and `~QString` are no longer resolved,
+so the hot path is now pure memory inspection under SEH - the rule §9
+established after the 1.5.0 fault, applied one step further. Fewer vendor
+calls inside a detour on a merge thread is not tidiness, it is one more thing
+that cannot block, fault, or hand Qt a pointer this module invented.
+
+Net: about 300 lines out of `selective_mesh.c`, about 500 out of
+`manager.c`, and a user surface consisting of one icon.

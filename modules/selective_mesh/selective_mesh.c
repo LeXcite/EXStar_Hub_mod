@@ -5,8 +5,7 @@
  * component, anchor, thread, state table, config key and log line - is
  * in README.md and ARCHITECTURE.md in this folder; the evidence chain
  * for every vendor fact used here is docs/research/merge-common-mesh.md.
- * (Until 1.6.0 this module was named merge_select; the selection file
- * migrated from merge-select.ini to selective-mesh.ini automatically.)
+ * (This module was named merge_select until 1.6.0.)
  *
  * The problem (verified on product 2.1.0-10):
  *   Several scans can live in one project, and the vendor's "generate
@@ -31,50 +30,59 @@
  *   list's eye icon is pure scene visibility: neither sender ever
  *   reads it, verified across all vendor DLLs.)
  *
+ * The interface - the scan list's eye icon, nothing else:
+ *   Hide a scan's eye and it is left out of the common mesh; show it and
+ *   it goes in.  The project list is what the user looks at, so it is the
+ *   only input: no file to edit, no dialog to learn, no per-project setup.
+ *
  * What this module does:
- *   One in-memory detour on that export. It answers "no cloud" for
- *   scans explicitly excluded in
- *      C:\Users\Public\Shining3d\EXStar Hub\selective-mesh.ini
- *   so the vendor's own merge code skips them; the vendor's "yes" is
- *   never overridden towards "included", so live scanning, storage and
- *   every unlisted scan behave exactly like stock.
+ *   - watches the eye icon.  It is the vendor QML slot
+ *     ProjectListControllerE7::setNodeVisible(QUuid, bool); the class is
+ *     not exported, so it is found through its Qt meta-object by class and
+ *     method name (see the eye watch below) - no RVAs;
+ *   - carries that one fact to the processes that build the mesh, through
+ *     C:\Users\Public\Shining3d\EXStar Hub\selective-mesh.ini: hiding an
+ *     eye writes [uuid] included = 0, showing it removes the section
+ *     again.  The hub UI is the only writer; the fusion engine has no
+ *     project list of its own, so a small file is the shortest honest way
+ *     to cross a process boundary;
+ *   - answers the exported question above with "no cloud" for a hidden
+ *     scan, so the vendor's own merge code leaves it out.  The vendor's
+ *     "yes" is never turned into "no" for a scan the user did not hide:
+ *     live scanning, stored data and every visible scan behave like stock;
+ *   - refuses to build an empty merge: if the exclusions would leave no
+ *     scan at all, this module's own answers are ignored for that run,
+ *     because the vendor's post-process never finishes an empty meshList
+ *     (all-hidden guard; docs/research/merge-common-mesh.md section 20).
+ *
+ * The state lives exactly as long as a run of EXStar Hub: its sections are
+ * dropped when the hub starts, so a fresh hub means open eyes and no
+ * leftovers from a session that no longer exists.  (That a re-opened project
+ * shows its scans again is an observation of 2026-11-24 this relies on; the
+ * reset at its own start is what the module guarantees.  A project switch
+ * *inside* one run is recorded as an open case in ARCHITECTURE.md section 5.)
  *
  *   Containment: the detour answers differently ONLY while the caller
  *   is inside Sn3DMultiProjects.dll (return-address check); calls from
  *   anywhere else, including Sn3DFile.dll itself, receive the pure
  *   vendor answer.
  *
- * Selection file (created automatically with a readable header):
- *   [Project_1\Scan_2]      ; scan folder: <project folder>\<scan folder>
- *   included = 0            ; 0 = leave this scan out of the common mesh
- *   Lookup order per scan: the scan's full folder path as the section
- *   name first, then "<parent folder>\<leaf folder>", then
- *   include-by-default. A [Settings] enabled = 0 master switch turns
- *   the module off at runtime without uninstalling it.
- *
- * Discovery aid: every scan seen during a common-mesh run is appended
- * once to `selective-mesh.map.txt` (same folder) with its ready-to-copy
- * section name and the decision, so exclusions can be written without
- * guessing any paths. The manager's "Scan roster" button (Selective
- * Mesh card) turns that roster into include checkboxes and keeps
- * this file in sync - ticking a box and saving needs no restart, the
- * detour re-reads the .ini on every decision.
- *
  * Anchoring (project rule: no hardcoded RVAs):
- *   Everything resolves by exported name at runtime:
- *     Sn3DFile.dll   ?isGenerateCloud@HandlePrjFile@@QEAA_NXZ   (target)
- *                    ?getFolderPath@HandlePrjFile@@QEAA?AVQString@@XZ
- *     Qt5Core.dll    ?utf16@QString@@QEBAPEBGXZ, ??1QString@@QEAA@XZ
- *   Any missing name (vendor renamed it in some future build) makes
- *   the module log that once and stay out of the way.
+ *   Sn3DFile.dll                       ?isGenerateCloud@HandlePrjFile@@
+ *                                        QEAA_NXZ                      (gate)
+ *   moc data inside the QML plugin     ProjectListControllerE7
+ *                                        ::setNodeVisible              (eye)
+ *   sn3d.digit.scenecontrol.dll        command-name strings      (scene watch)
+ *   Any name the vendor renamed in some future build makes the module
+ *   log that once and stay out of the way.
  *
  * Safety:
- *   - the detour adds no failure paths of its own: the folder query and
- *     the whole decision half run under SEH, and any fault falls back to
- *     the vendor's own answer;
- *   - it can only turn "yes" into "no" for an explicitly excluded or
- *     eye-hidden scan, never the other way and never for an unlisted
- *     scan;
+ *   - the decision reads memory and nothing else: no vendor function is
+ *     ever called with a pointer this module derived from its own idea of
+ *     a layout (a 1.5.0 crash taught that rule the hard way), every read
+ *     runs under SEH, and any fault keeps the vendor's own answer;
+ *   - it can only turn "yes" into "no" for an eye the user hid, never the
+ *     other way and never for a scan with no eye event;
  *   - hooks are installed only in the processes named by `gate_exes` and
  *     `eyewatch_exes`; every other host of the module stays completely
  *     inert (a hook in an unrelated service can take that service down);
@@ -82,9 +90,10 @@
  *     notification merely wakes it): MinHook is never touched while
  *     the loader lock is held, and concurrent install races cannot
  *     happen;
- *   - selection state lives in a plain .ini the user owns; deleting
- *     it restores stock behaviour; disabling the module in the manager
- *     reverts at the next start without touching any file;
+ *   - selection state lives in a plain .ini that holds only the scans the
+ *     user hid in the current run; deleting it is the same as showing
+ *     every eye, and disabling the module in the manager reverts at the
+ *     next start without touching any file;
  *   - no vendor file is modified; the detour lives in process memory.
  *
  * Compatibility note: a community patchset ships a similar feature
@@ -240,6 +249,18 @@
  *          "all 3 scans of this merge are hidden - exclusions ignored,
  *          every scan goes in", then "at least one stays in" for a
  *          partially visible project.
+ *   1.8.0  the eye becomes the only interface, and everything that
+ *          predated it is removed: folder- and name-based sections, the
+ *          selective-mesh.map.txt roster, the merge-select.ini migration,
+ *          the vendor QString getters the folder lookup needed, and the
+ *          manager's "Scan roster" / "Open folder" buttons.  They existed
+ *          while an eye could not be tied to a scan; once it could, they
+ *          were a second way to say the same thing - and a second way to
+ *          be wrong, with a file of stale sections quietly outranking what
+ *          the user sees.  selective-mesh.ini is now a session bridge:
+ *          [uuid] exclusions only, written on a click, cleared when the
+ *          hub starts (the vendor resets the tree itself on re-open).
+ *          Switches `eyewatch`/`eye_gate`/`all_hidden` unchanged.
  */
 
 #include <windows.h>
@@ -254,7 +275,7 @@
 #include "qt_read.h"
 #include "merge_list.h"      /* the merge loop's own scan list, as data */
 
-#define MOD_VERSION   "1.7.2"
+#define MOD_VERSION   "1.8.0"
 
 /* one log call, one tag: MOD_LOG(fmt, ...) ==
  * g_host->log("selective_mesh: " fmt, ...) - the literals concatenate */
@@ -270,14 +291,11 @@ static int logBudget(volatile LONG *left)
     return InterlockedDecrement(left) >= 0;
 }
 
+/* The eye state of the current run, one [uuid] section per hidden scan.
+ * Written by the hub, read by every process that builds a mesh. */
 #define SEL_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\selective-mesh.ini"
-#define MAP_FILE  L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\selective-mesh.map.txt"
-/* name used before 1.6.0; copied to the new name once, never deleted */
-#define SEL_FILE_OLD \
-    L"C:\\Users\\Public\\Shining3d\\EXStar Hub\\merge-select.ini"
 
-#define PATH_CAP  512                    /* wchar path/key buffers      */
-#define SEEN_MAX  64                     /* dedupe window for map+log   */
+#define PATH_CAP  512                    /* wchar key/path buffers       */
 
 static const ExHost *g_host;
 static int           g_verbose = 1;
@@ -285,19 +303,15 @@ static int           g_eyewatch = 1;
 static int           g_eyeGate = 1;
 static int           g_allHidden = 1;
 static wchar_t       g_selFile[PATH_CAP];
-static wchar_t       g_mapFile[PATH_CAP];
+
+/* name of this host process, resolved in ex_init before anything starts:
+ * it decides which allowlist (gate_exes / eyewatch_exes) applies */
+static char          g_exeName[MAX_PATH] = "?";
 
 /* vendor functions, resolved by exported name */
 typedef unsigned char (*FnIsCloud)(void *self);
-typedef void *(*FnFolderRet)(void *ret, void *self);   /* QString sret  */
-typedef const unsigned short *(*FnUtf16)(const void *q);
-typedef void (*FnDtor)(void *q);
 
 static FnIsCloud   g_origIsCloud;        /* trampoline from host->hook  */
-static FnFolderRet g_getFolderPath;
-static FnFolderRet g_getTxPath;          /* fallback identity, impl+0x60*/
-static FnUtf16     g_qUtf16;
-static FnDtor      g_qDtor;
 
 /* the common-mesh code lives in this image; callers from anywhere else
  * (project open/save, Sn3DFile internals) keep seeing the vendor answer */
@@ -306,13 +320,8 @@ static size_t         g_mpSize;
 
 static volatile LONG g_installed;        /* detour in place             */
 static volatile LONG g_broken;           /* resolve/hook failed: idle   */
-static volatile LONG g_reportBusy;       /* serialize map/log writes    */
 static volatile LONG g_logLeft = 200;    /* per-call decision log budget*/
 static HANDLE        g_wake;             /* dll-load event for worker   */
-
-/* scan keys already reported to the map file / log */
-static wchar_t g_seen[SEEN_MAX][PATH_CAP];
-static int     g_seenN;
 
 /* ---- probe (diagnostics): who asks, from where ---------------------
  * Every distinct return address that reaches the hooked vendor fns is
@@ -379,139 +388,33 @@ static const ExModuleInfo g_info = {
 /* small helpers                                                       */
 /* ------------------------------------------------------------------ */
 
-/* copy src into dst and strip trailing backslashes (keep bare "C:\") */
-static void cleanPath(const wchar_t *src, wchar_t *dst, int cap)
-{
-    int n = 0;
-    while (src[n] && n < cap - 1) {
-        dst[n] = src[n];
-        n++;
-    }
-    dst[n] = 0;
-    while (n > 3 && dst[n - 1] == L'\\')
-        dst[--n] = 0;
-}
-
-/* "C:\root\Project_1\Scan_2" -> "Project_1\Scan_2";
- * false when the path has no parent folder                      */
-static int shortKey(const wchar_t *path, wchar_t *out, int cap)
-{
-    const wchar_t *slash, *prev;
-    int i, len;
-
-    slash = wcsrchr(path, L'\\');
-    if (!slash || slash == path)
-        return 0;
-    prev = slash - 1;
-    while (prev > path && *prev != L'\\')
-        prev--;
-    if (prev == path && *prev != L'\\')
-        return 0;                       /* no parent folder component  */
-    while (*prev == L'\\' && prev > path)
-        prev--;
-    if (*prev == L'\\')
-        prev++;
-    len = (int)(slash - prev) + (int)wcslen(slash + 1) + 2; /* + '\' +0 */
-    if (len > cap)
-        return 0;
-    for (i = 0; prev < slash; prev++, i++)
-        out[i] = *prev;
-    out[i++] = L'\\';
-    wcscpy_s(out + i, cap - i, slash + 1);
-    return 1;
-}
-
-/* append one UTF-16 line (with BOM on creation) to the map file */
-static void mapAppend(const wchar_t *line)
-{
-    HANDLE h;
-    DWORD wr;
-    WORD bom = 0xFEFF;
-    LARGE_INTEGER size = { 0, 0 };
-
-    h = CreateFileW(g_mapFile, FILE_APPEND_DATA,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-                    OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE)
-        return;
-    if (GetFileSizeEx(h, &size) && size.QuadPart == 0)
-        WriteFile(h, &bom, 2, &wr, NULL);
-    WriteFile(h, line, (DWORD)(wcslen(line) * sizeof(wchar_t)), &wr, NULL);
-    WriteFile(h, L"\r\n", 4, &wr, NULL);
-    CloseHandle(h);
-}
-
-/* report "<hh:mm:ss> <key>  included=<v>[   <- note]" once per key to
- * the map file; all callers are serialized via g_reportBusy           */
-static void reportScan(const wchar_t *key, int included,
-                       const wchar_t *note)
-{
-    wchar_t msg[PATH_CAP + 128];
-    SYSTEMTIME st;
-    int i;
-
-    if (!key[0])
-        return;
-    for (i = 0; i < g_seenN; i++)
-        if (_wcsicmp(g_seen[i], key) == 0)
-            return;
-    if (g_seenN < SEEN_MAX)
-        wcsncpy_s(g_seen[g_seenN++], PATH_CAP, key, _TRUNCATE);
-    else
-        return;                         /* window full: stop reporting */
-
-    GetLocalTime(&st);
-    swprintf_s(msg, (sizeof msg / sizeof msg[0]),
-               L"%02u:%02u:%02u  %ls  included=%d",
-               st.wHour, st.wMinute, st.wSecond, key, included ? 1 : 0);
-    if (note)
-        wcscat_s(msg, (sizeof msg / sizeof msg[0]), note);
-    mapAppend(msg);
-}
-
-/* one-time data migration: until 1.6.0 the selection lived in
- * merge-select.ini.  When the new file does not exist yet and the old
- * one does, copy it (the old file stays untouched as a backup).  Runs in
- * every gated process, but CopyFileW(bFailIfExists) makes the race
- * harmless: whoever gets there first writes the new file.  The .map.txt
- * is not migrated - it is a generated roster that rebuilds itself on the
- * next common-mesh run. */
-static void migrateSelFile(void)
-{
-    if (GetFileAttributesW(g_selFile) != INVALID_FILE_ATTRIBUTES)
-        return;                              /* new file already there  */
-    if (GetFileAttributesW(SEL_FILE_OLD) == INVALID_FILE_ATTRIBUTES)
-        return;                              /* nothing to inherit      */
-    if (CopyFileW(SEL_FILE_OLD, g_selFile, TRUE))
-        MOD_LOG("migrated %S -> %S (the old file stays as a backup)",
-                SEL_FILE_OLD, g_selFile);
-}
-
-/* create the selection file with a readable header once */
+/* create the session file with a readable header once */
 static void ensureSelFile(void)
 {
     static const char hdr[] =
-        "; selective_mesh - which scans feed the common mesh\r\n"
+        "; selective_mesh - scans hidden from the common mesh\r\n"
         ";\r\n"
-        "; One section per scan; the section name is the scan folder\r\n"
-        "; written as <project folder>\\<scan folder> (the full scan folder\r\n"
-        "; path works too, it is checked first). When the scan has no\r\n"
-        "; folder yet (a fresh session), its project name from the mesh\r\n"
-        "; pipeline is used instead - the roster shows whichever applies.\r\n"
-        "; Scans that are not listed are kept, exactly like stock\r\n"
-        "; behaviour.\r\n"
+        "; One section per hidden scan, named by its QUuid:\r\n"
         ";\r\n"
-        "; selective-mesh.map.txt next to this file lists every scan the\r\n"
-        "; module has seen during common-mesh runs - copy a section name\r\n"
-        "; from there and set included = 0 to drop that scan.\r\n"
+        ";   [3F2504E0-4F89-41D3-9A0C-0305E82C3301]\r\n"
+        ";   included = 0\r\n"
+        ";\r\n"
+        "; A scan without a section is visible - the stock behaviour.  The\r\n"
+        "; module writes a section when you hide a scan's eye and removes it\r\n"
+        "; when you show the eye again, so this file is only ever a list of\r\n"
+        "; exclusions.  Nothing needs to be edited by hand.\r\n"
+        ";\r\n"
+        "; It describes the CURRENT run of EXStar Hub: its sections are\r\n"
+        "; dropped when the hub starts, because an eye hidden yesterday\r\n"
+        "; describes a project list that no longer exists.  The file is a\r\n"
+        "; bridge between the hub UI (the only writer) and the processes that\r\n"
+        "; build the mesh (they have no project list of their own), not\r\n"
+        "; somewhere choices are kept.  Deleting it while the hub runs is the\r\n"
+        "; same as showing every eye.\r\n"
         "\r\n"
         "[Settings]\r\n"
         "; master switch: 0 = module inactive even while installed\r\n"
-        "enabled = 1\r\n"
-        "\r\n"
-        "; example:\r\n"
-        ";[Project_1\\Scan_2]\r\n"
-        ";included = 0\r\n";
+        "enabled = 1\r\n";
     HANDLE h;
     DWORD wr;
 
@@ -523,202 +426,44 @@ static void ensureSelFile(void)
     CloseHandle(h);
 }
 
+/* A fresh run of EXStar Hub shows every scan, so exclusions a previous run
+ * left behind describe eyes that no longer exist: drop them.  Only [uuid]
+ * sections go - [Settings] is the user's own master switch and stays.
+ * Runs in the UI process only, before any eye event or merge call can be
+ * seen, and never on the sibling processes that merely read the file. */
+static void clearStaleEyeState(void)
+{
+    static wchar_t names[16384];
+    wchar_t *p;
+    int n = 0;
+
+    if (strcmp(g_exeName, "EXStar Hub.exe") != 0)
+        return;
+    if (!GetPrivateProfileSectionNamesW(names, (DWORD)
+            (sizeof names / sizeof names[0]), g_selFile))
+        return;
+    for (p = names; *p; p += wcslen(p) + 1) {
+        if (_wcsicmp(p, L"Settings") == 0)
+            continue;
+        WritePrivateProfileStringW(p, NULL, NULL, g_selFile);
+        n++;
+    }
+    WritePrivateProfileStringW(NULL, NULL, NULL, g_selFile);  /* flush   */
+    if (n && g_verbose)
+        MOD_LOG("dropped %d exclusion(s) a previous run left in %S"
+                    " - the eyes start open", n, g_selFile);
+}
+
 /* ------------------------------------------------------------------ */
 /* the decision (detour hot path)                                      */
 /* ------------------------------------------------------------------ */
-
-/* decision reasons, parallel to the strings logged for each call     */
-#define WHY_INI_EXC   0
-#define WHY_INI_INC   1
-#define WHY_UNLISTED  2
-#define WHY_MASTER    3
-#define WHY_NOREAD    4
-#define WHY_EYE       5
-#define WHY_ALLHIDDEN 6
-
-/* one vendor QString getter -> wchar buffer; 1 when a non-empty string
- * came back. Runs the getter + utf16 + dtor trio under the caller's SEH. */
-static int readStr(FnFolderRet fn, void *self, wchar_t *out, int cap)
-{
-    unsigned long long qbuf[4];          /* QString return slot         */
-    const unsigned short *u;
-    int i, ok = 0;
-
-    out[0] = 0;
-    (void)(fn)(qbuf, self);                  /* sret: hidden 1st arg  */
-    u = (const unsigned short *)(g_qUtf16)(qbuf);
-    if (u && u[0]) {
-        for (i = 0; u[i] && i < cap - 1; i++)
-            out[i] = (wchar_t)u[i];
-        out[i] = 0;
-        ok = 1;
-    }
-    (g_qDtor)(qbuf);
-    return ok;
-}
-
-/* by-value Qt5 QString living inside a vendor object (struct { d, ptr }).
- * Qt5 QArrayData: ref@0 size@4 alloc@8, utf16 data behind ptr. Copies to
- * wchar; 1 on a non-empty string. Caller runs it under SEH. */
-static int readEmbed(const void *qstr, wchar_t *out, int cap)
-{
-    const unsigned long long *q = (const unsigned long long *)qstr;
-    unsigned long long d, p;
-    const unsigned short *u;
-    int size, i;
-
-    out[0] = 0;
-    if (!q)
-        return 0;
-    d = q[0];
-    p = q[1];
-    if (!d || !p)
-        return 0;
-    size = *(const int *)(d + 4);           /* QArrayData::size        */
-    if (size <= 0 || size >= 8192)
-        return 0;
-    if (size > cap - 1)
-        size = cap - 1;
-    u = (const unsigned short *)p;
-    for (i = 0; i < size; i++)
-        out[i] = (wchar_t)u[i];
-    out[i] = 0;
-    return i > 0;
-}
-
-/* One-shot map of an impl object that answered nothing through the
- * getters: dump every by-value string in its first 80 bytes, so the
- * next build can pick the right field even when our guesses miss.
- * Bounded log (g_idLeft), fully SEH-guarded. */
-static volatile LONG g_idLeft = 6;
-static void idDump(unsigned long long impl)
-{
-    int off;
-
-    if (!logBudget(&g_idLeft))
-        return;
-    __try {
-        for (off = 0; off <= 0x48; off += 8) {
-            wchar_t s[96];
-            int i, printable = 1;
-
-            if (!readEmbed((const void *)(impl + (unsigned long long)off),
-                           s, (int)(sizeof s / sizeof s[0])))
-                continue;
-            for (i = 0; s[i]; i++)
-                if (s[i] < 0x20 || s[i] == L'\\') { printable = 0; break; }
-            if (printable)
-                MOD_LOG("idmap impl=%p +0x%02X = %ls",
-                            (void *)impl, off, s);
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-
-/* 1 = keep the scan in the merge (explicitly or by any fallback),
- * 0 = explicitly excluded. Writes the human-readable scan key into
- * keyOut (empty when every identity query failed) and the reason into
- * *why. *implOut gets the vendor impl pointer for diagnostics.
- * Never faults: vendor objects run under SEH.                           */
-static int scanDecision(void *self, wchar_t *keyOut, int cap, int *why,
-                        unsigned long long *implOut)
-{
-    wchar_t folder[PATH_CAP], alt[PATH_CAP], key[PATH_CAP], name[PATH_CAP];
-    int v;
-
-    keyOut[0] = 0;
-    *implOut = 0;
-    if (!g_getFolderPath || !g_qUtf16 || !g_qDtor) {
-        *why = WHY_NOREAD;
-        return 1;
-    }
-    if (!GetPrivateProfileIntW(L"Settings", L"enabled", 1, g_selFile)) {
-        *why = WHY_MASTER;
-        return 1;
-    }
-
-    __try {
-        /* three identity channels, best first:
-         * - the folder path (filled on saved projects)
-         * - the embedded NAME string the vendor itself reads at
-         *   **(self+0x18)+8 inside HandlePrjFile::getProjInfo - live
-         *   session scans fill this even when every getter is empty
-         * - the tx project-file name (the getter our RE calls impl+0x60) */
-        *implOut = *(unsigned long long *)((unsigned char *)self + 0x18);
-        (void)readStr(g_getFolderPath, self, folder, PATH_CAP);
-        name[0] = 0;
-        if (*implOut)
-            (void)readEmbed((const void *)(*implOut + 8), name, PATH_CAP);
-        alt[0] = 0;
-        if (g_getTxPath)
-            (void)readStr(g_getTxPath, self, alt, PATH_CAP);
-        if (!folder[0] && !name[0] && !alt[0] && *implOut)
-            idDump(*implOut);               /* one-shot object map      */
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        *why = WHY_NOREAD;
-        return 1;                       /* vendor object unreadable    */
-    }
-
-    /* section lookup: candidates best-first; each tried as the full
-     * string, then as <parent>\<leaf>; first hit decides               */
-    {
-        const wchar_t *primary = NULL, *secondary = NULL;
-        if (folder[0])
-            primary = folder;
-        else if (name[0])
-            primary = name;
-        else if (alt[0])
-            primary = alt;
-        if (primary) {
-            if (primary != name && name[0])
-                secondary = name;
-            else if (primary != alt && alt[0])
-                secondary = alt;
-        }
-        if (!primary) {
-            *why = WHY_NOREAD;
-            return 1;
-        }
-        v = -1;
-        key[0] = 0;
-        for (int c = 0; c < 2; c++) {
-            const wchar_t *cand = c == 0 ? primary : secondary;
-            wchar_t sh[PATH_CAP];
-            int t;
-            if (!cand)
-                continue;
-            t = GetPrivateProfileIntW(cand, L"included", -1, g_selFile);
-            if (t == -1 && shortKey(cand, sh, PATH_CAP))
-                t = GetPrivateProfileIntW(sh, L"included", -1, g_selFile);
-            if (t != -1) {
-                wcscpy_s(key, PATH_CAP, cand);
-                v = t;
-                break;
-            }
-        }
-        if (v == -1)
-            wcscpy_s(key, PATH_CAP, primary);
-    }
-    cleanPath(key, key, PATH_CAP);
-    {
-        wchar_t sh[PATH_CAP];
-        if (shortKey(key, sh, PATH_CAP))
-            wcscpy_s(key, PATH_CAP, sh);
-    }
-    wcscpy_s(keyOut, (size_t)cap, key);
-    if (v == -1) {
-        *why = WHY_UNLISTED;
-        return 1;                       /* not listed -> keep (stock)  */
-    }
-    *why = (v == 0) ? WHY_INI_EXC : WHY_INI_INC;
-    return v != 0;
-}
 
 /* eye watch (implemented with the meta-object code below) */
 static int  eyeLookup(const unsigned char *u);   /* -1 unknown, 0/1 vis */
 static void fmtUuid(const unsigned char *u, char *out, int cap);
 static void gateEyeUuid(void *self, unsigned long long impl, void *wrapper,
                         unsigned char *u, char *ustr, int cap, int *have);
+static void uuidLeToBe(const unsigned char *u, unsigned char *b);
 
 /* ------------------------------------------------------------------ */
 /* wrapper-capturing thunk                                             */
@@ -839,10 +584,15 @@ static unsigned char __fastcall det_isCloud(void *self, void *wrapper,
     return out;
 }
 
+/* why a scan was kept or dropped, in words: the only selection input is
+ * the eye, so there are exactly four answers                    */
+#define WHY_MASTER    0
+#define WHY_EYE       1
+#define WHY_NOID      2
+#define WHY_ALLHIDDEN 3
 static const char *const g_whyN[] = {
-    "excluded in .ini", "included in .ini", "not listed (stock)",
-    "master switch off", "identity unreadable (fail-open)",
-    "eye icon hidden", "every scan hidden - all in" };
+    "master switch off", "eye icon hidden", "scan id unreadable (fail-open)",
+    "every scan hidden - all in" };
 
 /* the all-hidden guard (see its own section): only asked when this scan
  * would be left out, and it answers for the whole merge run */
@@ -852,43 +602,52 @@ static unsigned char decideCloud(void *self, void *wrapper,
                                  unsigned char *ra, unsigned char r,
                                  const RegCtx *c)
 {
-    wchar_t key[PATH_CAP];
     unsigned long long impl = 0;
     unsigned char ub[16];
     char ustr[48];
-    int haveU = 0, eye = -1;
-    int why = WHY_NOREAD, inc;
+    int haveU = 0, inc = 1;
+    int why = WHY_NOID;
 
     if (ra < g_mpBase || ra >= g_mpBase + g_mpSize) {
         probeLog("cloud?", ra, self);
         return r;                       /* caller outside the merge code */
     }
 
-    inc = scanDecision(self, key, (int)(sizeof key / sizeof key[0]),
-                       &why, &impl);
+    /* The eye is the whole interface, and it is keyed by the scan QUuid
+     * (offset located at runtime - see uuidScan).  Two channels, same
+     * order everywhere (the guard's itemHidden() mirrors this):
+     * - the session .ini: [uuid] written when an eye is hidden.  It also
+     *   carries the verdict into the processes that build the mesh and
+     *   have no project list of their own.
+     * - the in-process eye map: the instant state from the metacall watch,
+     *   used when the .ini has nothing for this scan.
+     * No .ini section and no eye event means the scan was never hidden -
+     * stock answer. */
+    if (!GetPrivateProfileIntW(L"Settings", L"enabled", 1, g_selFile)) {
+        why = WHY_MASTER;
+    } else if (g_eyeGate) {
+        __try {
+            impl = *(unsigned long long *)((unsigned char *)self + 0x18);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            impl = 0;
+        }
+        gateEyeUuid(self, impl, wrapper, ub, ustr, (int)sizeof ustr, &haveU);
+        if (haveU) {
+            wchar_t ukey[64];
+            int t = -1, eye = -1;
+            unsigned char alt[16];
 
-    /* eye binding, two channels, both keyed by the scan QUuid the
-     * object carries (offset located at runtime - see uuidScan):
-     * - the shared .ini: [uuid] sections written whenever an eye is
-     *   toggled (works across processes - the fusion engine's merge
-     *   loop reads the same file it never wrote)
-     * - the in-process eye map: instant state from the metacall watch
-     * An explicit .ini section always wins; the eye map only speaks
-     * when the ini has no decision for the scan. */
-    gateEyeUuid(self, impl, wrapper, ub, ustr, (int)sizeof ustr, &haveU);
-    if (g_eyeGate && haveU && why != WHY_MASTER) {
-        wchar_t ukey[64];
-        int t = -1;
-        if (MultiByteToWideChar(CP_UTF8, 0, ustr, -1, ukey,
-                                (int)(sizeof ukey / sizeof ukey[0])) > 0)
-            t = GetPrivateProfileIntW(ukey, L"included", -1, g_selFile);
-        if (t != -1) {
-            inc = (t != 0);
-            why = (t != 0) ? WHY_INI_INC : WHY_INI_EXC;
-        } else {
-            eye = eyeLookup(ub);
-            if (inc && eye == 0
-                && (why == WHY_UNLISTED || why == WHY_NOREAD)) {
+            if (MultiByteToWideChar(CP_UTF8, 0, ustr, -1, ukey,
+                                    (int)(sizeof ukey / sizeof ukey[0])) > 0)
+                t = GetPrivateProfileIntW(ukey, L"included", -1, g_selFile);
+            if (t == -1) {
+                eye = eyeLookup(ub);
+                if (eye < 0) {              /* the other byte order, if any */
+                    uuidLeToBe(ub, alt);
+                    eye = eyeLookup(alt);
+                }
+            }
+            if (t == 0 || (t == -1 && eye == 0)) {
                 inc = 0;
                 why = WHY_EYE;
             }
@@ -897,41 +656,19 @@ static unsigned char decideCloud(void *self, void *wrapper,
 
     /* "not one scan visible" is not a selection: such a merge never
      * finishes (the guard's own section says why), so it runs as if all
-     * eyes were open.  Only module exclusions are ignored - the vendor's
-     * own answer `r` still decides. */
-    if (g_allHidden && !inc && why != WHY_MASTER
-        && allHiddenNow(c, self)) {
+     * eyes were open.  Only this module's own "no" is ignored - the
+     * vendor's answer `r` still decides. */
+    if (g_allHidden && why == WHY_EYE && allHiddenNow(c, self)) {
         inc = 1;
         why = WHY_ALLHIDDEN;
     }
 
-    if (InterlockedCompareExchange(&g_reportBusy, 1, 0) == 0) {
-        if (!r)
-            reportScan(key, 0, L"   <- native no-cloud flag, already out");
-        else if (!inc)
-            reportScan(key, 0, L"   <- left out of the common mesh");
-        else
-            reportScan(key, 1, NULL);
-        InterlockedExchange(&g_reportBusy, 0);
-    }
-    if (g_verbose && logBudget(&g_logLeft)) {
-        char u8[PATH_CAP * 2 + 96];
-        const char *whyS = r ? g_whyN[why] : "vendor flag off";
-        if (key[0] &&
-            WideCharToMultiByte(CP_UTF8, 0, key, -1, u8, (int)sizeof u8,
-                                NULL, NULL) > 0)
-            MOD_LOG("gate %s  uuid=%s eye=%d  vendor=%d"
-                        "  %s  -> %s",
-                        u8, haveU ? ustr : "-", eye, (int)r, whyS,
-                        (!r || !inc) ? "SKIP" : "include");
-        else
-            MOD_LOG("gate <no id>  uuid=%s eye=%d"
-                        "  ra=+0x%llX impl=%p  vendor=%d  %s  -> %s",
-                        haveU ? ustr : "-", eye,
-                        (unsigned long long)(ra - g_mpBase), (void *)impl,
-                        (int)r, whyS,
-                        (!r || !inc) ? "SKIP" : "include");
-    }
+    if (g_verbose && logBudget(&g_logLeft))
+        MOD_LOG("gate uuid=%s  ra=+0x%llX impl=%p  vendor=%d  %s  -> %s",
+                    haveU ? ustr : "-",
+                    (unsigned long long)(ra - g_mpBase), (void *)impl,
+                    (int)r, r ? g_whyN[why] : "vendor flag off",
+                    (!r || !inc) ? "SKIP" : "include");
     return (r && inc) ? 1 : 0;
 }
 
@@ -948,8 +685,6 @@ static unsigned char decideCloud(void *self, void *wrapper,
  *   gate_exes     - processes that run Sn3DMultiProjects' merge loop
  *   eyewatch_exes - the QML UI process (eye icons live there)
  * Both are ini switches; an unmatched process logs once and goes idle. */
-static char g_exeName[MAX_PATH] = "?";
-
 static int exeAllowed(const char *key, const char *defList)
 {
     char list[256];
@@ -1009,12 +744,6 @@ static void tryInstall(void)
     __try {
         target = (void *)GetProcAddress(
             sf, "?isGenerateCloud@HandlePrjFile@@QEAA_NXZ");
-        g_getFolderPath = (FnFolderRet)GetProcAddress(
-            sf, "?getFolderPath@HandlePrjFile@@QEAA?AVQString@@XZ");
-        g_getTxPath = (FnFolderRet)GetProcAddress(
-            sf, "?getTXProjFullPath@HandlePrjFile@@QEAA?AVQString@@XZ");
-        g_qUtf16 = (FnUtf16)GetProcAddress(qt, "?utf16@QString@@QEBAPEBGXZ");
-        g_qDtor  = (FnDtor)GetProcAddress(qt, "??1QString@@QEAA@XZ");
         dos = (PIMAGE_DOS_HEADER)mp;
         nt  = (PIMAGE_NT_HEADERS)((unsigned char *)mp + dos->e_lfanew);
         if (dos->e_magic != IMAGE_DOS_SIGNATURE
@@ -1027,10 +756,9 @@ static void tryInstall(void)
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         target = NULL;
     }
-    if (!target || !g_getFolderPath || !g_qUtf16 || !g_qDtor) {
-        MOD_LOG("vendor exports not found "
-                    "(isGenerateCloud/getFolderPath/QString) "
-                    "- staying out of it");
+    if (!target) {
+        MOD_LOG("HandlePrjFile::isGenerateCloud not found in "
+                    "Sn3DFile.dll - staying out of it");
         InterlockedExchange(&g_broken, 1);
         return;
     }
@@ -1548,14 +1276,14 @@ static void eyeRecord(const unsigned char *u, int visible)
         g_eye[slot].seq = seq;
     }
     fmtUuid(u, s, sizeof s);
-    /* persist the eye state into the shared selection .ini as a
-     * [uuid] section: the same file every process with this module
-     * consults at the gate (the fusion engine has no QML of its own,
-     * the hub UI is the only writer). Hidden writes included = 0;
-     * showing removes the section, so the file stays a clean list of
-     * exclusions. NOTE: the vendor resets the tree to "all visible"
-     * when a project re-opens, so these sections describe the current
-     * session, like the eye icons themselves. */
+    /* carry the eye state into the session .ini as a [uuid] section: the
+     * same file every process with this module consults at the gate (the
+     * fusion engine has no QML of its own, the hub UI is the only writer).
+     * Hiding writes included = 0; showing deletes the section, so the file
+     * is only ever a list of exclusions, and clicking an eye is the only
+     * thing that writes it.  Sections older than this run are dropped when
+     * the hub starts (clearStaleEyeState), so what is in here describes the
+     * eyes the user can see right now. */
     if (g_eyeGate && MultiByteToWideChar(CP_UTF8, 0, s, -1, ws,
                                          (int)(sizeof ws / sizeof ws[0])) > 0) {
         if (visible)
@@ -3180,6 +2908,13 @@ static unsigned WINAPI worker(LPVOID arg)
     int notif;
 
     (void)arg;
+    /* A run of the hub starts with every eye open, so any exclusion the
+     * previous run left behind describes a project list that no longer
+     * exists.  Cleared here, on a plain thread, before anything can read or
+     * write the file - and only in the hub: the sibling processes that build
+     * the mesh only ever read it. */
+    ensureSelFile();
+    clearStaleEyeState();
     notif = armNotify();
     if (!notif && g_verbose)
         MOD_LOG("dll notification unavailable, "
@@ -3244,7 +2979,6 @@ EX_EXPORT int ex_init(const ExHost *host)
 {
     wchar_t wbuf[PATH_CAP];
     char abuf[PATH_CAP];
-    wchar_t *dot, *slash;
     unsigned tid;
     HANDLE th;
 
@@ -3272,24 +3006,15 @@ EX_EXPORT int ex_init(const ExHost *host)
         strcpy_s(g_exeName, sizeof g_exeName, exe);
     }
 
+    /* One selection file, one location: the hub writes it, the processes
+     * that build the mesh read it. The `file` config key lets a lab test
+     * point the module somewhere else. */
     if (host->cfg_string(host, "file", abuf, sizeof abuf) > 0 && abuf[0]
         && MultiByteToWideChar(CP_UTF8, 0, abuf, -1, wbuf,
-                               (int)(sizeof wbuf / sizeof wbuf[0])) > 0) {
+                               (int)(sizeof wbuf / sizeof wbuf[0])) > 0)
         wcsncpy_s(g_selFile, PATH_CAP, wbuf, _TRUNCATE);
-        /* the map file always sits next to the selection file */
-        wcsncpy_s(g_mapFile, PATH_CAP, g_selFile, _TRUNCATE);
-        dot  = wcsrchr(g_mapFile, L'.');
-        slash = wcsrchr(g_mapFile, L'\\');
-        if (dot && (!slash || dot > slash))
-            *dot = 0;
-        wcscat_s(g_mapFile, PATH_CAP, L".map.txt");
-    } else {
+    else
         wcscpy_s(g_selFile, PATH_CAP, SEL_FILE);
-        wcscpy_s(g_mapFile, PATH_CAP, MAP_FILE);
-        /* default path only: never pour old data into a path the user
-         * chose themselves (it may already hold something else) */
-        migrateSelFile();
-    }
 
     g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     if (!g_wake)

@@ -35,8 +35,8 @@ not included in git).
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
 | fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
-| selective_mesh | 1.7.0 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch, hook allowlists); 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`); 1.5.6 reads nested command values and proved the viewport half has nothing to intercept (see 2026-11-25 below); 1.5.8 kept a hidden scan hidden on screen across the environment switch - that re-apply hangs the hub, so it is off by default since 1.6.1; 1.6.0 = renamed Selective Mesh; 1.6.2 = the map walk of a watched scene command is hard-bounded (it could spin forever on a non-map argument and hang the hub) - live-verified 2026-11-26; 1.7.0 = a merge this module would leave empty runs as if all eyes were open, reading the merge's own scan list out of the caller's registers (`merge_list.h`, proven by `tools/merge_list_lab.c`); 1.7.1 = that guard accepts the register block on its content, not on an assumed register name (the first live run falsified `rcx == self`); 1.7.2 = `RegCtx` field names match the measured block order - live-verified 2026-11-26 (all eyes hidden -> full mesh, one eye shown -> only visible scans) |
-| ExStarModManager | 1.6.9 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist (one exception: 1.6.9 renames the `merge_select` token of a hand-made list, never adds one); 1.6.9 removes the legacy `merge_select` files and carries its settings to `selective_mesh` |
+| selective_mesh | 1.8.0 | eye-icon driven common-mesh selection (session ini keyed by scan uuid and shared across processes, meta-object eye watch, hook allowlists); 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`); 1.5.6 reads nested command values and proved the viewport half has nothing to intercept (see 2026-11-25 below); 1.5.8 kept a hidden scan hidden on screen across the environment switch - that re-apply hangs the hub, so it is off by default since 1.6.1; 1.6.0 = renamed Selective Mesh; 1.6.2 = the map walk of a watched scene command is hard-bounded (it could spin forever on a non-map argument and hang the hub) - live-verified 2026-11-26; 1.7.0 = a merge this module would leave empty runs as if all eyes were open, reading the merge's own scan list out of the caller's registers (`merge_list.h`, proven by `tools/merge_list_lab.c`); 1.7.1 = that guard accepts the register block on its content, not on an assumed register name (the first live run falsified `rcx == self`); 1.7.2 = `RegCtx` field names match the measured block order - live-verified 2026-11-26 (all eyes hidden -> full mesh, one eye shown -> only visible scans); 1.8.0 = the eye is the only interface: folder/name identity, the `.map.txt` roster, the `merge-select.ini` migration and the vendor `QString` getters are gone, exclusions are dropped when the hub starts (a fresh session shows every scan, like the vendor itself) |
+| ExStarModManager | 1.7.0 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist (one exception: 1.6.9 renames the `merge_select` token of a hand-made list, never adds one); 1.6.9 removes the legacy `merge_select` files and carries its settings to `selective_mesh`; 1.7.0 drops the Selective Mesh "Scan roster" / "Open folder" buttons and the roster window (the eye in the hub is the module's only interface) |
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
 
@@ -604,6 +604,38 @@ stays hidden on screen. Evidence:
    `RegCtx` had been laid out the other way round (the first pushed `rax`
    is at the *lowest* address). 1.7.2 renames those fields to match the
    measured order: no behaviour change.
+ * **1.8.0 (2026-11-26): the eye becomes the only interface, and the
+   manager loses two buttons.** The user's question - what are "Scan roster"
+   and "Open folder" for? - was the right one. The product has no stock way
+   to exclude a scan, so the eye-to-merge path *is* the feature; everything
+   else dated from before the eye could be tied to a scan. Removed: the
+   folder/name identity channels and the vendor string code they needed
+   (`getFolderPath`, `getTXProjFullPath`, `QString::utf16`, `~QString`), the
+   `idDump` object map, the `selective-mesh.map.txt` roster with its dedupe
+   table, the `merge-select.ini` migration, and with them the roster window
+   and `fbtnNames` in the manager (~500 lines, manager 1.7.0 - the card's
+   file-button pair now belongs to the wallpaper module alone). Kept: the eye
+   watch, the uuid binding, the all-hidden guard, the scene diagnostics.
+   State is session-scoped, in line with how the product behaves (a
+   re-opened project shows its scans again - observed 2026-11-24, not
+   something the module can enforce). So
+   `clearStaleEyeState()` drops every `[uuid]` section when the hub starts
+   (hub process only - the siblings only read the file; `[Settings] enabled`
+   is the user's own switch and stays), and showing an eye deletes its
+   section. That also closes a real trap: 2.7 KB of sections from months of
+   projects had piled up, some `included = 0` for scans that no longer exist,
+   and a stale section outranked what the user could see on screen.
+   The gate's decision is now pure memory inspection - master switch, uuid,
+   session `.ini`, in-RAM eye map, guard. No vendor function is called there,
+   which is the rule 1.5.0 taught the hard way.
+   **Built, not yet deployed** - needs the user's UAC click and a hub
+   restart. Module 1.8.0, manager 1.7.0.
+   Known open question, recorded rather than papered over: a *project*
+   re-open inside one run is not measured - if the vendor rebuilds the tree
+   without emitting a show event per row, an exclusion made before the switch
+   outlives the icon that produced it (the eye is open, the module still says
+   hidden). Showing the eye or restarting the hub settles it; the `eye <uuid>
+   -> VISIBLE` log line is what would prove the vendor resets it by itself.
 
 ## Open regressions
 

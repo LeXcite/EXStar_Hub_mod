@@ -81,7 +81,7 @@ $managerMods = @(
     @{ id = 'selective_mesh'; ini = 'modules\selective_mesh\selective_mesh.ini' }
 )
 
-$version = '1.6.9'   # product version; release exe is copied as ExStarModManager_<version>.exe
+$version = '1.7.0'   # product version; release exe is copied as ExStarModManager_<version>.exe
 
 function New-VersionRes($path, $desc, $origName) {
     $vq = ($version -split '\.').Trim()

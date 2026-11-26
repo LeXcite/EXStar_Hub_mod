@@ -22,10 +22,11 @@
          [selective_mesh] (same enabled value), and every `merge_select`
          token in [host] sibling_modules becomes `selective_mesh`,
       3. deletes modules\merge_select.dll and modules\merge_select.ini,
-      4. reports the state of the data file: the module itself copies
-         C:\Users\Public\Shining3d\EXStar Hub\merge-select.ini to
-         selective-mesh.ini on first start, this only logs which of the
-         two exists now.
+      4. logs whether the session data file
+         C:\Users\Public\Shining3d\EXStar Hub\selective-mesh.ini exists.  It
+         holds only the exclusions of the current run: the hub drops those
+         sections when it starts (1.8.0), and showing an eye deletes its
+         section, so there is nothing for this script to migrate.
 
 .PARAMETER On
     Comma-separated switches to force on (value 1).  A plain string, because
@@ -152,12 +153,12 @@ if (-not $NoRename) {
 "dll  src $((Get-FileHash $src -Algorithm SHA256).Hash)" | Out-File $logf -Append -Encoding utf8
 "dll  dst $((Get-FileHash $dst -Algorithm SHA256).Hash)" | Out-File $logf -Append -Encoding utf8
 
-# 4. the selection data file migrates itself inside the module; this only
-#    records what the first start will find
+# 4. the session file.  Since 1.8.0 it holds only the exclusions of the run
+#    that is happening now - the hub clears its [uuid] sections on start and
+#    the vendor shows every scan again when a project re-opens - so this
+#    only records what the first start will find.
 $pubNew = "$pub\selective-mesh.ini"
-$pubOld = "$pub\merge-select.ini"
-"data selective-mesh.ini: $(if (Test-Path $pubNew) { 'present' } else { 'absent' }), " +
-    "merge-select.ini: $(if (Test-Path $pubOld) { 'present (the module copies it on first start)' } else { 'absent' })" |
+"data selective-mesh.ini: $(if (Test-Path $pubNew) { 'present (its exclusions belong to the previous run; the hub drops them on start)' } else { 'absent' })" |
     Out-File $logf -Append -Encoding utf8
 
 # A module .ini that only holds the section name means "every switch

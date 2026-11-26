@@ -24,28 +24,33 @@ bool HandlePrjFile::isGenerateCloud()   (export of Sn3DFile.dll)
 ```
 
 Only `Sn3DMultiProjects.dll` imports it, and that import is the whole
-merge loop. The module answers that question with "no cloud" for the
-scans the user excluded, and nothing else in the product notices: the
-vendor's own skip-branch does the rest. A second, independent half - the
-project-list **eye** icon - is watched so the exclusion is one click
-instead of an ini edit, and re-asserted after the scene's environment
-switch so the viewport agrees with the merge.
+merge loop. The module answers that question with "no cloud" for a scan
+whose eye the user hid, and nothing else in the product notices: the
+vendor's own skip-branch does the rest. The project-list **eye** icon is
+the interface (section 7); the viewport half - re-asserting a hidden eye
+after the scene's environment switch - is a separate concern and off by
+default (section 8).
 
 ```
- eye click (QML)                     common-mesh run
-      |                                    |
-      v                                    v
- det_meta (ScanPage_E7.dll)          det_isCloud via g_thunk
-      |                                    |            (Sn3DFile.dll export)
-      v                                    v
- g_eye[] in-RAM map  ----+      +---- selective-mesh.ini  (the shared record)
-                         |      |
-                    selective-mesh.ini  =  [uuid] / [folder] sections
-                                            included = 0
+ eye click (QML)                              common-mesh run
+      |                                               |
+      v                                               v
+ det_meta (ScanPage_E7.dll)                  det_isCloud via g_thunk
+      |                                               |     (Sn3DFile.dll export)
+      v                                               v
+ g_eye[]  in-RAM map  -- writes -->  selective-mesh.ini  -- read --> decision
+   (this process only)                [uuid] included = 0   (other processes)
 ```
 
-The .ini is the only durable state, and it is shared across processes:
-the hub writes it, every gated process reads it at the gate.
+The state has to cross a process boundary: the mesh is often built by
+`scanservice.exe` or `Sn3DprocessManager.exe`, which have no project list
+and no eyes of their own. So the hub writes what you hid into one small
+`.ini` and every gated process reads it at the gate. It is a bridge, not
+an archive - the `[uuid]` sections are dropped when the hub starts, which
+is what this module has assumed since 1.4.6 (2026-11-24): the vendor shows a
+re-opened project's scans again, so an old hide describes a tree that is gone.
+What 1.8.0 guarantees on its own is the reset at hub start (section 10, and
+the open question at the end of section 5).
 
 One rule bends that ("no" is normally final): if a merge would end up
 with **no** scan because this module hid every one of them, the run is
@@ -79,7 +84,7 @@ not a style choice here.
 | what | thread | notes |
 |------|--------|-------|
 | `ex_get_info()` | loader | returns `g_info` (`"selective_mesh"`, "Selective Mesh", `MOD_VERSION`) |
-| `ex_init()` | host's init thread | reads config, resolves the exe basename for the allowlists, computes `g_selFile`/`g_mapFile` (+ migration), creates the wake event, starts the worker. Returns non-zero only if the event or thread cannot be created. |
+| `ex_init()` | host's init thread | reads config, resolves the exe basename for the allowlists, computes `g_selFile`, creates the wake event, starts the worker. Returns non-zero only if the event or thread cannot be created. |
 | `worker()` | the module's single worker thread | everything dangerous happens here, never under the loader lock |
 | `det_isCloud` / thunk | any thread of a gated process | the merge loop's own threads |
 | `det_meta` | the hub's Qt UI thread | the only thread that may re-issue eyes |
@@ -87,12 +92,18 @@ not a style choice here.
 
 `worker()` in order:
 
-1. `armNotify()` - `ntdll!LdrRegisterDllNotification`; every DLL load
+1. `ensureSelFile()` (create the session file with its header if absent)
+   and `clearStaleEyeState()` - in `EXStar Hub.exe` only, drop the
+   `[uuid]` sections the previous run left behind, because a fresh run
+   shows every scan and those sections describe eyes that no longer exist.
+   Done here, on a plain thread, before any eye event or merge call can
+   touch the file, and never in the sibling processes, which only read it.
+2. `armNotify()` - `ntdll!LdrRegisterDllNotification`; every DLL load
    sets `g_wake`. If unavailable, the loop degrades to polling (logged).
-2. **Gate phase**: loop `tryInstall()` until installed or broken, waking
+3. **Gate phase**: loop `tryInstall()` until installed or broken, waking
    on DLL loads, 50 ms poll during the first 10 s and 500 ms after,
    giving up after 15 min (`Sn3DFile.dll never mapped in this process`).
-3. **UI phase** (only when `eyewatch` and the exe is in `eyewatch_exes`):
+4. **UI phase** (only when `eyewatch` and the exe is in `eyewatch_exes`):
    loop `eyeTry()` and, when `scene_watch || scene_filter || eye_reapply`,
    `sceneTry()`, until both report done or 10 min elapse, 1 s poll. The
    `SetCurrentEnv` hook is armed for `eye_reapply` even when the watch
@@ -111,17 +122,16 @@ There is no unhook path: the module is unloaded with the process.
 | switches | `gate_exes`, and the master key `[Settings] enabled` inside the selection .ini |
 
 `tryInstall()` waits until `Sn3DFile.dll`, `Qt5Core.dll` and
-`Sn3DMultiProjects.dll` are all mapped, then resolves (all under SEH):
+`Sn3DMultiProjects.dll` are all mapped (the gate needs the first and third,
+the eye watch needs the second), then resolves, under SEH:
 
-* `Sn3DFile!isGenerateCloud` - the hook target,
-* `Sn3DFile!getFolderPath@HandlePrjFile` and `getTXProjFullPath@HandlePrjFile`
-  - identity channels,
-* `Qt5Core!QString::utf16` and `~QString` - to read the returned strings,
+* `Sn3DFile!isGenerateCloud` - the hook target, and the only vendor
+  function the gate resolves at all since 1.8.0,
 * the `Sn3DMultiProjects.dll` image base and `SizeOfImage` (from its own
   `IMAGE_OPTIONAL_HEADER`), which define the caller containment range.
 
-Missing any of the first four: log once, `g_broken = 1`, the app stays
-stock. Then `buildThunk()` and `g_host->hook(target, g_thunk, &g_origIsCloud)`.
+Missing the target: log once, `g_broken = 1`, the app stays stock. Then
+`buildThunk()` and `g_host->hook(target, g_thunk, &g_origIsCloud)`.
 
 ### Why a hand-built thunk
 
@@ -169,18 +179,25 @@ contract rejected every call and silently turned the guard off.
 ```
 if ra outside [Sn3DMultiProjects base, base+SizeOfImage)
         -> probeLog("cloud?", ra, self); return vendor answer   (containment)
-inc, why = scanDecision(self)                  (section 5, identity)
-uuid     = gateEyeUuid(self, impl, wrapper)    (section 6)
-if eye_gate and uuid known and not master-off:
-        [uuid] section in the .ini wins outright, else
-        the in-RAM eye map (eyeLookup) can only turn include -> exclude
-if all_hidden and not inc and not master-off and allHiddenNow(ctx, self):
+if [Settings] enabled = 0        -> why = WHY_MASTER, include   (master off)
+if eye_gate:
+        uuid = gateEyeUuid(self, impl, wrapper)         (section 6)
+        if the session .ini says [uuid] included = 0    -> exclude, WHY_EYE
+        else if the in-RAM eye map (eyeLookup) says hidden -> exclude, WHY_EYE
+        (no uuid, or nothing recorded for it: no eye input, keep stock)
+if all_hidden and why == WHY_EYE and allHiddenNow(ctx, self):
         inc = 1, why = WHY_ALLHIDDEN           (the one rule that widens;
         allHiddenNow is true only when EVERY scan of the merge list this
-        module can read is hidden by an eye/[uuid] rule)
-report the scan once to the .map.txt, log the line under budget
+        module can read is hidden by an eye rule)
+log the line under budget
 return (vendor && inc)                        (narrows, except the rule above)
 ```
+
+Two channels, one order, and the all-hidden guard mirrors it exactly:
+the `.ini` first (it is what another process's click produced), the
+in-process eye map second (this process, this instant). Since 1.8.0 the
+decision calls **no vendor function** - no `QString` getter, no Qt code -
+it reads the scan object, the eye map and the `.ini`, all SEH-boxed.
 
 `det_isCloud` wraps `decideCloud` in `__try/__except`: any fault returns
 the stock answer and logs once. A vendor object that moved between
@@ -213,42 +230,46 @@ return (r && 1) - the vendor's own cloud flag still decides
 | list container | `merge_list.h` - Qt 5.15 `QList` header (`ref`, `alloc`, `begin`, `end`, slots at `+0x10`, element `i` at slot `begin + i`); measured against the shipped `Qt5Core.dll`, re-checked by `tools\merge_list_lab.c`. No Qt call - that is what killed 1.5.0 |
 | where the list is | `param_1 + 0x70` of either merge sender (`Sn3DMultiProjects +0x7E3BB`, `+0x83097`); the live block dump shows the accepted candidate is the saved **`r9`** on 2.1.0-10 - which register that is may differ per build, so the code never asks |
 | acceptance | the list must contain an item whose `+0x28` is `self`; a candidate that merely looks like a header is not enough. This is also the *only* proof the register block is read at the right offsets - no register name may be assumed to carry an argument (the dump's `rcx` slot holds a code address of the merge DLL, and `self` is in no saved register at all) |
-| per-scan verdict | eye channels only (`[uuid]` section, then the in-process eye map). A scan excluded purely by an explicit `[folder]` section reads as visible, so folder-driven exclusions alone never trip the guard |
+| per-scan verdict | eye channels only (the `[uuid]` section of the session `.ini`, then the in-process eye map) - the same order as the gate itself, so the guard's answer and the gate's answer cannot disagree |
 | bound | `ML_MAX` 4096 scans; anything bigger or odd reads as "I do not know" |
 | cache | verdict + list + the selection `.ini` file time + `AH_TTL_MS` (4 s); the eye writes the `.ini`, so a new file time re-decides it |
 | fail-open | no candidate, unreadable item, id-less scan, switch off -> stock behaviour, nothing forced |
 
-## 5. Component B - scan identity
+## 5. Component B - the session state (one file, one writer)
 
-`scanDecision()` produces the section key and the .ini verdict, best
-channel first, all reads SEH-boxed:
+The eye is the only input, so the only thing the gate needs per scan is its
+`QUuid` and whether that uuid is currently hidden. Everything folder- or
+name-based (exported folder path, embedded project name, project-file path,
+the `idDump` object map) was retired in 1.8.0 together with the hand-edited
+`[folder]` sections it existed for. What is left:
 
-| order | channel | read | fills |
-|------|---------|------|-------|
-| 1 | exported folder path | `getFolderPath(self)` -> `QString::utf16()` | `folder` |
-| 2 | embedded scan name | `impl = *(self+0x18)`, then the QString at `impl+8` - the same string `HandlePrjFile::getProjInfo` reads; live session scans have this even when both getters return empty | `name` |
-| 3 | project-file path | `getTXProjFullPath(self)` | `alt` |
+| what | where | note |
+|------|-------|------|
+| hidden scans of this run | `g_selFile` - `[uuid]` section with `included = 0` | written by `eyeRecord` on a click in the hub; hidden writes it, showing the eye deletes it, so the file is only ever a list of exclusions |
+| hidden scans in this process | `g_eye[]` - uuid + visible + seq | the instant state from the metacall watch; consulted when the `.ini` has nothing for the scan |
+| master switch | `[Settings] enabled` in the same `.ini` | `0` = the module answers the vendor's value and never consults the eye |
+| start of a run | `clearStaleEyeState()` | every non-`Settings` section is dropped when the hub process starts, then the file is flushed; the master switch is the user's own statement and stays |
 
-`impl = *(unsigned long long *)(self + 0x18)` is also what section 6
-searches for a uuid. If all three channels come back empty, `idDump()`
-walks `impl + 0x00 .. +0x48` in 8-byte steps, tries each position as one
-embedded QString and logs the printable ones (`idmap impl=... +0x.. =
-<text>`), at most six dumps per process - the diagnostic for "the scan
-has no name here".
+**Lifetime inside a run.** Whether the vendor re-issues a show for every row
+when it rebuilds the tree on a project re-open has not been measured - no
+live log shows a burst of `eye <uuid> -> VISIBLE` on opening a project. Until
+it does, a section written before a project switch can outlive the icon it
+came from inside one run of the hub: the row looks visible while the module
+still excludes it. Showing the eye (or restarting the hub) settles it, and
+the reset at hub start keeps the window no wider than the session itself.
 
-Section lookup: `GetPrivateProfileIntW(cand, "included", -1, g_selFile)`
-for up to two candidates (primary then secondary), each tried first
-verbatim then as `<parent folder>\<leaf folder>` (`shortKey()`); the
-first hit decides. Verdict codes `WHY_*`:
+Lookup: `GetPrivateProfileIntW(uuidText, "included", -1, g_selFile)`;
+`0` excludes, anything else does not. A missing file, a missing section or
+an unreadable value is "visible" - stock.
+
+Verdict codes `WHY_*` (also the words in the log line):
 
 | code | meaning | effect |
 |------|---------|--------|
-| `WHY_INI_EXC` | `included = 0` matched | excluded |
-| `WHY_INI_INC` | `included = 1` matched | included (explicitly) |
-| `WHY_UNLISTED` | no section matched | included (stock) |
-| `WHY_MASTER` | `[Settings] enabled = 0` in the selection .ini | included, eye binding skipped |
-| `WHY_NOREAD` | identity unreadable | included, logged as such |
-| `WHY_EYE` | the in-RAM eye map excluded it | excluded |
+| `WHY_MASTER` | `[Settings] enabled = 0` | included, eye binding skipped |
+| `WHY_EYE` | the `.ini` or the eye map says hidden | excluded |
+| `WHY_NOID` | no uuid for this scan, so no eye input | included, logged as such |
+| `WHY_ALLHIDDEN` | the guard widened this scan back | included |
 
 ## 6. Component C - binding a scan to its uuid
 
@@ -277,8 +298,8 @@ best first (`gateEyeUuid`):
 4. **`self+0x38`** - the last, documented guess (verified offset,
    `docs/research/merge-common-mesh.md`).
 
-No uuid at all simply means: no eye input to this decision, the .ini
-sections still work.
+No uuid at all means this decision has no eye input: the scan keeps the
+vendor's answer (`WHY_NOID`) and nothing else can exclude it.
 
 ## 7. Component D - the eye watch
 
@@ -426,20 +447,21 @@ and because it fails open.
 
 | file | role | written by |
 |------|------|-----------|
-| `C:\Users\Public\Shining3d\EXStar Hub\selective-mesh.ini` | the selection: `[folder]` and `[uuid]` sections with `included = 0|1`, plus `[Settings] enabled` master key | the hub (eye), the manager's roster window, the user |
-| `...\selective-mesh.map.txt` | discovery roster: one line per scan seen at the gate, with the ready-to-copy section name and the decision | the gate (`reportScan`, `SEEN_MAX` dedupe) |
-| `...\merge-select.ini` | name used until 1.6.0; copied once to the new name, never deleted (backup) | older module versions |
+| `C:\Users\Public\Shining3d\EXStar Hub\selective-mesh.ini` | the exclusions of the current run: one `[uuid]` section per hidden scan, plus the `[Settings] enabled` master key | the hub UI (`eyeRecord` writes a section, showing the eye deletes it); every other gated process only reads it at the gate |
 
-Path resolution (`ex_init`): the `file` switch wins; otherwise
-`SEL_FILE`, with the .map.txt derived as `<selFile without extension>.map.txt`.
-`migrateSelFile()` runs **only** on the default path: if the new file is
-missing and the old one exists, `CopyFileW(..., TRUE)` (race-safe -
-several gated processes start at once, first writer wins, the others
-fail with "already exists" and do nothing). The roster is not migrated;
-it rebuilds itself on the next mesh run. `ensureSelFile()` creates the
-file with a readable header on first use.
+Path resolution (`ex_init`): the `file` switch wins, otherwise `SEL_FILE`.
+`ensureSelFile()` creates the file with a readable header (once per
+machine, not per process); `clearStaleEyeState()` drops every non-`Settings`
+section when the **hub** process starts, because the vendor shows all scans
+again anyway and yesterday's sections describe eyes that no longer exist.
+Nothing else is written: the roster file this module used to keep
+(`selective-mesh.map.txt`, and `merge-select.ini` before 1.6.0) is gone - a
+leftover copy on a user's machine is dead weight, and the module neither
+reads nor migrates it.
 
-## 11. Configuration (`modules\selective_mesh.ini`)
+The file is deliberately disposable: deleting it while the hub runs is the
+same as showing every eye, and the master key is the only thing in it that
+is meant to survive a restart.## 11. Configuration (`modules\selective_mesh.ini`)
 
 Read once in `ex_init` through the host's `cfg_int`/`cfg_string`, so a
 change needs a process restart. Defaults below are the code defaults;
@@ -449,14 +471,14 @@ the shipped ini states them explicitly and keeps `scene_filter = 0`.
 |-----|---------|-------------|
 | `verbose` | 1 | every log line (the gate decision log and the scene probe also need budget) |
 | `eyewatch` | 1 | worker's UI phase at all |
-| `eye_gate` | 1 | eye -> .ini persistence, the gate's uuid consultation |
+| `eye_gate` | 1 | eye -> `.ini` persistence (`eyeRecord`), and the gate consulting the eye channels at all |
 | `all_hidden` | 1 | `allHiddenNow` - the "this merge would be empty" guard (section 4) |
 | `eye_reapply` | 0 (since 1.6.1 - on, the toggle can hang the hub during the env switch) | component E, and arming `SetCurrentEnv` for it |
 | `scene_watch` | 1 | `sceneProbe` |
 | `scene_filter` | 1 | `sceneHideDecide` / `sceneNodeDecide` |
 | `gate_exes` | `EXStar Hub.exe,scanservice.exe,Sn3DprocessManager.exe` | `tryInstall` |
 | `eyewatch_exes` | `EXStar Hub.exe` | worker's UI phase |
-| `file` | unset -> `SEL_FILE` | `g_selFile` (+ derived map file, migration) |
+| `file` | unset -> `SEL_FILE` | `g_selFile`, the session `.ini` path (a lab switch) |
 
 The host also gates the log itself: `[host] log = 1` in `modules.ini`
 must be on for anything here to reach `mod.log`.
@@ -470,22 +492,19 @@ never flood the log.
 
 | line | where | meaning / budget |
 |------|-------|------------------|
-| `migrated <old> -> <new> (the old file stays as a backup)` | `migrateSelFile` | first run of 1.6.0 with an older selection file |
+| `dropped <n> exclusion(s) a previous run left in <file> - the eyes start open` | `clearStaleEyeState` | first start after a session that ended with hidden eyes (hub process only, `verbose`) |
 | `<exe> is not in gate_exes - module stays inert here (no hooks, no files)` | `tryInstall` | expected once per non-gated process |
-| `vendor exports not found (isGenerateCloud/getFolderPath/QString) - staying out of it` | `tryInstall` | build changed: fail-open, investigate |
+| `HandlePrjFile::isGenerateCloud not found in Sn3DFile.dll - staying out of it` | `tryInstall` | build changed: fail-open, investigate |
 | `thunk alloc failed - app stays stock` / `detour refused - app stays stock` | `tryInstall` | hook infrastructure refused: fail-open |
 | `hooked HandlePrjFile::isGenerateCloud (active for Sn3DMultiProjects.dll callers) - see <file>` | `tryInstall` | gate armed |
 | `selective_mesh v<ver> armed in pid=<pid> exe=<exe> sf=<0|1> qt=<0|1> mp=<0|1> ah=<0|1>` | `ex_init` (host log) | what was already mapped at init (`sf` Sn3DFile, `qt` Qt5Core, `mp` Sn3DMultiProjects) and `ah` = `all_hidden` as read |
-| `gate <key> uuid=<uuid> eye=<-1|0|1> vendor=<0|1> <why> -> include|SKIP` | `decideCloud` | the per-scan decision (200). `<why>` includes `every scan hidden - all in` when the guard fired |
-| `gate <no id> uuid=... ra=+0x... impl=... vendor=... <why> -> ...` | `decideCloud` | same, for a scan whose identity is unreadable (same budget) |
+| `gate uuid=<uuid|-> ra=+0x<off> impl=<p> vendor=<0|1> <why> -> include\|SKIP` | `decideCloud` | the per-scan decision: the scan id, which merge sender asked (`ra`), the vendor's own answer, `why` (one of the `WHY_*` words) and the outcome (200) |
 | `all <n> scans of this merge are hidden - exclusions ignored, every scan goes in (...)` | `allHiddenNow` | the guard fired for this run (20) |
 | `all-hidden guard: no register of the merge caller held a list containing self=<p> (<n> of 11 read as a list) - guard off` | `allHiddenNow` | no candidate matched: fail-open (20, `verbose`) |
 | `all-hidden block: hdrs=<n> self@reg#<i> list@reg#<j> \| rax=... rbx=... rcx=... rdx=... rsi=... rdi=... r8=... r9=... r10=... r11=... fl=...` | `blockDump` | the raw saved block: once per process unconditionally, then 6 more on a failed walk - this is the line that pins the layout on a new vendor build |
 | `all-hidden guard: <n> scans in the merge list (<list>, reg#<i>, self at #<j>, <k> unreadable) - at least one stays in` | `allHiddenNow` | verdict "do not interfere", with what it read (20, `verbose`) |
-| `all-hidden guard: saved registers do not match the scan (rcx=... self=...) - guard off` | `allHiddenNow` | the `RegCtx` contract failed: guard off (20) |
 | `gate fault while reading the vendor object - this call keeps the stock answer` | `det_isCloud` | SEH caught something; logged once |
 | `probe cloud? <module>+0x<X> self=... impl=...` | `probeLog` | a caller outside the merge code asked the question (60, per-site dedupe) |
-| `idmap impl=<p> +0x<off> = <text>` | `idDump` | object map for an unnamed scan (6 dumps) |
 | `uuidscan: <uuid> at self|impl+0x<X> [raw|swap|text]` | `uuidScan` | where the uuid actually lives (8) |
 | `uuidscan: no hit (targets=<n>) ...` | `uuidScan` | the known-uuid search missed (3) |
 | `eye <uuid> -> VISIBLE|hidden` | `eyeRecord` | an eye toggled (40) |
@@ -522,7 +541,6 @@ never flood the log.
 | `g_probe[]` seen caller sites | 40 (`SITE_MAX`) | `g_probeBusy` guards the survey |
 | `g_ahState/List/Count/IniLo/IniHi/When` all-hidden verdict | 1 verdict | plain words, re-decided when the selection `.ini` mtime changes or after `AH_TTL_MS` (4 s); `g_ahBusy` lets one thread decide while the others use the last verdict |
 | `g_metaSeen[]` metacall traffic | 32 | `g_eyeBusy` |
-| `g_seen[]` roster/log dedupe | 64 (`SEEN_MAX`) | `g_reportBusy` |
 | counters: `g_installed`, `g_broken`, `g_eyeDone`, `g_sceneDone`, `g_retryPending`, `g_reapplyBusy`, the all-hidden log budgets (`g_ahFired/Seen/Miss/Block/Dumped`) | - | interlocked, all fail-open on the safe side |
 
 ## 14. Failure modes
@@ -536,9 +554,10 @@ changes behaviour:
 | any vendor object read faults | SEH, stock answer, one log line |
 | exports/anchors not found | module idles, logs once |
 | process not allowlisted | inert module, logs once |
-| selection .ini missing / unreadable | everything is unlisted = stock |
+| session .ini missing / unreadable | nothing is recorded as hidden = stock |
 | `[Settings] enabled = 0` | master off, gate answers the vendor's value |
-| uuid unknown | eye input skipped, `[folder]` sections still work |
+| uuid unreadable for a scan | that scan has no eye input: it keeps the vendor's answer (`WHY_NOID`) |
+| sections left by an earlier run | dropped when the hub starts (hub process only), so a fresh session starts from open eyes |
 | command argument not fully readable | passed through untouched |
 | command argument is not a map at all | probe walk never starts (root gate), bounded to 256 nodes if it does |
 | the merge's scan list is not among the caller's registers | all-hidden guard stays out; a merge this module would empty stalls exactly as stock does, and the raw block is logged so the situation is measurable |
@@ -546,7 +565,7 @@ changes behaviour:
 | saved `rcx` is not `self` | normal, not a contract: the block is accepted on its content, the value only shows up in the block dump |
 | hook refused by the host | stock, logs |
 | re-apply on the wrong thread | skipped by design |
-| deleting the selection .ini | behaviour returns to stock exactly |
+| deleting the session .ini | behaviour returns to stock exactly, until the next eye click rewrites it |
 
 ## 15. Tooling around this module
 
@@ -559,7 +578,7 @@ changes behaviour:
 | `tools/merge_list_lab.c` + `merge_list.h` | the bare-memory `QList` reader the all-hidden guard uses: real `QStringList` built by the shipped `Qt5Core.dll` (5.15.10), fake scan items in vendor shape, a container whose `begin` is not 0, the 11-candidate register scan, and every refusal (null, garbage, empty, unreadable item, id-less scan) - exit code 0 = layout proven outside the product |
 | `tools/qv_layout.c`, `qmeta_lab.c` | QVariant layout and metatype tags, measured |
 | `tools/func_str.c` | strings referenced inside a function's prologue->`ret` range |
-| `tools/deploy_module.ps1` | install this module into the product folder (keeps `winmm.dll`/`ExStarRec.dll`, migrates the ini names) |
+| `tools/deploy_module.ps1` | install this module into the product folder (keeps `winmm.dll`/`ExStarRec.dll`, sets the switch set it is being tested with, records the installed file's hash) |
 
 ## 16. Naming (1.6.0 rename)
 
@@ -569,8 +588,8 @@ changes behaviour:
 | display name | Merge Selection | Selective Mesh |
 | folder / sources | `modules\merge_select\merge_select.c` | `modules\selective_mesh\selective_mesh.c` |
 | host config | `modules\merge_select.ini` | `modules\selective_mesh.ini` |
-| selection file | `merge-select.ini` | `selective-mesh.ini` (auto-copied, old kept) |
-| roster file | `merge-select.map.txt` | `selective-mesh.map.txt` (regenerated) |
+| selection file | `merge-select.ini` (folder or uuid sections) | `selective-mesh.ini` - `[uuid]` exclusions only since 1.8.0; the one-time copy from the old name was removed with the folder sections |
+| roster file | `merge-select.map.txt` | (gone in 1.8.0 - the eye is the interface, nothing to copy names out of) |
 | log tag | `merge_select: ` | `selective_mesh: ` |
 
 The id is the dll basename (`src/host.c`), and every section in
