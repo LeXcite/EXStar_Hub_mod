@@ -53,6 +53,13 @@
     Nothing in Program Files is touched except the module dlls, their
     .ini files and modules.ini.  The user's selection file under
     C:\Users\Public is never deleted, only copied by the module itself.
+
+    Hashes: the printed sha256 identifies THIS file, not a build of a
+    commit.  MSVC link is not byte-reproducible here - two builds of one
+    unchanged source produced different hashes on 2026-11-26 - so a hash
+    is only meaningful as "the file that is installed now"; tie it to code
+    by the commit it was built from, and re-hash the published artifact
+    once, at publish time.
 #>
 param(
     [string]$On = 'verbose,eye_gate,scene_watch',
