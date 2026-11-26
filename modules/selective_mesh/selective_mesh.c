@@ -1160,7 +1160,7 @@ static int wrapperUuid(void *self, void *w, unsigned char *u)
          * little-endian in memory, so the raw member bytes ARE the
          * canonical struct order the eye map uses; `alt` is the
          * text/wire order.  Live proof 2026-11-24: raw gives version-4
-         * uuids (…-4EF5-…, …-4960-…, …-4D1D-…) while alt does not. */
+         * uuids (xx-4EF5-xx, xx-4960-xx, xx-4D1D-xx) while alt does not. */
         if (eyeLookup(alt) >= 0 && eyeLookup(raw16) < 0)
             memcpy(u, alt, 16);          /* wire order, only if it hits */
         else
@@ -2010,7 +2010,6 @@ static void qvListDiag(const void *qv, char *out, int cap)
  * value" - never a guess.                                                 */
 #define QT_VARIQLIST  9          /* QMetaType::QVariantList  */
 #define QT_BOOL       1          /* QMetaType::Bool          */
-#define QT_MAP        8          /* QMetaType::QVariantMap   */
 #define QT_STRING    10          /* QMetaType::QString       */
 #define QT_STRLIST   11          /* QMetaType::QStringList   */
 
