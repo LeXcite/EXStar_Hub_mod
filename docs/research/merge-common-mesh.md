@@ -771,6 +771,19 @@ Verified live on 2026-11-26 (1.5.8): after **Mesh Model** the viewport
 keeps only the scan that was left visible, the merge still logs
 `excluded in .ini -> SKIP` for both hidden scans, no crash dump.
 
+**Correction, same day (1.6.1).** That verification stopped too early.
+A minute after the Mesh Model press the hub stopped responding and
+Windows logged an Application Hang (`EXStar Hub.exe` 3.1.49, 14:31;
+the module's last lines are the toggle and the vendor's own
+`SetModelNodesVisible`). The show half of the toggle is also what
+re-appears on screen before the hub dies. The user confirmed the same
+hang with the 1.5.7-era build, so it belongs to the re-apply design,
+not to the 1.6.0 rename: the metacall runs while the post-process
+environment switch still owns the scene. `eye_reapply` therefore
+defaults to 0 since 1.6.1; a quiescence-checked re-apply (act only
+when no scene command has been seen for a while, skip while
+post-process is busy) is the open design item.
+
 Safety notes worth repeating: the retry never re-arms itself (one pass
 per press), the whole vendor call is SEH-boxed, and `det_meta` is
 deliberately bypassed by calling the original trampoline - a re-apply

@@ -38,9 +38,14 @@
 .PARAMETER NoRename
     Skip steps 1..3 (only for a machine that never had the old name).
 
+.PARAMETER ResetIni
+    Replace the module .ini with the repository template before applying
+    -On/-Off (fresh switch set; the user's selection data file is not
+    touched).
+
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\deploy_module.ps1 `
-        -On verbose,eye_gate,eye_reapply,scene_watch -Off scene_filter `
+        -On verbose,eye_gate,scene_watch -Off scene_filter,eye_reapply `
         -Note 1.6.0_rename_to_selective_mesh
 
 .NOTES
@@ -50,14 +55,19 @@
     C:\Users\Public is never deleted, only copied by the module itself.
 #>
 param(
-    [string]$On = 'verbose,eye_gate,eye_reapply,scene_watch',
-    [string]$Off = 'scene_filter',
+    [string]$On = 'verbose,eye_gate,scene_watch',
+    [string]$Off = 'scene_filter,eye_reapply',
     [string]$Note = '',
-    [switch]$NoRename
+    [switch]$NoRename,
+    [switch]$ResetIni
 )
 
-$On  = @($On  -split ',' | Where-Object { $_ -match '\S' })
-$Off = @($Off -split ',' | Where-Object { $_ -match '\S' })
+# Split into separate variables ON PURPOSE: a typed [string] parameter
+# keeps its type constraint for the whole script, so `$On = @(... -split)`
+# would coerce the array back to a space-joined string (that is how every
+# -On/-Off list silently degraded to one bogus key until 1.6.1).
+$onKeys  = @($On  -split '[,\s]+' | Where-Object { $_ -match '\S' })
+$offKeys = @($Off -split '[,\s]+' | Where-Object { $_ -match '\S' })
 
 $ErrorActionPreference = 'Continue'
 $logf = 'C:\Users\LeX\AppData\Local\Temp\opencode\deploy_module.txt'
@@ -79,10 +89,21 @@ $oldIni = "$app\modules\merge_select.ini"
 
 if (-not $NoRename) {
     # 1. the user's switches keep their content under the new name
-    if ((Test-Path $oldIni) -and -(Test-Path $ini)) {
-        Copy-Item $oldIni $ini
-        "ini  migrated modules\merge_select.ini -> modules\selective_mesh.ini" |
-            Out-File $logf -Append -Encoding utf8
+    #    (1.6.1 fix: `-(Test-Path)` is a double negation - numeric -1 is
+    #    truthy - so this migration never ran and the live ini stayed at
+    #    its defaults; -not is the only correct form here)
+    if ((Test-Path $oldIni) -and -not (Test-Path $ini)) {
+        try {
+            Copy-Item $oldIni $ini -ErrorAction Stop
+            "ini  migrated modules\merge_select.ini -> modules\selective_mesh.ini" |
+                Out-File $logf -Append -Encoding utf8
+        } catch {
+            "ini  MIGRATION FAILED: $($_.Exception.Message)" |
+                Out-File $logf -Append -Encoding utf8
+        }
+    } else {
+        "ini  no migration (old present: $(Test-Path $oldIni), " +
+            "new present: $(Test-Path $ini))" | Out-File $logf -Append -Encoding utf8
     }
 
     # 2. modules.ini: the section follows the id, the sibling list too.
@@ -132,6 +153,19 @@ $pubOld = "$pub\merge-select.ini"
     "merge-select.ini: $(if (Test-Path $pubOld) { 'present (the module copies it on first start)' } else { 'absent' })" |
     Out-File $logf -Append -Encoding utf8
 
+# A module .ini that only holds the section name means "every switch
+# default", and the shipped default for scene_filter is on - so the
+# template is written when -ResetIni is given (fresh id, empty file).
+if ($ResetIni) {
+    $tpl = 'D:\Code\Reverse\ExStarHub\modules\selective_mesh\selective_mesh.ini'
+    try {
+        Copy-Item $tpl $ini -Force -ErrorAction Stop
+        "ini  reset from the repository template" | Out-File $logf -Append -Encoding utf8
+    } catch {
+        "ini  RESET FAILED: $($_.Exception.Message)" | Out-File $logf -Append -Encoding utf8
+    }
+}
+
 if (-not (Test-Path $ini)) { '[selective_mesh]' | Out-File $ini -Encoding utf8 }
 $known = 'verbose', 'eyewatch', 'eye_gate', 'eye_reapply', 'scene_watch',
          'scene_filter', 'sibling_all', 'sibling_modules', 'file'
@@ -142,18 +176,18 @@ $seen = @{}
 foreach ($l in $lines) {
     if ($l -match $pat) {
         $k = $matches[1]
-        if ($On -contains $k)  { $out.Add("$k = 1"); $seen[$k] = $true; continue }
-        if ($Off -contains $k) { $out.Add("$k = 0"); $seen[$k] = $true; continue }
+        if ($onKeys -contains $k)  { $out.Add("$k = 1"); $seen[$k] = $true; continue }
+        if ($offKeys -contains $k) { $out.Add("$k = 0"); $seen[$k] = $true; continue }
     }
     $out.Add($l)
 }
-foreach ($k in ($On + $Off)) {
+foreach ($k in ($onKeys + $offKeys)) {
     if ($seen[$k]) { continue }
     if ($known -notcontains $k) {
         "skip unknown key '$k'" | Out-File $logf -Append -Encoding utf8
         continue
     }
-    if ($On -contains $k) { $out.Add("$k = 1") } else { $out.Add("$k = 0") }
+    if ($onKeys -contains $k) { $out.Add("$k = 1") } else { $out.Add("$k = 0") }
 }
 [IO.File]::WriteAllLines($ini, $out, (New-Object Text.UTF8Encoding($false)))
 'ini now:' | Out-File $logf -Append -Encoding utf8

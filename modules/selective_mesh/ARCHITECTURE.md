@@ -294,7 +294,10 @@ mesh is still correct (the gate excluded it). Option C is the fix, and
   after the handler returned. `eyeRetryTimer` kills the timer, clears
   the flag and calls `eyeReapply(0)` (no further retry).
 
-Switch: `eye_reapply` (default on, needs `eyewatch`).
+Switch: `eye_reapply` (needs `eyewatch`). **Default off since 1.6.1**: live evidence
+2026-11-26 shows the metacall landing while the post-process environment switch
+still owns the scene hangs the hub (Application Hang of `EXStar Hub.exe`), and the
+show half of the toggle flashes every hidden scan first. Opt in at your own risk.
 
 ## 9. Component F - the scene command watch and filter
 
@@ -375,7 +378,7 @@ the shipped ini states them explicitly and keeps `scene_filter = 0`.
 | `verbose` | 1 | every log line (the gate decision log and the scene probe also need budget) |
 | `eyewatch` | 1 | worker's UI phase at all |
 | `eye_gate` | 1 | eye -> .ini persistence, the gate's uuid consultation |
-| `eye_reapply` | 1 | component E, and arming `SetCurrentEnv` for it |
+| `eye_reapply` | 0 (since 1.6.1 - on, the toggle can hang the hub during the env switch) | component E, and arming `SetCurrentEnv` for it |
 | `scene_watch` | 1 | `sceneProbe` |
 | `scene_filter` | 1 | `sceneHideDecide` / `sceneNodeDecide` |
 | `gate_exes` | `EXStar Hub.exe,scanservice.exe,Sn3DprocessManager.exe` | `tryInstall` |

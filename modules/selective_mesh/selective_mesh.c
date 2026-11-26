@@ -172,9 +172,25 @@
  *          slot - which is the exact state-change sequence a hand click
  *          performs, plus one deferred pass 300 ms later (SetTimer on the
  *          Qt thread) for the env switch's own singleShot redraw work.
- *          Live-verified 2026-11-26: after a Mesh Model press the viewport
- *          holds only the scan that was left visible, the merge still
- *          excludes the hidden ones, and no crash dump appeared.
+ *          Live-verified 2026-11-26 (the verification, not the hang):
+ *          after a Mesh Model press the viewport holds only the scan
+ *          that was left visible and the merge excludes the hidden ones.
+ *   1.6.1  eye_reapply DEFAULTS OFF - the same verification missed a
+ *          hang: about a minute after the Mesh Model press the hub stops
+ *          responding (Application Hang of EXStar Hub.exe 3.1.49,
+ *          2026-11-26 14:31; the last module lines are the re-apply
+ *          toggle and the vendor's own SetModelNodesVisible).  The
+ *          toggle metacall lands while the post-process environment
+ *          switch still owns the scene, and the Qt thread blocks; the
+ *          show half of the toggle also makes every hidden scan visible
+ *          for a moment before the hub dies.  1.5.7 and 1.5.8 carried
+ *          the same defect (user report: the hub hung there too).  The
+ *          switch itself stays - opt in at your own risk until a
+ *          quiescence-checked re-apply replaces it; the viewport may
+ *          re-show hidden scans after the switch (option A cosmetics),
+ *          which never touches the merge: exclusion goes through the
+ *          persisted [uuid] eye state read by eye_gate, and that path
+ *          calls no vendor code.
  *   1.6.0  renamed Selective Mesh (`selective_mesh`): behaviour is that
  *          of 1.5.8, only the old `merge_select` / `Merge Selection`
  *          name goes.  The selection file becomes `selective-mesh.ini`;
@@ -196,7 +212,7 @@
 #include "exstar_sdk.h"
 #include "qt_read.h"
 
-#define MOD_VERSION   "1.6.0"
+#define MOD_VERSION   "1.6.1"
 
 /* one log call, one tag: MOD_LOG(fmt, ...) ==
  * g_host->log("selective_mesh: " fmt, ...) - the literals concatenate */
@@ -2893,7 +2909,10 @@ EX_EXPORT int ex_init(const ExHost *host)
     g_verbose = host->cfg_int(host, "verbose", 1);
     g_eyewatch = host->cfg_int(host, "eyewatch", 1);
     g_eyeGate = host->cfg_int(host, "eye_gate", 1);
-    g_eyeReapply = host->cfg_int(host, "eye_reapply", 1);
+    /* 1.6.1: default 0 - the toggle metacall fires while the post-process
+     * env switch still owns the scene and the Qt thread blocks on it
+     * (Application Hang, live evidence 2026-11-26, see History above) */
+    g_eyeReapply = host->cfg_int(host, "eye_reapply", 0);
     g_sceneWatch = host->cfg_int(host, "scene_watch", 1);
     g_sceneFilter = host->cfg_int(host, "scene_filter", 1);
 

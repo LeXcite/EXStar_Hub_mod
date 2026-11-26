@@ -111,11 +111,13 @@ vendor's `SetCurrentEnv` handler returns, the module *toggles* every
 hidden eye - show, then hide - through the very slot a click uses, and
 the UI re-sends its own hide command for the new environment; one retry
 pass 300 ms later (a timer in the hub's own Qt thread) covers the
-vendor's deferred apply. Switch `eye_reapply` (default on, needs
-`eyewatch`). Verified live 2026-11-26: after a Mesh Model press the
-viewport holds only the scan left visible, and the merged mesh still
-excludes the hidden ones (`evidence: docs/research/merge-common-mesh.md
-section 18`).
+vendor's deferred apply. Switch `eye_reapply` - **default off since 1.6.1**:
+in the 2026-11-26 verification the viewport did hold only the visible scan,
+but a minute later the hub stopped responding (Application Hang): the toggle
+metacall lands while the post-process switch still owns the scene. Until a
+quiescence-checked design replaces it, a hidden scan may re-appear on the
+viewport after a Mesh Model press - the merged mesh still excludes it
+(`evidence: docs/research/merge-common-mesh.md section 18`).
 
 Version 1.5.1 is the startup fix for that feature. Reading a command has
 become **pure memory inspection**: the Qt type tag of every value and the
@@ -167,7 +169,7 @@ unlisted scans are provably unaffected.
 | `verbose` | `1` | log each scan decision to the mod log (needs `[host] log = 1`) |
 | `eyewatch` | `1` | record project-list eye show/hide events (observation) |
 | `eye_gate` | `1` | hidden eye = scan left out of the common mesh, persisted as `[uuid]` sections (explicit `.ini` sections still win) |
-| `eye_reapply` | `1` | re-assert hidden eyes (toggle show+hide) after the scene's environment switch, so a hidden scan stays hidden on screen; needs `eyewatch` |
+| `eye_reapply` | `0` | re-assert hidden eyes (toggle show+hide) after the scene's environment switch; **on, this can hang the hub** (metacall during the switch, evidence 2026-11-26) - off by default since 1.6.1 |
 | `gate_exes` | `EXStar Hub.exe,scanservice.exe,Sn3DprocessManager.exe` | processes allowed to hook the merge gate; every other host keeps an inert module |
 | `eyewatch_exes` | `EXStar Hub.exe` | processes allowed to watch the eye icons (the QML UI) |
 | `scene_watch` | `1` | log the scene's named commands (diagnostic: what the viewport is asked to show) |
