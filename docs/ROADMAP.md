@@ -35,7 +35,7 @@ not included in git).
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
 | fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
-| selective_mesh | 1.6.0 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch, hook allowlists); 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`); 1.5.6 reads nested command values and proved the viewport half has nothing to intercept (see 2026-11-25 below); 1.5.8 keeps a hidden scan hidden on screen across the environment switch (live-verified 2026-11-26); 1.6.0 = renamed Selective Mesh, behaviour unchanged |
+| selective_mesh | 1.6.2 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch, hook allowlists); 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`); 1.5.6 reads nested command values and proved the viewport half has nothing to intercept (see 2026-11-25 below); 1.5.8 kept a hidden scan hidden on screen across the environment switch - that re-apply hangs the hub, so it is off by default since 1.6.1; 1.6.0 = renamed Selective Mesh; 1.6.2 = the map walk of a watched scene command is hard-bounded (it could spin forever on a non-map argument and hang the hub) |
 | ExStarModManager | 1.6.9 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist (one exception: 1.6.9 renames the `merge_select` token of a hand-made list, never adds one); 1.6.9 removes the legacy `merge_select` files and carries its settings to `selective_mesh` |
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
@@ -501,9 +501,9 @@ stays hidden on screen. Evidence:
   is passed through and never dereferenced (the vendor slot goes through a
   file-scope singleton), every vendor call is SEH-boxed, and it calls the
   *original* metacall so the .ini write is bypassed - only the final state
-  is "hidden". User-verified 2026-11-26: after a Mesh Model press the
-  viewport holds only the scan left visible, the merge still excludes the
-  hidden ones, no crash dump. Switch `eye_reapply` (default on).
+  is "hidden". Reported as user-verified on 2026-11-26; that report was
+  later contradicted - the same viewport hold re-issued through the vendor
+  slot hangs the hub (see 1.6.1 below), so the switch is off by default.
   Evidence: [merge-common-mesh.md §18](research/merge-common-mesh.md).
 * **1.6.0 (2026-11-26): renamed Selective Mesh.** `merge_select` →
   `selective_mesh`, "Merge Selection" → "Selective Mesh", data files
@@ -518,6 +518,34 @@ stays hidden on screen. Evidence:
   user's selection file to the new name on first start (old file left as a
   backup). Module map for anyone reading the source cold:
   [ARCHITECTURE.md](../modules/selective_mesh/ARCHITECTURE.md).
+* **1.6.1 (2026-11-26): `eye_reapply` defaults to 0.** The re-apply was
+  shipped "verified" in 1.5.8 and it is not: with it on, the hub stopped
+  responding after a Mesh Model press and Windows logged an Application
+  Hang. The show/hide slot is a vendor metacall, and calling it while the
+  post-process environment switch still owns the scene is what stalls the
+  Qt thread; the show half also flashes every hidden scan on screen first.
+  The user confirmed the same hang on a 1.5.7-era build, so it belongs to
+  the re-apply design rather than to the 1.6.0 rename. Default off,
+  everywhere (code, ini template, docs); the viewport may therefore show a
+  hidden scan again after Mesh Model, while the merged mesh still excludes
+  it (`eye_gate`, which never calls vendor code). Open design item: a
+  re-apply that waits for scene quiescence instead.
+* **1.6.2 (2026-11-26): the eye-click hang, found in a dump.** With 1.6.1
+  deployed the hub still hung on eye clicks, so the module was disabled in
+  `modules.ini` and the identical clicks produced no hang - ours, not the
+  vendor's. A full-memory minidump of the hung process put a 100%-CPU
+  thread at `readQName5()` called from `qmapDumpD()`, with the walk's own
+  frame reading `sp = 1, cnt = 0` and a skip counter near 2^31: the map
+  walk bounded its *pending stack* but not the number of nodes visited, so
+  a non-map argument whose pointers refer back to itself is walked forever
+  (no key ever parses, so the key limit never trips). The same guard
+  compared `sizeof stack` in *bytes* (511) against a 64-element array, so a
+  wider bogus graph would also have written over the saved registers and
+  the return address. Three hard bounds now: 64 pending nodes (counted in
+  elements), 256 visited nodes, and a root gate that starts a walk only
+  when the root node carries a readable key. Diagnostic path only, all
+  three fail open.
+  Evidence: [merge-common-mesh.md §19](research/merge-common-mesh.md).
 
 ## Open regressions
 

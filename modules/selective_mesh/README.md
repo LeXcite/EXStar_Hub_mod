@@ -172,8 +172,8 @@ unlisted scans are provably unaffected.
 | `eye_reapply` | `0` | re-assert hidden eyes (toggle show+hide) after the scene's environment switch; **on, this can hang the hub** (metacall during the switch, evidence 2026-11-26) - off by default since 1.6.1 |
 | `gate_exes` | `EXStar Hub.exe,scanservice.exe,Sn3DprocessManager.exe` | processes allowed to hook the merge gate; every other host keeps an inert module |
 | `eyewatch_exes` | `EXStar Hub.exe` | processes allowed to watch the eye icons (the QML UI) |
-| `scene_watch` | `1` | log the scene's named commands (diagnostic: what the viewport is asked to show) |
-| `scene_filter` | `1` | withhold a `SetModelsVisible` that would show a hidden model again; on 2.1.0-10 nothing sends that command, so today it is inert (see the note above) |
+| `scene_watch` | `1` | log the scene's named commands (diagnostic: what the viewport is asked to show). Reading a command is memory-only and hard-bounded (64 pending nodes, 256 visited, walk only starts on a real map): an unbounded walk hung the hub on 1.6.1 |
+| `scene_filter` | `0` | withhold a `SetModelsVisible` that would show a hidden model again; on 2.1.0-10 nothing sends that command, so today it is inert (see the note above) |
 | `file` | stock path | full path to the selection `.ini` (the `.map.txt` sits next to it); the automatic migration from `merge-select.ini` only runs when this key is absent |
 
 Neither `scene_*` switch changes what ends up in the merged mesh - that

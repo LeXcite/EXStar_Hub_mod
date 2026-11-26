@@ -339,6 +339,20 @@ bool readers are `qvTag5()`/`qvBool5()`, the map is `qmapFind()`
 (root at `data+0x10`, node `{ left +0x8, right +0x10, key +0x18,
 value +0x20 }`). Anything not fully readable is passed through.
 
+The map walk (`qmapDumpD()`, the probe only) is bounded three ways, and
+1.6.1 showed each bound is load-bearing: `sp < WALK_SLOTS` (64 pointers,
+counted in **elements** - compared in bytes it allowed 511 pushes into a
+64-slot array, straight over the saved registers and the return address),
+`visits < WALK_VISITS` (256 nodes for the whole walk - bounding only the
+pending stack is not enough, because a non-map argument read at the wrong
+root offset yields a graph whose children point back into it: the walk
+then pops one and pushes one forever), and a root gate (a walk starts
+only when the root node has a readable key, which every real command map
+does). The 1.6.1 symptom was the hub hung at 100% of one core on the
+first eye click, one thread inside `readQName5()` called from
+`qmapDumpD()`; evidence and the dump reading are in
+`docs/research/merge-common-mesh.md` section 19.
+
 The filter rule, both commands: a name set `g_hid[]`
 (`HID_MAX` = 64, `quHash`-keyed, SRW-locked, built by
 `hidAdd()` from `visible=false` commands, `hidDel()` on a single-name
@@ -460,6 +474,7 @@ changes behaviour:
 | `[Settings] enabled = 0` | master off, gate answers the vendor's value |
 | uuid unknown | eye input skipped, `[folder]` sections still work |
 | command argument not fully readable | passed through untouched |
+| command argument is not a map at all | probe walk never starts (root gate), bounded to 256 nodes if it does |
 | hook refused by the host | stock, logs |
 | re-apply on the wrong thread | skipped by design |
 | deleting the selection .ini | behaviour returns to stock exactly |

@@ -212,7 +212,7 @@
 #include "exstar_sdk.h"
 #include "qt_read.h"
 
-#define MOD_VERSION   "1.6.1"
+#define MOD_VERSION   "1.6.2"
 
 /* one log call, one tag: MOD_LOG(fmt, ...) ==
  * g_host->log("selective_mesh: " fmt, ...) - the literals concatenate */
@@ -2161,16 +2161,35 @@ static void qvDescribe(const void *qv, char *out, int cap)
 /* is this argument a QVariantMap?  Rather than looking only for the keys
  * we already know, the tree is enumerated and every key present is
  * reported - so the probe is also useful for commands whose argument
- * names have not been read in the binary yet.  Bounded (nodes, keys,
- * output, depth), read-only, guarded.
+ * names have not been read in the binary yet.  Bounded (nodes, visits,
+ * keys, output, depth), read-only, guarded.
  *
- * An unreadable node must NOT end the walk: the hub's own command maps hold
- * Qt's sentinel node next to the real ones, and stopping there once hid the
- * keys the filter needs.  Such a node is counted and skipped instead. */
+ * Three bounds, each of which 1.6.1 showed to be load-bearing:
+ *
+ *   - stack[] holds WALK_SLOTS pointers, so the push guard counts elements
+ *     (sizeof / sizeof *array).  Written in bytes it allowed 511 pushes
+ *     into a 64-slot array, i.e. hundreds of pointers written over the
+ *     saved registers and the return address.
+ *   - WALK_VISITS bounds the whole walk, not just the pending stack.  A
+ *     pointer graph that stays small but points back into itself - which
+ *     is what a non-map argument looks like once a wrong root offset is
+ *     read - is walked forever, because its nodes carry no readable key
+ *     and the key limit is never reached.  That was the 1.6.1 hang: one
+ *     thread at 100% CPU inside this loop, forever.
+ *   - a real command map has a readable key at its root, so a root node
+ *     without one is not a map and is rejected before the walk starts.
+ *
+ * An unreadable node further down must NOT end the walk: the hub's own
+ * command maps hold Qt's sentinel node next to the real ones, and stopping
+ * there once hid the keys the filter needs.  Such a node is counted and
+ * skipped instead. */
+#define WALK_SLOTS   64
+#define WALK_VISITS  256
+
 static int qmapDumpD(void *mapObj, char *out, int cap, int *cntOut, int depth)
 {
-    char  *stack[64], *d = NULL, *n;
-    int    sp = 0, cnt = 0, skipped = 0, used = 0, r, roots[2];
+    char  *stack[WALK_SLOTS], *d = NULL, *n;
+    int    sp = 0, cnt = 0, skipped = 0, used = 0, r, visits, roots[2];
 
     out[0] = 0;
     if (cntOut)
@@ -2186,18 +2205,22 @@ static int qmapDumpD(void *mapObj, char *out, int cap, int *cntOut, int depth)
 
     for (r = 0; r < 2; r++) {
         sp = 0;
-        cnt = skipped = 0;
+        cnt = skipped = visits = 0;
         used = 0;
         out[0] = 0;
         __try {
+            char first[48];
+
             d = *(char **)mapObj;
             if (!plausiblePtr(d))
                 break;
             n = *(char **)(d + roots[r]);
             if (!plausiblePtr(n))
                 continue;
+            if (!readQName5(n + 0x18, first, (int)sizeof first))
+                continue;             /* no root key: not a map at all */
             stack[sp++] = n;
-            while (sp > 0 && cnt < 16) {
+            while (sp > 0 && cnt < 16 && visits++ < WALK_VISITS) {
                 char  key[48], val[300];
                 char *l, *r2;
 
@@ -2206,9 +2229,9 @@ static int qmapDumpD(void *mapObj, char *out, int cap, int *cntOut, int depth)
                     continue;
                 l = *(char **)(n + 0x08);
                 r2 = *(char **)(n + 0x10);
-                if (plausiblePtr(l) && sp < (int)(sizeof stack) - 1)
+                if (plausiblePtr(l) && sp < WALK_SLOTS)
                     stack[sp++] = l;
-                if (plausiblePtr(r2) && sp < (int)(sizeof stack) - 1)
+                if (plausiblePtr(r2) && sp < WALK_SLOTS)
                     stack[sp++] = r2;
                 if (!readQName5(n + 0x18, key, (int)sizeof key)) {
                     skipped++;            /* Qt's sentinel, or another layout */

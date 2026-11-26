@@ -828,3 +828,50 @@ tools\qmeta_dump.ps1 -File 'C:\Program Files\Shining3d\EXStar Hub\ScanPage_E7.dl
 tools\xref_str.ps1   -File 'C:\Program Files\Shining3d\EXStar Hub\ScanPage_E7.dll' -Text 'SetModelNodesVisible'
 ```
 
+## 19. The eye-click hang of 1.6.1: a self-referencing probe walk (1.6.2)
+
+After the 1.6.1 deploy (`eye_reapply = 0`, `scene_filter = 0`,
+`scene_watch = 1`, `verbose = 1`) the hub still hung on eye clicks, twice,
+minutes apart, with nothing else touched. Turning the module off in
+`modules.ini` (`[selective_mesh] enabled = 0` - the host logs `module
+'selective_mesh' is disabled`) and repeating the same clicks produced no
+hang at all, so the defect was ours, even though WER also lists the media
+stack (`calib_quik.mp4`, MF/EVR/msmpeg2vdec) that the dashboard keeps
+playing while the UI is stuck.
+
+A full-memory minidump of the still-hung process (taken with
+`MiniDumpWriteDump` from an elevated PowerShell, 6.36 GB) names the exact
+place. One thread is burning a whole core (+3.09 s CPU in 3 s) with
+`RIP = selective_mesh.dll+0x4460`, which is the first instruction of
+`readQName5()`, and `[RSP] = selective_mesh.dll+0x36B9`, which is
+`qmapDumpD+0x169` - the key read of the map walk. Because RIP is at the
+function's entry the caller's frame starts at `RSP+8`; it can be found in
+the stack by its `roots[2] = {0x10, 0x18}` marker and it reads
+`sp = 1, cnt = 0, used = 0`, with the spilled skip counter at ~2.2e9.
+One pending node, no key accepted, billions of iterations.
+
+Why the walk never ended: `qmapDumpD()` bounded the *pending stack* but
+not the number of nodes visited. An argument that is not a command map -
+scene commands carry up to eight - read at the wrong root offset yields a
+pointer graph whose children point back into it; each step pops one node
+and pushes one back, so `sp` stays at 1-2 forever, no key parses (so the
+`cnt < 16` key limit never trips) and the thread spins. The same function
+compared its push guard against `sizeof stack` *bytes* (511) for a
+64-element array, so a wider bogus graph would also have written pointers
+over the saved registers and the return address - the array sits flush
+against them in the frame.
+
+Fix in 1.6.2, three independent bounds inside `qmapDumpD()`:
+`sp < WALK_SLOTS` (64, counted in elements), `visits < WALK_VISITS` (256,
+the whole walk, not just what is pending), and a root gate - a walk only
+starts when the root node carries a readable key, which every real
+command map has. The probe is diagnostic only, so all three fail open:
+no walk means no log line, never a changed command.
+
+Two conclusions for the record. First, the 14:31 hang of 1.6.0 was
+attributed to `eye_reapply`, but these later hangs happened with re-apply
+off; the re-apply switch is still correctly off by default, yet it was
+not the cause of the eye-click hang. Second, `scene_watch` is not free:
+it runs the walk on the UI thread for every watched command, so every
+bound in it has to be a hard one.
+
