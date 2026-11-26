@@ -35,7 +35,7 @@ not included in git).
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
 | fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
-| selective_mesh | 1.6.2 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch, hook allowlists); 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`); 1.5.6 reads nested command values and proved the viewport half has nothing to intercept (see 2026-11-25 below); 1.5.8 kept a hidden scan hidden on screen across the environment switch - that re-apply hangs the hub, so it is off by default since 1.6.1; 1.6.0 = renamed Selective Mesh; 1.6.2 = the map walk of a watched scene command is hard-bounded (it could spin forever on a non-map argument and hang the hub) |
+| selective_mesh | 1.7.0 | eye-icon driven common-mesh selection (uuid-keyed ini shared across processes, gate identity, meta-object eye watch, hook allowlists); 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`); 1.5.6 reads nested command values and proved the viewport half has nothing to intercept (see 2026-11-25 below); 1.5.8 kept a hidden scan hidden on screen across the environment switch - that re-apply hangs the hub, so it is off by default since 1.6.1; 1.6.0 = renamed Selective Mesh; 1.6.2 = the map walk of a watched scene command is hard-bounded (it could spin forever on a non-map argument and hang the hub) - live-verified 2026-11-26; 1.7.0 = a merge this module would leave empty runs as if all eyes were open, reading the merge's own scan list out of the caller's registers (`merge_list.h`, proven by `tools/merge_list_lab.c`); 1.7.1 = that guard accepts the register block on its content, not on an assumed register name (the first live run falsified `rcx == self`); 1.7.2 = `RegCtx` field names match the measured block order - live-verified 2026-11-26 (all eyes hidden -> full mesh, one eye shown -> only visible scans) |
 | ExStarModManager | 1.6.9 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist (one exception: 1.6.9 renames the `merge_select` token of a hand-made list, never adds one); 1.6.9 removes the legacy `merge_select` files and carries its settings to `selective_mesh` |
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
@@ -546,6 +546,64 @@ stays hidden on screen. Evidence:
   when the root node carries a readable key. Diagnostic path only, all
   three fail open.
   Evidence: [merge-common-mesh.md §19](research/merge-common-mesh.md).
+
+ * **2026-11-26: 1.6.2 live-verified by the user.** Eyes toggle without
+   any hang, and the common mesh is built only from the scans whose eye is
+   open - both halves of the module's purpose confirmed on the installed
+   build (sha256 `D62DE7A2...E5FA`).
+ * **1.7.0 (2026-11-26): "no eye open" no longer dead-ends the merge.**
+   Hiding all three eyes and pressing Mesh Model reproduced the vendor's
+   empty-input dead end: Processing stopped at ~80 %, page buttons dead,
+   viewport still live, nothing lost. The receiving side
+   (`PostProcess.dll!LaserMeshGenerateController::receiveProjectsData`,
+   RVA `0xFF850`) skips its whole input loop when `meshList` is empty and
+   leaves `hasSophyMesh` false, so the step is never reported done. The
+   user's rule: if this module would hide *every* scan of a merge, that run
+   must behave as if every eye were open. The scan set of the current merge
+   is in the vendor's own registers at the hooked call (both senders keep
+   the `QList` at `param_1+0x70` in `rdi`), so the thunk now also hands the
+   helper the caller's saved registers, and `merge_list.h` reads that list
+   as plain memory - no Qt call. The first version of that reader used the
+   *string* header layout, and `tools/merge_list_lab.c` caught it against
+   the shipped `Qt5Core.dll` (5.15.10): a `QList` header is `ref`, `alloc`,
+   `begin`, `end`, slots at `+0x10`, count = `end - begin`. All lab checks
+   pass, including a real `QStringList`, a container whose `begin` is 2,
+   and the 11-candidate register scan accepting exactly one register. The
+   guard only ever forces "include", the vendor's own cloud flag still
+   decides, nothing is written back, and any doubt (list not found,
+   unreadable item, id-less scan, mismatched `rcx`) means "do not
+   interfere". Switch `all_hidden = 0` to keep the stock behaviour.
+   **Built and lab-proven, not yet deployed** - needs the user's UAC click
+   and a hub restart. Evidence:
+   [merge-common-mesh.md §20](research/merge-common-mesh.md).
+ * **1.7.1 (2026-11-26): the guard's precondition was wrong, and the hub
+   said so.** 1.7.0 went live at 18:30 (`ah=1` in the armed line) and on
+   the user's all-eyes-hidden press the guard refused to act three times
+   per sender: its first check demanded the saved `rcx` equal `self`, and
+   both rejected values (`0x…76E3BB`, `0x…773097`) are code addresses
+   *inside the merge DLL*. Failing open, the merge stalled exactly as
+   stock does, so nothing broke; but a rule of the form "register N equals
+   X" is a claim about one compiler's allocation, not a fact. The
+   acceptance rule is now self-validating - a candidate register is the
+   list only when that list holds an item whose `+0x28` is this call's
+   `self` - which is also what proves the `RegCtx` decode is aligned, and
+   the lab runs it with `rcx` deliberately holding a code address. The
+   first decision of every process additionally dumps the raw block, so
+   the layout is measured on every vendor build instead of assumed.
+ * **1.7.2 (2026-11-26): live-verified; names and records only.** With the
+   fix installed the user confirmed the whole flow, and the log shows both
+   verdicts from the same path: all three eyes hidden -> `all 3 scans of
+   this merge are hidden - exclusions ignored, every scan goes in` and the
+   merge finished (no 80 % stall); one eye shown -> `3 scans in the merge
+   list (…, reg#9, self at #1, 0 unreadable) - at least one stays in` and
+   only the visible scans merged. The block dump also corrected the last
+   assumption: exactly one of the eleven slots reads as a list header
+   (`hdrs=1`, so the decode is aligned), the list itself arrives in **`r9`**
+   (not the `rdi` the decompiler's loop suggested), `self` is in **no**
+   saved register, and the slot logged as `rcx` is the vendor's `rbx` -
+   `RegCtx` had been laid out the other way round (the first pushed `rax`
+   is at the *lowest* address). 1.7.2 renames those fields to match the
+   measured order: no behaviour change.
 
 ## Open regressions
 

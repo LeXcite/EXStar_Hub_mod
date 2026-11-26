@@ -1,9 +1,10 @@
 # Selective Mesh - module architecture
 
 `modules/selective_mesh/selective_mesh.c` (single translation unit, plus
-`qt_read.h`), version in `MOD_VERSION`. Targets EXStar Hub 2.1.0-10,
-x64, built by `build.ps1` into `build\modules\selective_mesh.dll` and
-embedded into the manager as a resource.
+the read-only helpers `qt_read.h` and `merge_list.h`), version in
+`MOD_VERSION`. Targets EXStar Hub 2.1.0-10, x64, built by `build.ps1` into
+`build\modules\selective_mesh.dll` and embedded into the manager as a
+resource.
 
 The user-facing description is [README.md](README.md). This file is the
 implementation map: every hook, how it is anchored, what state it owns,
@@ -45,6 +46,13 @@ switch so the viewport agrees with the merge.
 
 The .ini is the only durable state, and it is shared across processes:
 the hub writes it, every gated process reads it at the gate.
+
+One rule bends that ("no" is normally final): if a merge would end up
+with **no** scan because this module hid every one of them, the run is
+left as if the eyes were all open, because the vendor's own post-process
+step never finishes on an empty input. Section 4 has the guard, and
+[research section 20](../../docs/research/merge-common-mesh.md) has the
+measurement behind it.
 
 ## 2. Process topology
 
@@ -117,18 +125,21 @@ stock. Then `buildThunk()` and `g_host->hook(target, g_thunk, &g_origIsCloud)`.
 
 ### Why a hand-built thunk
 
-The detour needs two things the export's own signature does not carry:
+The detour needs three things the export's own signature does not carry:
 the **caller's return address** (to tell merge callers from everybody
-else) and a **wrapper candidate** (to find the scan uuid, section 6).
-Both are only available at the raw call site, so the hook target is a
-65-byte code blob `VirtualAlloc`ed as `PAGE_EXECUTE_READWRITE`:
+else), a **wrapper candidate** (to find the scan uuid, section 6) and,
+since 1.7.0, **the caller's saved registers** (to read the scan list the
+merge loop is walking, see "The all-hidden guard" below). None of them is
+available to a plain detour, so the hook target is a 68-byte code blob
+`VirtualAlloc`ed as `PAGE_EXECUTE_READWRITE`:
 
 ```
 mov  r8, [rsp]          ; the caller's return address
-mov  rdx, rax           ; the string-return hidden-return slot MSVC x64 uses
+mov  rdx, rax           ; the wrapper candidate ([item+0x28] == self)
 push rax rbx rcx rdx rsi rdi r8 r9 r10 r11 ; every volatile register
 pushfq                                      ; and flags
 sub  rsp, 0x20                              ; shadow area for the call
+mov  r9, rsp            ; 4th argument: the block above, as RegCtx *
 mov  r10, det_isCloud
 call r10
 movzx eax, al                               ; keep only the bool
@@ -140,7 +151,18 @@ ret                                           ; AL = the answer
 ```
 
 Nothing is invented and nothing is lost: the callee sees exactly the
-registers its real caller left, only `AL` changes.
+registers its real caller left, only `AL` changes. `RegCtx` is the push
+block read from its low end up - pushes grow down, so the first pushed
+(`rax`) is at the **lowest** address - and `CTX_REGS(r9)` lands on its
+first byte. The decode is *proved by use*, not by a remembered register
+name: the guard only accepts the block when one of these values points at
+a `QList` that contains an item whose `+0x28` is the `self` of this very
+call, and the first decision of every process logs the whole block
+(`all-hidden block: ...`). That mattered on the first live run of 1.7.0:
+the guard began by demanding the saved `rcx` equal `self`, and the value
+in that slot was a **code address of the merge DLL** (the slot itself was
+also mis-named - the struct ran the other way round until 1.7.2), so the
+contract rejected every call and silently turned the guard off.
 
 ### The decision (`decideCloud`)
 
@@ -152,13 +174,49 @@ uuid     = gateEyeUuid(self, impl, wrapper)    (section 6)
 if eye_gate and uuid known and not master-off:
         [uuid] section in the .ini wins outright, else
         the in-RAM eye map (eyeLookup) can only turn include -> exclude
+if all_hidden and not inc and not master-off and allHiddenNow(ctx, self):
+        inc = 1, why = WHY_ALLHIDDEN           (the one rule that widens;
+        allHiddenNow is true only when EVERY scan of the merge list this
+        module can read is hidden by an eye/[uuid] rule)
 report the scan once to the .map.txt, log the line under budget
-return (vendor && inc)                        (can only ever narrow, never widen)
+return (vendor && inc)                        (narrows, except the rule above)
 ```
 
 `det_isCloud` wraps `decideCloud` in `__try/__except`: any fault returns
 the stock answer and logs once. A vendor object that moved between
 releases can cost the exclusion, never the process.
+
+### The all-hidden guard (`allHiddenNow`)
+
+Hiding every eye is a valid click and a dead-end merge: the vendor sends
+an empty `meshList` and its post-process step never reports done
+(Processing stuck at ~80 %, modal page - 
+[research section 20](../../docs/research/merge-common-mesh.md)). So a
+merge that this module alone would leave empty runs as if nothing were
+excluded.
+
+```
+only consulted for a scan the module was about to exclude
+for each of the 11 saved registers:
+        mlHeader(reg) -> count, first used slot        (merge_list.h)
+        mlFindItem(slots, count, 0x28, self) >= 0 ?    -> that is the list
+        else next candidate
+for each item of the list:  mlItemId(slots, i, 0x38) -> [uuid] section,
+        else the in-RAM eye map; unreadable item or empty id = visible
+verdict 1 (fire) only when EVERY scan is hidden; cached per merge run
+the first decision of the process also logs the raw block (all-hidden block:)
+return (r && 1) - the vendor's own cloud flag still decides
+```
+
+| piece | rule |
+|-------|------|
+| list container | `merge_list.h` - Qt 5.15 `QList` header (`ref`, `alloc`, `begin`, `end`, slots at `+0x10`, element `i` at slot `begin + i`); measured against the shipped `Qt5Core.dll`, re-checked by `tools\merge_list_lab.c`. No Qt call - that is what killed 1.5.0 |
+| where the list is | `param_1 + 0x70` of either merge sender (`Sn3DMultiProjects +0x7E3BB`, `+0x83097`); the live block dump shows the accepted candidate is the saved **`r9`** on 2.1.0-10 - which register that is may differ per build, so the code never asks |
+| acceptance | the list must contain an item whose `+0x28` is `self`; a candidate that merely looks like a header is not enough. This is also the *only* proof the register block is read at the right offsets - no register name may be assumed to carry an argument (the dump's `rcx` slot holds a code address of the merge DLL, and `self` is in no saved register at all) |
+| per-scan verdict | eye channels only (`[uuid]` section, then the in-process eye map). A scan excluded purely by an explicit `[folder]` section reads as visible, so folder-driven exclusions alone never trip the guard |
+| bound | `ML_MAX` 4096 scans; anything bigger or odd reads as "I do not know" |
+| cache | verdict + list + the selection `.ini` file time + `AH_TTL_MS` (4 s); the eye writes the `.ini`, so a new file time re-decides it |
+| fail-open | no candidate, unreadable item, id-less scan, switch off -> stock behaviour, nothing forced |
 
 ## 5. Component B - scan identity
 
@@ -392,6 +450,7 @@ the shipped ini states them explicitly and keeps `scene_filter = 0`.
 | `verbose` | 1 | every log line (the gate decision log and the scene probe also need budget) |
 | `eyewatch` | 1 | worker's UI phase at all |
 | `eye_gate` | 1 | eye -> .ini persistence, the gate's uuid consultation |
+| `all_hidden` | 1 | `allHiddenNow` - the "this merge would be empty" guard (section 4) |
 | `eye_reapply` | 0 (since 1.6.1 - on, the toggle can hang the hub during the env switch) | component E, and arming `SetCurrentEnv` for it |
 | `scene_watch` | 1 | `sceneProbe` |
 | `scene_filter` | 1 | `sceneHideDecide` / `sceneNodeDecide` |
@@ -416,8 +475,14 @@ never flood the log.
 | `vendor exports not found (isGenerateCloud/getFolderPath/QString) - staying out of it` | `tryInstall` | build changed: fail-open, investigate |
 | `thunk alloc failed - app stays stock` / `detour refused - app stays stock` | `tryInstall` | hook infrastructure refused: fail-open |
 | `hooked HandlePrjFile::isGenerateCloud (active for Sn3DMultiProjects.dll callers) - see <file>` | `tryInstall` | gate armed |
-| `gate <key> uuid=<uuid> eye=<-1|0|1> vendor=<0|1> <why> -> include|SKIP` | `decideCloud` | the per-scan decision (200) |
+| `selective_mesh v<ver> armed in pid=<pid> exe=<exe> sf=<0|1> qt=<0|1> mp=<0|1> ah=<0|1>` | `ex_init` (host log) | what was already mapped at init (`sf` Sn3DFile, `qt` Qt5Core, `mp` Sn3DMultiProjects) and `ah` = `all_hidden` as read |
+| `gate <key> uuid=<uuid> eye=<-1|0|1> vendor=<0|1> <why> -> include|SKIP` | `decideCloud` | the per-scan decision (200). `<why>` includes `every scan hidden - all in` when the guard fired |
 | `gate <no id> uuid=... ra=+0x... impl=... vendor=... <why> -> ...` | `decideCloud` | same, for a scan whose identity is unreadable (same budget) |
+| `all <n> scans of this merge are hidden - exclusions ignored, every scan goes in (...)` | `allHiddenNow` | the guard fired for this run (20) |
+| `all-hidden guard: no register of the merge caller held a list containing self=<p> (<n> of 11 read as a list) - guard off` | `allHiddenNow` | no candidate matched: fail-open (20, `verbose`) |
+| `all-hidden block: hdrs=<n> self@reg#<i> list@reg#<j> \| rax=... rbx=... rcx=... rdx=... rsi=... rdi=... r8=... r9=... r10=... r11=... fl=...` | `blockDump` | the raw saved block: once per process unconditionally, then 6 more on a failed walk - this is the line that pins the layout on a new vendor build |
+| `all-hidden guard: <n> scans in the merge list (<list>, reg#<i>, self at #<j>, <k> unreadable) - at least one stays in` | `allHiddenNow` | verdict "do not interfere", with what it read (20, `verbose`) |
+| `all-hidden guard: saved registers do not match the scan (rcx=... self=...) - guard off` | `allHiddenNow` | the `RegCtx` contract failed: guard off (20) |
 | `gate fault while reading the vendor object - this call keeps the stock answer` | `det_isCloud` | SEH caught something; logged once |
 | `probe cloud? <module>+0x<X> self=... impl=...` | `probeLog` | a caller outside the merge code asked the question (60, per-site dedupe) |
 | `idmap impl=<p> +0x<off> = <text>` | `idDump` | object map for an unnamed scan (6 dumps) |
@@ -455,9 +520,10 @@ never flood the log.
 | `g_hid[]` hash+text | 64 (`HID_MAX`) | SRW lock (`g_hidLock`), shared for lookups |
 | `g_uLoc` cached uuid location | 1 | `{ level, off, lay }`, invalidated on a bad read |
 | `g_probe[]` seen caller sites | 40 (`SITE_MAX`) | `g_probeBusy` guards the survey |
+| `g_ahState/List/Count/IniLo/IniHi/When` all-hidden verdict | 1 verdict | plain words, re-decided when the selection `.ini` mtime changes or after `AH_TTL_MS` (4 s); `g_ahBusy` lets one thread decide while the others use the last verdict |
 | `g_metaSeen[]` metacall traffic | 32 | `g_eyeBusy` |
 | `g_seen[]` roster/log dedupe | 64 (`SEEN_MAX`) | `g_reportBusy` |
-| counters: `g_installed`, `g_broken`, `g_eyeDone`, `g_sceneDone`, `g_retryPending`, `g_reapplyBusy` | - | interlocked, all fail-open on the safe side |
+| counters: `g_installed`, `g_broken`, `g_eyeDone`, `g_sceneDone`, `g_retryPending`, `g_reapplyBusy`, the all-hidden log budgets (`g_ahFired/Seen/Miss/Block/Dumped`) | - | interlocked, all fail-open on the safe side |
 
 ## 14. Failure modes
 
@@ -475,6 +541,9 @@ changes behaviour:
 | uuid unknown | eye input skipped, `[folder]` sections still work |
 | command argument not fully readable | passed through untouched |
 | command argument is not a map at all | probe walk never starts (root gate), bounded to 256 nodes if it does |
+| the merge's scan list is not among the caller's registers | all-hidden guard stays out; a merge this module would empty stalls exactly as stock does, and the raw block is logged so the situation is measurable |
+| a list item or its id unreadable | that scan counts as visible -> the guard does not fire (an empty merge is never forced open on a guess) |
+| saved `rcx` is not `self` | normal, not a contract: the block is accepted on its content, the value only shows up in the block dump |
 | hook refused by the host | stock, logs |
 | re-apply on the wrong thread | skipped by design |
 | deleting the selection .ini | behaviour returns to stock exactly |
@@ -487,6 +556,7 @@ changes behaviour:
 | `tools/xref_str.ps1` | every code site that references a string (e.g. the four `SetModelNodesVisible` senders) |
 | `tools/scmd_enum.ps1` / `scmd_lab.c` | the scene plugin's whole command registry |
 | `tools/qlist_lab.c` + `qt_read.h` | the `QStringList`/`QString` readers, tested against the shipped `Qt5Core.dll` |
+| `tools/merge_list_lab.c` + `merge_list.h` | the bare-memory `QList` reader the all-hidden guard uses: real `QStringList` built by the shipped `Qt5Core.dll` (5.15.10), fake scan items in vendor shape, a container whose `begin` is not 0, the 11-candidate register scan, and every refusal (null, garbage, empty, unreadable item, id-less scan) - exit code 0 = layout proven outside the product |
 | `tools/qv_layout.c`, `qmeta_lab.c` | QVariant layout and metatype tags, measured |
 | `tools/func_str.c` | strings referenced inside a function's prologue->`ret` range |
 | `tools/deploy_module.ps1` | install this module into the product folder (keeps `winmm.dll`/`ExStarRec.dll`, migrates the ini names) |

@@ -1,6 +1,6 @@
 # Selective Mesh (`selective_mesh`)
 
-**Version 1.6.0 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
+**Version 1.7.2 · targets EXStar Hub 2.1.0-10 · memory-only, no disk patches**
 
 Until 1.6.0 this module was named `merge_select` ("Merge Selection"). The
 rename is identity only; the selection file moved with it
@@ -47,8 +47,32 @@ icon)** - the next common-mesh build leaves it out. Show it again to
 bring it back. Once is enough: the choice is written into
 `selective-mesh.ini` and survives restarts, so later merges need no
 preparation at all. Since 1.5.8 the scan also *stays* hidden on screen
-after the Mesh Model page redraws. Everything below is the manual
-override for scripts and power users.
+after the Mesh Model page redraws (that part is off by default since
+1.6.1, see below). Everything else below is the manual override for
+scripts and power users.
+
+**Hiding every eye is not a selection, and since 1.7.0 it is not a dead
+end either.** Stock EXStar Hub reacts to "no scan takes part" by starting
+the merge with an empty input: its post-process step never reports done,
+so the Processing bar stops around 80 %, the page buttons stay dead and
+only closing the hub clears it (measured 2026-11-26,
+[evidence](../../docs/research/merge-common-mesh.md) section 20). So when
+a merge would get *nothing* because this module hid every scan of the
+project, it hides nothing instead: that one run merges every scan the
+vendor itself would have merged, exactly like with all eyes open. Nothing
+is written back - the eye icons, `selective-mesh.ini` and the next run
+stay as they are, and the vendor's own "generate a point cloud" flag
+still decides (a scan with that off stays out, as in stock). Switch
+`all_hidden = 0` to keep the stock dead end.
+
+*Status, 2026-11-26: live-verified on the installed build - with all
+three eyes hidden the merge finished (no 80 % stall) and the log read
+`all 3 scans of this merge are hidden - exclusions ignored, every scan
+goes in`; with one eye shown it read `at least one stays in` and merged
+only the visible scans, as before. 1.7.1 dropped the precondition that
+made 1.7.0 refuse to act; 1.7.2 corrects only names and records. The
+container layout itself is proven outside the product by
+`tools\merge_list_lab.c` against the shipped Qt.*
 
 1. Install/enable the module in the Mod Manager and start a common-mesh
    run once so the hub sees each scan.
@@ -160,7 +184,34 @@ the module logs that once and stays out of the way.
 Every risky step (folder query, `QString` reads) runs under SEH and
 falls back to the vendor's own answer; the module can only turn "yes"
 into "no" for an explicitly excluded scan, so live scanning and
-unlisted scans are provably unaffected.
+unlisted scans are provably unaffected. The one documented exception is
+the all-hidden guard above: it turns this module's own "no" back into
+"yes" when nothing would be left, and it never overrides the vendor's
+"no" - a scan whose own cloud flag is off stays out either way.
+
+**How the all-hidden guard knows the scan set.** The answer has to be
+given on the *first* scan of the merge, and only the vendor knows how
+many scans that merge holds. It also has them right there in the
+registers saved by the call the module is already hooked: both merge
+senders in `Sn3DMultiProjects.dll` (+`0x7E3BB`, +`0x83097`) build a
+`QList` of scan items for the loop, and the live block dump shows that
+list in **`r9`** at the moment they ask about each item. The hand-built
+thunk therefore hands the helper the caller's saved registers as well, and
+[merge_list.h](merge_list.h) reads that list as plain memory - no Qt
+call, the mistake 1.5.0 made. Its header layout (`ref`, `alloc`,
+`begin`, `end`, slots right behind) was measured against the shipped
+`Qt5Core.dll` (5.15.10) and is re-checked by `tools\merge_list_lab.c`,
+which builds a real `QStringList` with Qt's own code, drops fake scan
+items into its slots and runs the shipping reader on it.
+
+Nothing is trusted on sight - including which register holds what. A
+candidate register counts as the merge list only when one of its items
+**is** the scan the vendor called for (`item+0x28 == self`), and the first
+decision of every process logs the raw block. That rule, not a register
+name, is what makes the guard correct: measured live on 2026-11-26, the
+list arrives in `r9`, the scan object `self` is in *none* of the saved
+registers, and the slot an early revision called `rcx` holds a code
+address of the merge DLL. Any doubt and the guard stays out of the way.
 
 ## Configuration (`modules\selective_mesh.ini`)
 
@@ -169,6 +220,7 @@ unlisted scans are provably unaffected.
 | `verbose` | `1` | log each scan decision to the mod log (needs `[host] log = 1`) |
 | `eyewatch` | `1` | record project-list eye show/hide events (observation) |
 | `eye_gate` | `1` | hidden eye = scan left out of the common mesh, persisted as `[uuid]` sections (explicit `.ini` sections still win) |
+| `all_hidden` | `1` | if this module would hide *every* scan of a merge, ignore the exclusions for that run instead of letting the vendor stall on an empty input (the eye icons and the `.ini` are left as they are) |
 | `eye_reapply` | `0` | re-assert hidden eyes (toggle show+hide) after the scene's environment switch; **on, this can hang the hub** (metacall during the switch, evidence 2026-11-26) - off by default since 1.6.1 |
 | `gate_exes` | `EXStar Hub.exe,scanservice.exe,Sn3DprocessManager.exe` | processes allowed to hook the merge gate; every other host keeps an inert module |
 | `eyewatch_exes` | `EXStar Hub.exe` | processes allowed to watch the eye icons (the QML UI) |

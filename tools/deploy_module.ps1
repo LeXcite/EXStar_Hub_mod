@@ -45,8 +45,8 @@
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\deploy_module.ps1 `
-        -On verbose,eye_gate,scene_watch -Off scene_filter,eye_reapply `
-        -Note 1.6.0_rename_to_selective_mesh
+        -On verbose,eye_gate,scene_watch,all_hidden -Off scene_filter,eye_reapply `
+        -Note 1.7.0_all_hidden_guard
 
 .NOTES
     Writes C:\Users\LeX\AppData\Local\Temp\opencode\deploy_module.txt.
@@ -167,8 +167,9 @@ if ($ResetIni) {
 }
 
 if (-not (Test-Path $ini)) { '[selective_mesh]' | Out-File $ini -Encoding utf8 }
-$known = 'verbose', 'eyewatch', 'eye_gate', 'eye_reapply', 'scene_watch',
-         'scene_filter', 'sibling_all', 'sibling_modules', 'file'
+$known = 'verbose', 'eyewatch', 'eye_gate', 'all_hidden', 'eye_reapply',
+         'scene_watch', 'scene_filter', 'sibling_all', 'sibling_modules',
+         'file'
 $pat   = '^\s*;?\s*(' + ($known -join '|') + ')\s*='
 $lines = [IO.File]::ReadAllText($ini) -split "`r?`n"
 $out = New-Object System.Collections.Generic.List[string]

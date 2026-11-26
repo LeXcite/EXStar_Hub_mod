@@ -875,3 +875,178 @@ not the cause of the eye-click hang. Second, `scene_watch` is not free:
 it runs the walk on the UI thread for every watched command, so every
 bound in it has to be a hard one.
 
+## 20. No scan visible: the vendor's empty-input dead end (1.7.0)
+
+With 1.6.2 live-verified (eyes toggle freely, the mesh is built only from
+the scans with an open eye), the user hid the eye on **all three** scans
+of the project and pressed Mesh Model. Processing filled to about 80 %
+and stopped there: the page's buttons stayed disabled, while the viewport
+still rotated and zoomed - the two are separate loops. Nothing was lost,
+nothing was produced.
+
+The gate log for that press leaves no doubt about what the module
+answered. The merge asks twice per press (the two senders, `ra`
+`+0x7E3BB` then `+0x83097`), and all three scans were refused both times:
+
+```
+[6318281] gate <no id>  uuid=B56B4F94-...  eye=-1  ra=+0x7E3BB  vendor=1  excluded in .ini  -> SKIP
+[6318281] gate <no id>  uuid=08796279-...  eye=-1  ra=+0x7E3BB  vendor=1  excluded in .ini  -> SKIP
+[6318281] gate <no id>  uuid=C3A9FB52-...  eye=-1  ra=+0x7E3BB  vendor=1  excluded in .ini  -> SKIP
+[6319468] ...the same three again at ra=+0x83097
+```
+
+**Where an empty input dies.** The receiving side of the send is
+`Sn3DPostProcess::LaserMeshGenerateController::receiveProjectsData`
+(`PostProcess.dll`, RVA `0xFF850`; found from the `uuidHideList` string at
+`0x18015F4D0`, its only xref). It pulls `uuidList`, `meshList`, `pathList`,
+`markersList`, `rotList`, `tranList` and `isGenerateCloudFlagList` out of
+the command, files the plain uuids at `this+0x90` and the hidden ones at
+`this+0x98`, and then:
+
+```c
+local_980 = (local_8c8 - local_8d0) >> 4;      /* how many meshes arrived */
+if (local_980 != 0) { ...the loop that builds the merge input... }
+...
+setProperty("hasSophyMesh", *(bool *)(this + 0xc0));   /* stays false */
+return 0;
+```
+
+With zero entries the body never runs and `hasSophyMesh` stays false, so
+the post-process step is left waiting for a merge that will never come:
+that is the 80 % bar and the dead buttons. It is stock behaviour for "no
+scan of this project generates a cloud" - the module only made that state
+reachable with one click, and it does so *before* the send, so the stall
+is the vendor's, not something the hook is holding.
+
+**What the user asked for instead:** if no eye is open, the merge should
+behave as if every eye were open. The guard therefore has to know the
+scan set of *this* merge before the first answer is given - and the only
+party that knows it is the vendor's own loop:
+
+```
+lea  rdi, [param_1+0x70]      ; the scan list, held in a callee-saved reg
+...  QListData::begin(rdi) / QListData::end(rdi)
+mov  rax, [rbx]               ; item i  (rbx = the slot)
+mov  rcx, [rax+0x28]          ; HandlePrjFile* = self
+call [HandlePrjFile::isGenerateCloud]
+```
+
+The same shape appears at both senders (`Sn3DMultiProjects`
+`FUN_18007def0` at `+0x7E3BB` and `FUN_180082f30` at `+0x83097`), so *a*
+callee-saved register holds the list at the moment the module is asked -
+which one it is, the decompiler cannot tell us, and neither can a rule of
+thumb (see below). The thunk therefore passes the caller's saved registers
+to the helper (three bytes more: `mov r9, rsp`, the block is decoded as
+`RegCtx`), and the list is read as data, whichever slot carries it.
+
+**The QList layout, measured - not remembered.** `qt_read.h` knows the
+*string* header (`ref`, `size`, `alloc`, data offset); a `QList` header is
+a different shape, and the first version of the guard read it as if it
+were the same one. `tools\merge_list_lab.c` built a real `QStringList`
+with the shipped `Qt5Core.dll` (5.15.10, `QString::split`) and printed the
+header - the assumed `size`/`offset` fields were nonsense, the count was
+somewhere else (21 checks, all green):
+
+| at | first guess | measured |
+|----|-------------|----------|
+| `d+0x00` | ref | `ref` (int) = 1 |
+| `d+0x04` | alloc | `alloc` (int) = 6 for a 4-element list |
+| `d+0x08` | size | `begin` (int) = 0 |
+| `d+0x0C` | - | `end` (int) = 4 -> **count = end - begin** |
+| `d+0x10` | payload via `offset` | **the slots**, element `i` at `begin + i` |
+
+That is also what the live scene reader in `qt_read.h` had already found
+empirically (it probes the count at `+0x0C` and the slots at `+0x10`), and
+what Qt's own `begin()`/`end()` walk means: the used range is
+`[begin, end)` inside a block with slack at both ends. `merge_list.h`
+implements exactly that, and the lab now carries it: 20 checks, all green
+- the count and slot base proven on a real Qt container (by decoding the
+names with `readQName5`), fake scan items in vendor shape (`item+0x28` =
+`HandlePrjFile`, QUuid at `item+0x38`), a list whose `begin` is 2 (read as
+two scans, not four, and the used slot is the one returned), the
+eleven-candidate register scan (exactly one candidate accepted, the one
+that really holds the list, while the other ten hold real unrelated
+addresses), and the refusals (null, small integer, zeroed buffer, empty
+list, unreadable item, all-zero id).
+
+**The rule as shipped.** Only consulted when a scan is about to be
+excluded. Then: find the one candidate register whose list contains that
+scan (`item+0x28 == self`), and ask the module's own eye verdict - the
+`[uuid]` section first, then the in-process eye map, no vendor calls - for
+every item. Force-include the run only when every single scan of that list
+is hidden; any unreadable item or id-less scan means "stock keeps it", so
+the merge is not empty and the guard stays out.
+The verdict is cached per merge run and re-decided when the selection
+`.ini` changes (the eye writes it) or after 4 s of quiet. Excluded from
+the rule by construction: scans excluded through an explicit `[folder]`
+section (their uuid reads as visible), and a scan whose own
+"generate a cloud" flag is off - the vendor's answer still wins, because
+the guard only replaces this module's `no`.
+
+**The rule, falsified and fixed live the same day (1.7.1).** 1.7.0 was
+deployed at 18:30 (`selective_mesh v1.7.0 armed in pid=16444 exe=EXStar
+Hub.exe sf=0 qt=1 mp=0 ah=1`) and the user pressed Mesh Model with all
+three eyes hidden. The guard never fired, three times per sender:
+
+```
+[16355140] gate ... uuid=0E28EBFD-... vendor=1  excluded in .ini  -> SKIP
+[16355140] all-hidden guard: saved registers do not match the scan
+           (rcx=00007FFCFC76E3BB self=000002C8FD8D0840) - guard off
+[16356562] all-hidden guard: saved registers do not match the scan
+           (rcx=00007FFCFC773097 self=000002C8FD8D0270) - guard off
+```
+
+Both rejected values sit in the merge DLL's own code range, so the slot the
+log called `rcx` does **not** hold `self`. Two facts, one bug: `RegCtx` was
+laid out the other way round (pushes grow down, so the first pushed `rax`
+is at the *lowest* address, and the field printed as `rcx` was really the
+vendor's `rbx`), and no such slot may be treated as a known argument in any
+case - the `mov rcx,[rax+0x28]` the decompiler shows belongs to the loop
+body, and between it and the `call` the register allocator is free. A
+precondition of the form "register N must equal X" is a claim about one
+compiler's allocation, not a property of the code; here it silently
+disabled the feature while looking like a safety measure (fail-open, as
+designed, so nothing broke: the merge stalled exactly as stock does).
+
+**Verified live, and the naming set straight (1.7.1 / 1.7.2).** After the
+fix the same press - all three eyes hidden - finished normally:
+
+```
+[18406234] all 3 scans of this merge are hidden - exclusions ignored,
+           every scan goes in (all_hidden = 0 keeps the stock behaviour)
+[18406234] all-hidden block: hdrs=1 self@reg#-1 list@reg#9
+           | rax=... rbx=... rcx=00007FFCFC40E3BB ... r9=00000193F7AB2110 ...
+[18406234] gate <no id> uuid=392BFB57-... vendor=1
+           every scan hidden - all in  -> include      (x3, both senders)
+```
+
+The dump settles the layout: `hdrs=1` - exactly one of the eleven slots
+reads as a `QList` header, the others are nonsense, so the block is decoded
+at the right offsets; `list@reg#9` - on this build the scan list arrives in
+**`r9`**, not the `rdi` the decompiler's loop suggested; `self@reg#-1` -
+the scan object is in **no** saved register at all, which is why any
+register-name contract was doomed; and the `rcx` slot again holds
+`0x…40E3BB`, a code address of the merge DLL. The second press, with one
+eye shown, produced the opposite verdict from the same code path - `3 scans
+in the merge list (…, reg#9, self at #1, 0 unreadable) - at least one stays
+in` - and merged only the visible scans. 1.7.2 changed nothing but the
+`RegCtx` field names and these records, so a future dump reads correctly.
+
+1.7.1 drops that precondition and keeps the acceptance rule that is
+self-validating: a candidate register is the merge's list **only when the
+list it points at contains an item whose `+0x28` is this call's `self`** -
+the check that also proves the `RegCtx` decode is aligned, and the one
+`tools\merge_list_lab.c` now runs with `rcx` deliberately set to a code
+address, mirroring the hub. To keep the layout measurable rather than
+argued about, the first decision of every process logs the raw block
+(`all-hidden block: hdrs=<n> self@reg#<i> list@reg#<j> | rax=... rbx=...
+rcx=...`), with six further dumps on a failed walk.
+
+For the record, the alternative designs that were rejected and why:
+*counting the calls of the current run* cannot work (the answer is needed
+at the first call, and the vendor consumes each answer as it walks);
+*flipping the second sender only* would hand PostProcess a `uuidList` and
+a `uuidHideList` that disagree; and *keeping one eye open* (the obvious
+guard) was refused by the user - the eye is allowed to hide everything,
+the merge just must not hang on it.
+

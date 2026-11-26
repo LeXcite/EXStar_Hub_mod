@@ -199,6 +199,47 @@
  *          exclusions carry over in every process.  The manager
  *          registers the new id and removes the legacy `merge_select`
  *          dll, ini and modules.ini section on the next install.
+ *   1.6.2  the eye-click hang, found in a full-memory dump of the hung
+ *          hub: the diagnostic walk of a watched scene command bounded
+ *          its pending stack but never the nodes it visited, so a non-map
+ *          argument whose pointers refer back to itself was walked
+ *          forever (and its stack guard counted bytes against a count of
+ *          elements). Three hard bounds now; diagnostic path only.
+ *          Evidence: docs/research/merge-common-mesh.md section 19.
+ *   1.7.0  all-hidden guard: hiding every eye left the vendor's own
+ *          post-process step waiting on an empty mesh input - Processing
+ *          stopped around 80 %, the page stayed modal, no mesh.  Such a
+ *          merge now runs as if every eye were open (module exclusions
+ *          ignored, the vendor's own cloud flag still decides), and it is
+ *          decided from the merge's OWN scan list: the thunk hands the
+ *          helper the caller's saved registers, and the `QList` the loop
+ *          walks is read there as data (no Qt call), accepted only when
+ *          one of its items is the scan being asked about.  Switch
+ *          `all_hidden`, on by default.  The container reader is
+ *          `merge_list.h`, its layout proven outside the product by
+ *          `tools/merge_list_lab.c` against the shipped Qt5Core.dll.
+ *          Evidence: docs/research/merge-common-mesh.md section 20.
+ *   1.7.1  the guard's first live run (2026-11-26) never fired: it began
+ *          by demanding the saved `rcx` equal `self`, and at these two
+ *          call sites `rcx` holds a code address of the merge DLL, so the
+ *          contract rejected every call and a merge with all eyes hidden
+ *          still stalled.  The block is now accepted on a structural
+ *          proof - a candidate register counts only when its list holds
+ *          an item whose +0x28 is this call's `self` - and the whole block
+ *          is logged once per process, which keeps the layout measurable
+ *          instead of assumed.
+ *   1.7.2  naming and record only, no behaviour change: the live block
+ *          dumps (all scans hidden, sender +0x7E3BB) show the scan list in
+ *          `r9` and `self` in none of the saved registers, and they show
+ *          that the block reads low-to-high - `rax` pushed first is at the
+ *          LOWEST address.  RegCtx was the other way round, so the field
+ *          that logged as `rcx` was really the vendor's `rbx`; the names
+ *          now match the layout, which keeps the block dump readable on
+ *          the next vendor build.  Live-verified 2026-11-26: with all
+ *          three eyes hidden the merge finished and the log read
+ *          "all 3 scans of this merge are hidden - exclusions ignored,
+ *          every scan goes in", then "at least one stays in" for a
+ *          partially visible project.
  */
 
 #include <windows.h>
@@ -211,8 +252,9 @@
 
 #include "exstar_sdk.h"
 #include "qt_read.h"
+#include "merge_list.h"      /* the merge loop's own scan list, as data */
 
-#define MOD_VERSION   "1.6.2"
+#define MOD_VERSION   "1.7.2"
 
 /* one log call, one tag: MOD_LOG(fmt, ...) ==
  * g_host->log("selective_mesh: " fmt, ...) - the literals concatenate */
@@ -241,6 +283,7 @@ static const ExHost *g_host;
 static int           g_verbose = 1;
 static int           g_eyewatch = 1;
 static int           g_eyeGate = 1;
+static int           g_allHidden = 1;
 static wchar_t       g_selFile[PATH_CAP];
 static wchar_t       g_mapFile[PATH_CAP];
 
@@ -491,6 +534,7 @@ static void ensureSelFile(void)
 #define WHY_MASTER    3
 #define WHY_NOREAD    4
 #define WHY_EYE       5
+#define WHY_ALLHIDDEN 6
 
 /* one vendor QString getter -> wchar buffer; 1 when a non-empty string
  * came back. Runs the getter + utf16 + dtor trio under the caller's SEH. */
@@ -683,19 +727,48 @@ static void gateEyeUuid(void *self, unsigned long long impl, void *wrapper,
 /* iterates scan items (wrappers) with `HandlePrjFile* = [rax+0x28]`   */
 /* and the scan QUuid at [rax+0x38]; `mov rcx,[rax+0x28]` runs right   */
 /* before `call [isGenerateCloud]`, so rax still holds the wrapper at  */
-/* the call.  A 65-byte hand-assembled stub therefore:                 */
+/* the call.  A 68-byte hand-assembled stub therefore:                 */
 /*   - grabs the caller's real return address ([rsp] at entry) so the  */
 /*     detour can tell merge-loop callers from project open/save,      */
 /*   - passes rax (wrapper candidate) as 2nd and the return address as */
 /*     3rd argument,                                                  */
+/*   - passes the stack pointer as 4th, so the helper can read the     */
+/*     saved registers of the vendor's own call (1.7.0 needs them: the */
+/*     list the merge loop walks is live in a callee-saved register    */
+/*     there, and it is the only complete answer to "which scans are   */
+/*     part of this merge"),                                          */
 /*   - reserves the 32-byte shadow space the x64 ABI requires before   */
 /*     calling a C function (1.4.4/1.4.5 did not, so the helper could  */
-/*     spill its parameters over the saved flags/registers),           */
+/*     spill its parameters over the saved registers),                 */
 /*   - keeps 16-byte stack alignment at the call,                      */
 /*   - returns AL only: rax is a volatile return register, so the      */
 /*     saved copy is dropped instead of popped (1.4.5 fixed that).     */
 /* All other callers see the vendor answer unchanged.                  */
 /* ------------------------------------------------------------------ */
+/* The register block buildThunk leaves on the stack, in ADDRESS order.
+ * Pushes grow downwards and the block is read from its LOW end up, so the
+ * FIRST pushed register (`rax`) is at the LOWEST address and the list
+ * below runs rax -> rflags.  (An earlier revision had it the other way
+ * round; the live block dumps of 2026-11-26 settled it - see below.)  The
+ * helper is handed `CTX_REGS(r9)`, where r9 is the stack pointer the thunk
+ * had directly before `call`.
+ *
+ * The decode is never trusted on faith: the guard accepts the block only
+ * when one of these values points at a QList containing an item whose
+ * +0x28 is the `self` of this very call (walkMergeList), and the first
+ * decision of every process logs the whole block.  Measured live on hub
+ * 2.1.0-10 (all scans hidden, sender +0x7E3BB): the scan list sits in
+ * `r9`, `self` is in NONE of these registers (the vendor passes it
+ * elsewhere), and `rcx` holds a code address of the merge DLL.  That is
+ * why no register here may be treated as a known argument - the content
+ * test is the only accepted proof. */
+typedef struct {
+    ULONG64 rax, rbx, rcx, rdx, rsi, rdi, r8, r9, r10, r11, rflags;
+} RegCtx;
+
+#define CTX_REGS(base)                                                \
+    ((const RegCtx *)((const char *)(base) + 0x20 - sizeof(RegCtx)))
+
 static unsigned char *g_thunk;
 
 static int buildThunk(void *helper)
@@ -718,21 +791,22 @@ static int buildThunk(void *helper)
     t[19] = 0x41; t[20] = 0x53;                                      /* push r11               */
     t[21] = 0x9C;                                                    /* pushfq                 */
     t[22] = 0x48; t[23] = 0x83; t[24] = 0xEC; t[25] = 0x20;          /* sub rsp, 0x20 (shadow) */
-    t[26] = 0x49; t[27] = 0xBA;                                      /* mov r10, helper        */
-    memcpy(t + 28, &abs64, 8);
-    t[36] = 0x41; t[37] = 0xFF; t[38] = 0xD2;                        /* call r10               */
-    t[39] = 0x0F; t[40] = 0xB6; t[41] = 0xC0;                        /* movzx eax, al          */
-    t[42] = 0x48; t[43] = 0x83; t[44] = 0xC4; t[45] = 0x20;          /* add rsp, 0x20          */
-    t[46] = 0x9D;                                                    /* popfq                  */
-    t[47] = 0x41; t[48] = 0x5B;                                      /* pop r11                */
-    t[49] = 0x41; t[50] = 0x5A;                                      /* pop r10                */
-    t[51] = 0x41; t[52] = 0x59;                                      /* pop r9                 */
-    t[53] = 0x41; t[54] = 0x58;                                      /* pop r8                 */
-    t[55] = 0x5F; t[56] = 0x5E;                                      /* pop rdi rsi            */
-    t[57] = 0x5A; t[58] = 0x59;                                      /* pop rdx rcx            */
-    t[59] = 0x5B;                                                    /* pop rbx                */
-    t[60] = 0x48; t[61] = 0x83; t[62] = 0xC4; t[63] = 0x08;          /* add rsp, 8 (drop rax)  */
-    t[64] = 0xC3;                                                    /* ret (AL = answer)      */
+    t[26] = 0x49; t[27] = 0x89; t[28] = 0xE1;                        /* mov r9, rsp  (ctx)     */
+    t[29] = 0x49; t[30] = 0xBA;                                      /* mov r10, helper        */
+    memcpy(t + 31, &abs64, 8);
+    t[39] = 0x41; t[40] = 0xFF; t[41] = 0xD2;                        /* call r10               */
+    t[42] = 0x0F; t[43] = 0xB6; t[44] = 0xC0;                        /* movzx eax, al          */
+    t[45] = 0x48; t[46] = 0x83; t[47] = 0xC4; t[48] = 0x20;          /* add rsp, 0x20          */
+    t[49] = 0x9D;                                                    /* popfq                  */
+    t[50] = 0x41; t[51] = 0x5B;                                      /* pop r11                */
+    t[52] = 0x41; t[53] = 0x5A;                                      /* pop r10                */
+    t[54] = 0x41; t[55] = 0x59;                                      /* pop r9                 */
+    t[56] = 0x41; t[57] = 0x58;                                      /* pop r8                 */
+    t[58] = 0x5F; t[59] = 0x5E;                                      /* pop rdi rsi            */
+    t[60] = 0x5A; t[61] = 0x59;                                      /* pop rdx rcx            */
+    t[62] = 0x5B;                                                    /* pop rbx                */
+    t[63] = 0x48; t[64] = 0x83; t[65] = 0xC4; t[66] = 0x08;          /* add rsp, 8 (drop rax)  */
+    t[67] = 0xC3;                                                    /* ret (AL = answer)      */
     g_thunk = t;
     return 1;
 }
@@ -740,18 +814,21 @@ static int buildThunk(void *helper)
 /* the decision half runs under SEH: a vendor object that moved between
  * releases must never take the host process down (fail-open = stock) */
 static unsigned char decideCloud(void *self, void *wrapper,
-                                 unsigned char *ra, unsigned char r);
+                                 unsigned char *ra, unsigned char r,
+                                 const RegCtx *c);
 
 /* detour on HandlePrjFile::isGenerateCloud (called via g_thunk, which
- * adds the wrapper candidate and the caller's return address) */
+ * adds the wrapper candidate, the caller's return address and the
+ * caller's saved registers) */
 static unsigned char __fastcall det_isCloud(void *self, void *wrapper,
-                                            void *ra)
+                                            void *ra, void *ctxRaw)
 {
     unsigned char r = g_origIsCloud(self);
     unsigned char out = r;
 
     __try {
-        out = decideCloud(self, wrapper, (unsigned char *)ra, r);
+        out = decideCloud(self, wrapper, (unsigned char *)ra, r,
+                          (const RegCtx *)ctxRaw);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         static volatile LONG faulted;
         if (InterlockedIncrement(&faulted) == 1)
@@ -765,10 +842,15 @@ static unsigned char __fastcall det_isCloud(void *self, void *wrapper,
 static const char *const g_whyN[] = {
     "excluded in .ini", "included in .ini", "not listed (stock)",
     "master switch off", "identity unreadable (fail-open)",
-    "eye icon hidden" };
+    "eye icon hidden", "every scan hidden - all in" };
+
+/* the all-hidden guard (see its own section): only asked when this scan
+ * would be left out, and it answers for the whole merge run */
+static int allHiddenNow(const RegCtx *c, void *self);
 
 static unsigned char decideCloud(void *self, void *wrapper,
-                                 unsigned char *ra, unsigned char r)
+                                 unsigned char *ra, unsigned char r,
+                                 const RegCtx *c)
 {
     wchar_t key[PATH_CAP];
     unsigned long long impl = 0;
@@ -813,6 +895,16 @@ static unsigned char decideCloud(void *self, void *wrapper,
         }
     }
 
+    /* "not one scan visible" is not a selection: such a merge never
+     * finishes (the guard's own section says why), so it runs as if all
+     * eyes were open.  Only module exclusions are ignored - the vendor's
+     * own answer `r` still decides. */
+    if (g_allHidden && !inc && why != WHY_MASTER
+        && allHiddenNow(c, self)) {
+        inc = 1;
+        why = WHY_ALLHIDDEN;
+    }
+
     if (InterlockedCompareExchange(&g_reportBusy, 1, 0) == 0) {
         if (!r)
             reportScan(key, 0, L"   <- native no-cloud flag, already out");
@@ -842,6 +934,7 @@ static unsigned char decideCloud(void *self, void *wrapper,
     }
     return (r && inc) ? 1 : 0;
 }
+
 
 /* ------------------------------------------------------------------ */
 /* install (module worker thread only - never under the loader lock)   */
@@ -1473,6 +1566,233 @@ static void eyeRecord(const unsigned char *u, int visible)
     if (g_verbose && logBudget(&g_eyeLogged))
         MOD_LOG("eye %s -> %s",
                     s, visible ? "VISIBLE" : "hidden");
+}
+
+/* ------------------------------------------------------------------ */
+/* all-hidden guard                                                   */
+/*                                                                    */
+/* Hiding every eye used to be a dead end: the gate answered "no" for */
+/* every scan, so the vendor's merge send built an empty meshList and */
+/* PostProcess!LaserMeshGenerateController::receiveProjectsData       */
+/* (RVA 0xFF850) took its "count != 0" early-out and never reported   */
+/* the step done.  The Processing bar stopped around 80 %, the page   */
+/* stayed modal, and only closing the hub cleared it: nothing lost,   */
+/* nothing made either (live 2026-11-26,                              */
+/* docs/research/merge-common-mesh.md section 20).                    */
+/*                                                                    */
+/* So the module reads "not one scan visible" as "no selection was    */
+/* made": that merge runs as if every eye were open.  Nothing is      */
+/* written back - the icons, the selection .ini and the next run stay */
+/* as they are - and the vendor's own "generate a cloud" flag still   */
+/* decides, so a scan with that off stays out exactly as in stock.    */
+/*                                                                    */
+/* The answer is needed at the FIRST call of the run, and only the    */
+/* vendor knows its scan set. It is in the caller's saved registers   */
+/* at that very moment - both merge senders (Sn3DMultiProjects        */
+/* +0x7E3BB and +0x83097) build the loop from a QList at              */
+/* [param_1+0x70], which the decompiler walks through rdi and the     */
+/* live block dump shows arriving in r9 - so 1.7.0 hands the whole    */
+/* saved block to the helper and asks it which value is the list,     */
+/* rather than picking a register name. The container is read as      */
+/* data, never through a Qt call, by merge_list.h - the same header   */
+/* tools\merge_list_lab.c runs against a real QStringList built with  */
+/* the shipped Qt5Core, so the layout is proven outside the product   */
+/* before the product leans on it.                                    */
+/*                                                                    */
+/* Nothing is trusted on sight: a candidate register counts as the    */
+/* list only when one of its items IS the scan being asked about      */
+/* (item+0x28 == self). That content test is also the only proof that */
+/* the block itself is decoded right, and the live dumps are what     */
+/* pinned it down: on hub 2.1.0-10 the list arrives in r9, `self` is  */
+/* in none of the saved registers, and the value where the old struct */
+/* read `rcx` is a code address of the merge DLL. The first version   */
+/* of this guard trusted a register name, so it rejected every call   */
+/* and an all-hidden merge still stalled; 1.7.1 replaced that with    */
+/* the content rule and 1.7.2 named the slots the way they really     */
+/* lie. A scan whose id cannot be read counts as visible either way - */
+/* stock merges it, so such a merge cannot be empty and there is      */
+/* nothing to fix.                                                    */
+/*                                                                    */
+/* Bounded (11 candidate registers, ML_MAX items), read-only,         */
+/* SEH-boxed, and cached per merge run: the eye writes the selection  */
+/* .ini, so a new file time re-decides it, with a quiet-spell window  */
+/* as a backstop for a project merged after a different one.          */
+/* ------------------------------------------------------------------ */
+#define AH_TTL_MS     4000        /* re-decide after this quiet spell    */
+
+static volatile LONG  g_ahState = -1;   /* -1 unknown, 0 normal, 1 fired */
+static volatile LONG  g_ahCount;        /* scans in the list read        */
+static void          *g_ahList;         /* and where it lives            */
+static ULONGLONG      g_ahWhen;
+static LONG           g_ahIniLo, g_ahIniHi;   /* selection .ini mtime    */
+static volatile LONG  g_ahBusy;
+static volatile LONG  g_ahFired  = 8;   /* log budgets                   */
+static volatile LONG  g_ahSeen   = 2;
+static volatile LONG  g_ahMiss   = 3;
+static volatile LONG  g_ahBlock  = 6;
+static volatile LONG  g_ahDumped;       /* first block dump of the process */
+
+/* the module's own verdict for one merge item by its QUuid: 1 = this
+ * module would leave it out.  Same channels as the gate, in the same
+ * order ([uuid] section of the shared .ini, then the in-process eye map,
+ * raw member order first and wire order only if that is the one the eye
+ * map knows - the rule wrapperUuid proved live), so guard and gate can
+ * never disagree about the same scan.  No vendor call: the eye state is
+ * the only thing that hides a scan here. */
+static int itemHidden(const unsigned char *raw16)
+{
+    wchar_t ukey[64];
+    char s[64];
+    unsigned char alt[16];
+    int t = -1, e;
+
+    fmtUuid(raw16, s, sizeof s);
+    if (MultiByteToWideChar(CP_UTF8, 0, s, -1, ukey,
+                            (int)(sizeof ukey / sizeof ukey[0])) > 0)
+        t = GetPrivateProfileIntW(ukey, L"included", -1, g_selFile);
+    if (t != -1)
+        return t == 0;
+    e = eyeLookup(raw16);
+    if (e < 0) {
+        uuidLeToBe(raw16, alt);
+        e = eyeLookup(alt);
+    }
+    return e == 0;              /* -1 (unknown) = stock = in the merge */
+}
+
+/* -1 = nothing readable, 0 = this merge keeps at least one scan,
+ * 1 = every scan of it is hidden by this module.  Outputs describe what
+ * was read, for the log.  `listOut` is accepted ONLY because one of its
+ * items is the very scan the vendor called for (item+0x28 == self): that
+ * is what makes the register block trustworthy, and it is the same proof
+ * tools\merge_list_lab.c runs. */
+static int walkMergeList(const RegCtx *c, void *self, void **listOut,
+                         int *nOut, int *idxOut, int *badOut, int *regOut,
+                         int *selfRegOut, int *hdrOut)
+{
+    const ULONG64 *v = (const ULONG64 *)c;
+    int i, j;
+
+    *listOut = NULL; *nOut = 0; *idxOut = -1; *badOut = 0; *regOut = -1;
+    *selfRegOut = -1; *hdrOut = 0;
+    for (i = 0; i < (int)(sizeof(RegCtx) / sizeof(ULONG64)); i++) {
+        const void *const *arr = NULL;
+        const void *list = (const void *)(ULONG_PTR)v[i];
+        int n, alloc = -1, hit, bad = 0;
+
+        if ((ULONG_PTR)list == (ULONG_PTR)self)
+            *selfRegOut = i;            /* who really carries self, for the log */
+        n = mlHeader(list, &arr, &alloc);
+        if (n < 0)
+            continue;
+        (*hdrOut)++;
+        /* only a list that holds the scan being asked about is this merge */
+        hit = mlFindItem(arr, n, ML_ITEM_SELF, self);
+        if (hit < 0)
+            continue;
+        *listOut = (void *)list;
+        *nOut    = n;
+        *idxOut  = hit;
+        *regOut  = i;
+        for (j = 0; j < n; j++) {
+            unsigned char raw[16];
+
+            if (!mlItemId(arr, j, ML_ITEM_ID, raw)) {
+                bad++;                  /* no id: stock keeps this scan  */
+                continue;
+            }
+            if (!itemHidden(raw))
+                return 0;               /* one visible scan is enough    */
+        }
+        *badOut = bad;
+        return bad ? 0 : 1;
+    }
+    return -1;
+}
+
+/* the file time of the selection .ini: the eye writes it, so it is what
+ * says "the eyes changed since the verdict was made" */
+static void selFileTime(LONG *lo, LONG *hi)
+{
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+
+    *lo = 0; *hi = 0;
+    if (GetFileAttributesExW(g_selFile, GetFileExInfoStandard, &fa)) {
+        *lo = fa.ftLastWriteTime.dwLowDateTime;
+        *hi = fa.ftLastWriteTime.dwHighDateTime;
+    }
+}
+
+/* one-line dump of the saved block: how many candidates read as a list,
+ * whether `self` appears in one of them (it does not on 2.1.0-10 - the
+ * vendor passes the object elsewhere), and which register held the
+ * accepted list (r9 on 2.1.0-10).  No vendor call, budgeted, and forced
+ * once per process: it turns a "guard off" log into a measurement. */
+static void blockDump(const RegCtx *c, int reg, int selfReg, int goodHdrs,
+                      int force)
+{
+    if (!g_verbose || (!force && !logBudget(&g_ahBlock)))
+        return;
+    MOD_LOG("all-hidden block: hdrs=%d self@reg#%d list@reg#%d"
+                " | rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p r8=%p"
+                " r9=%p r10=%p r11=%p fl=%p",
+                goodHdrs, selfReg, reg,
+                (void *)(ULONG_PTR)c->rax, (void *)(ULONG_PTR)c->rbx,
+                (void *)(ULONG_PTR)c->rcx, (void *)(ULONG_PTR)c->rdx,
+                (void *)(ULONG_PTR)c->rsi, (void *)(ULONG_PTR)c->rdi,
+                (void *)(ULONG_PTR)c->r8, (void *)(ULONG_PTR)c->r9,
+                (void *)(ULONG_PTR)c->r10, (void *)(ULONG_PTR)c->r11,
+                (void *)(ULONG_PTR)c->rflags);
+}
+
+static int allHiddenNow(const RegCtx *c, void *self)
+{
+    LONG lo = 0, hi = 0;
+    void *list = NULL;
+    int n = 0, idx = -1, bad = 0, reg = -1, selfReg = -1, hdrs = 0, v;
+
+    if (!c)
+        return 0;
+    selFileTime(&lo, &hi);
+    if (g_ahState >= 0 && lo == g_ahIniLo && hi == g_ahIniHi
+        && GetTickCount64() - g_ahWhen <= AH_TTL_MS)
+        return g_ahState == 1;          /* this run is already decided */
+    if (InterlockedCompareExchange(&g_ahBusy, 1, 0) != 0)
+        return g_ahState == 1;          /* another thread is deciding  */
+
+    v = walkMergeList(c, self, &list, &n, &idx, &bad, &reg,
+                      &selfReg, &hdrs);
+    if (v >= 0) {
+        g_ahCount = n;
+        g_ahList  = list;
+        g_ahIniLo = lo;
+        g_ahIniHi = hi;
+        g_ahWhen  = GetTickCount64();
+        g_ahState = v;
+    }
+    if (v == 1) {
+        if (logBudget(&g_ahFired))
+            MOD_LOG("all %d scans of this merge are hidden - exclusions "
+                        "ignored, every scan goes in (all_hidden = 0 keeps "
+                        "the stock behaviour)", n);
+    } else if (v < 0 && g_verbose) {
+        /* the block did not yield this merge's list: say what it did hold,
+         * because "guard off" alone is not a measurement */
+        if (logBudget(&g_ahMiss))
+            MOD_LOG("all-hidden guard: no register of the merge caller held "
+                        "a list containing self=%p (%d of 11 read as a list) "
+                        "- guard off", self, hdrs);
+    } else if (g_verbose && logBudget(&g_ahSeen)) {
+        MOD_LOG("all-hidden guard: %d scans in the merge list (%p, reg#%d, "
+                    "self at #%d, %d unreadable) - at least one stays in",
+                    n, list, reg, idx, bad);
+    }
+    /* the first decision of the process is always dumped: it is the
+     * measurement that pins the block layout on a new vendor build */
+    blockDump(c, reg, selfReg, hdrs,
+              InterlockedExchange(&g_ahDumped, 1) == 0);
+    InterlockedExchange(&g_ahBusy, 0);
+    return v == 1;
 }
 
 /* detour on qt_static_metacall: observe the eye, and remember the live
@@ -2932,6 +3252,10 @@ EX_EXPORT int ex_init(const ExHost *host)
     g_verbose = host->cfg_int(host, "verbose", 1);
     g_eyewatch = host->cfg_int(host, "eyewatch", 1);
     g_eyeGate = host->cfg_int(host, "eye_gate", 1);
+    /* 1.7.0: a merge with no visible scan runs as if all were visible
+     * (stock leaves the post-process step waiting forever on an empty
+     * meshList - see the all-hidden guard and research section 20) */
+    g_allHidden = host->cfg_int(host, "all_hidden", 1);
     /* 1.6.1: default 0 - the toggle metacall fires while the post-process
      * env switch still owns the scene and the Qt thread blocks on it
      * (Application Hang, live evidence 2026-11-26, see History above) */
@@ -2978,12 +3302,14 @@ EX_EXPORT int ex_init(const ExHost *host)
     CloseHandle(th);
 
     {   /* one-line start-up proof: which merge DLLs are already mapped */
-        char env[64];
+        char env[96];
 
-        _snprintf_s(env, sizeof env, _TRUNCATE, " sf=%d qt=%d mp=%d",
+        _snprintf_s(env, sizeof env, _TRUNCATE,
+                    " sf=%d qt=%d mp=%d ah=%d",
                     GetModuleHandleA("Sn3DFile.dll") != 0,
                     GetModuleHandleA("Qt5Core.dll") != 0,
-                    GetModuleHandleA("Sn3DMultiProjects.dll") != 0);
+                    GetModuleHandleA("Sn3DMultiProjects.dll") != 0,
+                    g_allHidden);
         host->log("selective_mesh v%s armed in pid=%lu exe=%s%s",
                   MOD_VERSION, (unsigned long)GetCurrentProcessId(),
                   g_exeName, env);
