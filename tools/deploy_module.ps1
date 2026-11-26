@@ -84,7 +84,10 @@ $ErrorActionPreference = 'Continue'
 $logf = 'C:\Users\LeX\AppData\Local\Temp\opencode\deploy_module.txt'
 "start $(Get-Date -Format o)" | Out-File $logf -Encoding utf8
 
-foreach ($p in Get-Process | Where-Object { $_.Name -match '^(EXStar Hub|scanservice|scanhub|Sn3DprocessManager|TestOpenglHelper|einscan_net_svr|softwareUpgrade|informationCollect|ExStarModManager)$' }) {
+# The manager is shipped as ExStarModManager_<version>.exe, so the name is
+# matched as a prefix (a trailing $ left a running 1.6.9/1.7.0 instance
+# untouched, which is only harmless when nothing needs its files).
+foreach ($p in Get-Process | Where-Object { $_.Name -match '^(EXStar Hub|scanservice|scanhub|Sn3DprocessManager|TestOpenglHelper|einscan_net_svr|softwareUpgrade|informationCollect|ExStarModManager)' }) {
     "stop $($p.Name) pid=$($p.Id)" | Out-File $logf -Append -Encoding utf8
     Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }

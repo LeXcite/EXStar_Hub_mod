@@ -1119,5 +1119,11 @@ established after the 1.5.0 fault, applied one step further. Fewer vendor
 calls inside a detour on a merge thread is not tidiness, it is one more thing
 that cannot block, fault, or hand Qt a pointer this module invented.
 
+The reset was verified on the first start of 1.8.0 (deployed 21:17 the same
+day, hub pid 27920): the log read `dropped 41 exclusion(s) a previous run
+left in C:\Users\Public\Shining3d\EXStar Hub\selective-mesh.ini - the eyes
+start open`, exactly the number counted above, and only `[Settings] enabled`
+survived.
+
 Net: about 300 lines out of `selective_mesh.c`, about 500 out of
 `manager.c`, and a user surface consisting of one icon.

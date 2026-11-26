@@ -628,8 +628,19 @@ stays hidden on screen. Evidence:
    The gate's decision is now pure memory inspection - master switch, uuid,
    session `.ini`, in-RAM eye map, guard. No vendor function is called there,
    which is the rule 1.5.0 taught the hard way.
-   **Built, not yet deployed** - needs the user's UAC click and a hub
-   restart. Module 1.8.0, manager 1.7.0.
+   Deployed 21:17 (elevated `tools\deploy_module.ps1`, note `1.8.0_eye_only`,
+   switches `verbose=1 eye_gate=1 scene_watch=1 all_hidden=1 scene_filter=0
+   eye_reapply=0`): installed `selective_mesh.dll` sha256 `21EE0558...400E`,
+   armed `v1.8.0` in `EXStar Hub.exe` (pid 27920) and `scanservice.exe`,
+   gate hooked in both, every other host inert. The session reset ran on that
+   first start and logged exactly the number measured before it: `dropped 41
+   exclusion(s) a previous run left in ... - the eyes start open`. The now
+   stale pre-1.8.0 header text in that file was removed with the file itself,
+   so the next start writes the new one. Obsolete files deleted (backed up):
+   `merge-select.ini` (pre-1.6.0 name, no reader since the migration went)
+   and an orphan `marker-quality-lab.bin` from an old lab run; the
+   community patchset's `mesh-selection.ini` was left alone. Module 1.8.0,
+   manager 1.7.0.
    Known open question, recorded rather than papered over: a *project*
    re-open inside one run is not measured - if the vendor rebuilds the tree
    without emitting a show event per row, an exclusion made before the switch
