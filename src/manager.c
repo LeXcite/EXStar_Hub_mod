@@ -50,7 +50,7 @@
 
 #define APP_EXE_NAME     L"EXStar Hub.exe"
 #define APP_EXE_A        "EXStar Hub.exe"
-#define MANAGER_VERSION  L"1.7.0"   /* keep in sync with $version in build.ps1 */
+#define MANAGER_VERSION  L"1.7.1"   /* keep in sync with $version in build.ps1 */
 #define PROXY_MARKER     L"ExStarMod.winmm.dll"   /* OriginalFilename of our proxy */
 #define DEFAULT_APP_DIR  "C:\\Program Files\\Shining3d\\EXStar Hub"
 /* The vendor freezes the exe ProductVersion (the "file stamp", still
@@ -60,7 +60,7 @@
  * product number is what the user sees. */
 #define KNOWN_GOOD_STAMP   L"3.1."   /* tested file stamp prefix */
 
-#define MAX_MODS         9
+#define MAX_MODS         9   /* array capacity, not the count (g_modCount) */
 #define MAX_SLIDERS      6   /* slider rows per module card               */
 #define MAX_PRESETS      4   /* preset pills per module card              */
 #define MAX_FILEBTNS     2   /* file buttons per module card (pick/reset) */
@@ -154,10 +154,6 @@ static const ModDef g_mods[MAX_MODS] = {
       L"custom app background instead of the stock one",
       L"MOD_WALLPAPER", L"MOD_WALLPAPER_INI",
       NULL, 0, NULL, 0, NULL, FALSE, TRUE },
-    { "fps", L"Real FPS", "1.0.0",
-      L"live real FPS counter on the scan page",
-      L"MOD_FPS", L"MOD_FPS_INI",
-      NULL, 0, NULL, 0, NULL, FALSE },
     { "laser50", L"Laser 25\u00D725", "1.1.0",
       L"all 25+25 laser lines (plane range (3,21) \u2192 (0,24)); the button shows \u00AB50 lines\u00BB right away",
       L"MOD_LASER50", L"MOD_LASER50_INI",
@@ -176,7 +172,7 @@ static const ModDef g_mods[MAX_MODS] = {
       L"MOD_SELECTIVE_MESH", L"MOD_SELECTIVE_MESH_INI",
       NULL, 0, NULL, 0, NULL, TRUE, FALSE, 0 },
 };
-static const int g_modCount = 9;
+static const int g_modCount = 8;
 
 /* modules shipped by older manager builds and no longer bundled; their
  * files and modules.ini sections are removed on the next install so a
@@ -184,9 +180,12 @@ static const int g_modCount = 9;
  * merge_select is here because 1.6.0 renamed it to selective_mesh: the
  * host derives the module id from the DLL basename and defaults every
  * section in modules.ini to enabled, so a leftover merge_select.dll
- * would hook the same gate a second time in the same process. */
+ * would hook the same gate a second time in the same process.
+ * fps is here because 2.1.0-14 retired it: the host would load a left
+ * behind fps.dll and enable it by default, and that QML insert makes
+ * the 2.1.0-14 hub close itself a few seconds into the scan page. */
 static const char *const g_legacy[] = { "marker_recolor", "merge_select",
-                                        NULL };
+                                        "fps", NULL };
 
 /* ------------------------------------------------------------------ */
 /* small helpers                                                       */

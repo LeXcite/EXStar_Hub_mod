@@ -25,9 +25,6 @@ Mods (each has its own switch)
                      and translucent, the busy-overlay background
                      becomes frosted glass
   Wallpaper        - your own picture as the application background
-  Real FPS         - live FPS: N readout at the bottom right of the
-                     scan page (real presented frames, not the vendor
-                     constant)
   Laser 25+25      - all 25+25 laser lines reach the cloud, the button
                      reads <50 lines> (the stock 7-line mode is kept)
   Zoom to Fit Fill - <Zoom to Fit> (Ctrl+D) frames the model into the
@@ -90,7 +87,7 @@ Command line (same as the GUI, no UI)
   ExStarModManager_<version>.exe --remove  --modules id1,id2
   ExStarModManager_<version>.exe --restore
 Module ids: marker_quality, marker_inframe, popup_dim, wallpaper,
-fps, laser50, fitfill, gpu_gate, selective_mesh.
+laser50, fitfill, gpu_gate, selective_mesh.
 
 How to see that a module did something
 --------------------------------------
@@ -104,9 +101,16 @@ was left out is explained there.
 Nothing here modifies vendor files
 ----------------------------------
 Every change is applied on the next start of EXStar Hub and lives only
-in process memory. A vendor update simply overwrites its own files, and
-the mods keep working after it; deleting a few files (or the *Restore
-stock* button) reverts everything. No project data, no user data is
-read or copied, and the log files stay on this computer.
+in process memory. No project data, no user data is read or copied, and
+the log files stay on this computer. Deleting a few files (or the
+*Restore stock* button) reverts everything.
+
+One thing to expect: a vendor update replaces the application folder,
+and with it our files (winmm.dll, winmm_real.dll, ExStarRec.dll, the
+modules folder and the two .ini files). Nothing breaks - the application
+just runs as stock until you run ExStarModManager again and flip the
+same switches back on. Do it after every update; your tuning is in
+modules\<module>.ini, so a copy of that small folder is enough to get
+the same settings back.
 
 Repository: https://github.com/LeXcite/EXStar_Hub_mod

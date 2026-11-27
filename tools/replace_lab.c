@@ -1,8 +1,8 @@
 /*
  * replace_lab.c - offline dry-run for text-REPLACE modules over qrc
  * records inside a vendor DLL (dev tool; the dry-run harness of
- * modules/laser50 [caption] and modules/fps - any [u32+deflate] QML
- * edit can be modelled as a from->to byte replacement).
+ * modules/laser50 [caption] - any [u32+deflate] QML edit can be
+ * modelled as a from->to byte replacement).
  *
  * Finds every qrc record [u32 BE rawSize][zlib stream] whose inflated
  * text contains `anchor`, replaces ALL occurrences of the bytes in

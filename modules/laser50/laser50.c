@@ -402,7 +402,8 @@ EX_EXPORT int ex_init(const ExHost *host)
         g_captionsOn = 0;
 
     if (g_captionsOn) {
-        /* QML disk cache would serve stale compiled bindings (fps lesson) */
+        /* QML disk cache would serve stale compiled bindings (the retired
+         * fps module's lesson) */
         SetEnvironmentVariableA("QML_DISABLE_DISK_CACHE", "1");
         exq_loadZlib();                    /* caption half off if absent */
     }

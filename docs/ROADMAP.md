@@ -31,12 +31,17 @@ not included in git).
 | marker_quality | 1.0.2 | marker color by observation quality (latch-green) |
 | marker_inframe | 1.1.0 | in-frame marker grows instead of a red flash |
 | wallpaper | 1.0.0 | custom app background (in-memory image swap) |
-| fps | 1.0.0 | real scan-page UI frame rate readout |
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
 | fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
 | selective_mesh | 1.8.0 | eye-icon driven common-mesh selection (session ini keyed by scan uuid and shared across processes, meta-object eye watch, hook allowlists); 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`); 1.5.6 reads nested command values and proved the viewport half has nothing to intercept (see 2026-11-25 below); 1.5.8 kept a hidden scan hidden on screen across the environment switch - that re-apply hangs the hub, so it is off by default since 1.6.1; 1.6.0 = renamed Selective Mesh; 1.6.2 = the map walk of a watched scene command is hard-bounded (it could spin forever on a non-map argument and hang the hub) - live-verified 2026-11-26; 1.7.0 = a merge this module would leave empty runs as if all eyes were open, reading the merge's own scan list out of the caller's registers (`merge_list.h`, proven by `tools/merge_list_lab.c`); 1.7.1 = that guard accepts the register block on its content, not on an assumed register name (the first live run falsified `rcx == self`); 1.7.2 = `RegCtx` field names match the measured block order - live-verified 2026-11-26 (all eyes hidden -> full mesh, one eye shown -> only visible scans); 1.8.0 = the eye is the only interface: folder/name identity, the `.map.txt` roster, the `merge-select.ini` migration and the vendor `QString` getters are gone, exclusions are dropped when the hub starts (a fresh session shows every scan, like the vendor itself) |
-| ExStarModManager | 1.7.0 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist (one exception: 1.6.9 renames the `merge_select` token of a hand-made list, never adds one); 1.6.9 removes the legacy `merge_select` files and carries its settings to `selective_mesh`; 1.7.0 drops the Selective Mesh "Scan roster" / "Open folder" buttons and the roster window (the eye in the hub is the module's only interface) |
+| ExStarModManager | 1.7.1 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist (one exception: 1.6.9 renames the `merge_select` token of a hand-made list, never adds one); 1.6.9 removes the legacy `merge_select` files and carries its settings to `selective_mesh`; 1.7.0 drops the Selective Mesh "Scan roster" / "Open folder" buttons and the roster window (the eye in the hub is the module's only interface); 1.7.1 retires fps and deletes a leftover `modules\fps.dll` + its `modules.ini` section through the legacy list |
+
+Retired: **fps 1.0.0** (2026-11-27, with manager 1.7.1). Live-verified on
+2.0.0-45 and 2.1.0-10, it closes the 2.1.0-14 hub a few seconds into the scan
+page; the bisect and the reason it could not be predicted offline are in
+[vendor-update-2.1.0-14.md](research/vendor-update-2.1.0-14.md). Sources and
+README are in the git history (manager ≤ 1.7.0).
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
 
@@ -81,7 +86,7 @@ in sibling processes (whitelist + gate `exe = hub`). Manager 1.3.1:
 quality 95→26 to fit the budget). `.meta` dropped — not needed. Remaining:
 a human run-through of the manager GUI (install/choose file in one click).
 
-### 2. fps — real FPS in ScanPage
+### 2. fps — real FPS in ScanPage  **(retired 2026-11-27, see the status at the end)**
 
 **Goal.** The stock "FPS: 80-90" figure is not truthful: it is capture-pipeline
 statistics from the C++ model `real_time_info` (the string `FPS: %1` in AppCommon_E7.dll),
@@ -112,6 +117,13 @@ the value as a comment.
 Status: ✅ verified live (2026-11-17, user: "I can see the fps").
 The qrc-editing machinery was extracted into `include\exstar_qrc.h` (shared with
 laser50 [caption]). Into git — upon "put it in git".
+**Retired 2026-11-27**: on vendor 2.1.0-14 the same insert, applied `(ok)` to a
+resource that is byte-identical to the one it patched on 2.1.0-10, makes the hub
+close itself a few seconds into the scan page. Bisected (only this module
+reproduces it; the other eight survive alone and together). The readout is not
+worth a hub that closes itself, so the module is gone; manager 1.7.1 deletes a
+leftover `modules\fps.dll` through its legacy list, because the host enables
+every DLL it finds.
 
 ### 3. laser50 — 25×25 laser lines + "50 lines" caption (merged with item 4)
 
@@ -693,12 +705,51 @@ stays hidden on screen. Evidence:
    were repaired on the way: `tools\wp_dryrun.c` (missing `windows.h`, and its
    known-good constant still pointed at the pre-2.1.0-10 JPEG slot) now reports
    `SOI @0x9974F3 slot=837517  MATCH known-good` on both payloads.
+ * **2026-11-27, 2.1.0-14 installed: eight modules armed on the first start,
+   fps retired, and an update turned out to delete the framework.**
+   `verify` against the installed tree: 2993 of its 2997 files are payload
+   records, and the 18 binaries that carry an anchor of this project are all
+   size+sha256 identical to the payload, so the offline table describes what is
+   really loaded. Then the two facts the offline pass could not see. (1) The
+   setup **replaces the application directory**: `winmm.dll`, `winmm_real.dll`,
+   `ExStarRec.dll`, `modules\`, `modules.ini` and `exstar_mods.state` were gone
+   when it finished (the hub had already written its own `setting.ini` again).
+   Nothing of the framework survives an update, so a Mod Manager run - and a
+   copy of `modules\*.ini`, which holds the tuning - is part of updating.
+   (2) **fps closed the hub.** The insert applied `(ok)` on a resource whose 70
+   zlib records are byte-identical to the build it worked on, and 12-15 s later
+   the process was gone, before the scan page finished instantiating. Bisected
+   by flipping `modules.ini`: no module yes, all nine no, the half that contains
+   fps no, the half without it yes; then one at a time - popup_dim yes, gpu_gate
+   yes, marker_quality yes, marker_inframe yes, **fps no**. No WER record, no
+   QML error line, nothing in `mod.log`: a silent exit, i.e. exactly the class of
+   thing an offline anchor table cannot predict. Retired with manager 1.7.1,
+   which carries `fps` in the legacy list so a leftover DLL cannot come back
+   enabled by default.
+   Everything else anchored on the first try, at the predicted addresses:
+   gpu_gate `0x1AB6B5`, marker_quality stub `renderer+0x130320` with its
+   `.rdata` slot at the *new* `0x28CAE0`, laser50 export remap, popup_dim
+   `verified=5 restored=0 fault=0` per target, selective_mesh
+   `hooked HandlePrjFile::isGenerateCloud` plus the armed eye watch, and
+   **fitfill's own two hooks firing** - `scan scale forced to 1 at
+   sn3d.digit.scenecontrol.dll+0xC4865` and
+   `setIsZoomOptimization(1) -> forwarding 0` - which pays the log half of the
+   open regression below. wallpaper correctly declined (its `wallpaper.jpg` is a
+   user file and the update took it): stock background until *Choose file…* is
+   used again. And the one assumption only a live merge can pay came back good:
+   with two of three eyes hidden, the guard read the merge list in r9 with
+   `self at #1, 0 unreadable`, the two hidden scans got `-> SKIP`, and the
+   vendor reported `meshFinished` - so the `Sn3DMultiProjects` item layout
+   (`self+0x18`, `item+0x28`, `item+0x38`) survived its recompilation and
+   `merge_list.h` needs no fresh dump. That was also selective_mesh 1.8.0's
+   first live run (eye click → shared ini → the merge caller's answer).
 
 ## Open regressions
 
 | Item | Since | Status |
 |---|---|---|
-| fitfill has no effect on 2.1.0-10 | vendor update 2.1.0-10 | diagnosed 2026-11-19: the flag it forces is dead code on the new fit pipeline (analysis: [zoom-fit-optimization.md §6](research/zoom-fit-optimization.md)); replacement anchor found the same day - the `setEnableScanScale(false)` call site in `sn3d.digit.scenecontrol.dll` ([§7](research/zoom-fit-optimization.md)), implemented in fitfill 1.1.0 (import-name-anchored in-memory byte patch). TODO: live confirmation on the hub (log line `scan scale forced to 1 at sn3d.digit.scenecontrol.dll+0x...` + Ctrl+D re-fills the frame). |
+| fitfill has no effect on 2.1.0-10 | vendor update 2.1.0-10 | diagnosed 2026-11-19: the flag it forces is dead code on the new fit pipeline (analysis: [zoom-fit-optimization.md §6](research/zoom-fit-optimization.md)); replacement anchor found the same day - the `setEnableScanScale(false)` call site in `sn3d.digit.scenecontrol.dll` ([§7](research/zoom-fit-optimization.md)), implemented in fitfill 1.1.0 (import-name-anchored in-memory byte patch). TODO: live confirmation on the hub (log line `scan scale forced to 1 at sn3d.digit.scenecontrol.dll+0x...` + Ctrl+D re-fills the frame). **Log half paid on 2.1.0-14 (2026-11-27)**: `scan scale forced to 1 at sn3d.digit.scenecontrol.dll+0xC4865` and `setIsZoomOptimization(1) -> forwarding 0` both appear in a real session; the Ctrl+D re-fill is still for the user to confirm. |
+| selective_mesh labels a kept scan "scan id unreadable (fail-open)" | since the 1.4.x reason table | found while reading the 2.1.0-14 merge log (2026-11-27): `decideCloud()` starts `why` at `WHY_NOID` and only overwrites it when a scan is hidden, so a scan nobody ever hid is reported with the fail-open label - while the same line prints its uuid (`gate uuid=6D894BEF-…`). The verdict (`-> include`) is correct; only the word lies, and it makes a healthy log look like a degraded one. Fix is a fifth label ("no eye state") plus a module rebuild and redeploy - not worth a version bump on its own, take it with the next real change |
 | manager window was fixed-size | before 1.3.10 | fixed in manager 1.3.10: `WS_OVERLAPPEDWINDOW` (resizable, minimize, maximize), `WM_SIZE` re-layout of width-dependent controls, `WM_GETMINMAXINFO` floor. Visually confirmed 2026-11-22 during the 1.4.0 UI redesign (any height re-flows the grid; the stock white scrollbar that surfaced at short heights is gone - the only scroll thumb is the custom dark overlay). |
 
 ## Rejected

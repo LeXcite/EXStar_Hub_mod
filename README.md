@@ -18,26 +18,38 @@ verification and failure modes - readable cold, no external context needed.
 
 | Module | Description | Status |
 |---|---|---|
-| [marker_inframe](modules/marker_inframe/README.md) | in-frame marker grows in size instead of flashing the red "detected in current scan frame" color; the marker keeps its color, so it composes with Marker Quality | ✅ tested on 2.x (file stamp 3.1.49) |
-| [marker_quality](modules/marker_quality/README.md) | tracking markers are painted by observation quality: dark red (seen) → yellow (decent) → green (fully tracked, latched) | ✅ tested on 2.x (file stamp 3.1.49) |
-| [popup_dim](modules/popup_dim/README.md) | grey veils behind popups become light translucent overlays; the solid grey background of busy overlays (project loading / processing / exiting) becomes frosted glass over the live page - redirected at its single shared source | ✅ live-verified on 2.x (file stamp 3.1.x) through 2.1.0-10 (v1.2.8, 2026-11-18) |
-| [wallpaper](modules/wallpaper/README.md) | custom application background: the vendor's embedded JPEG in AppUi.dll is replaced in process memory with `modules\wallpaper.jpg` (placed and converted by the Mod Manager); stock wallpaper returns on *Reset* | ✅ live-verified on 2.x (file stamp 3.1.x, v1.0.0) |
-| [fps](modules/fps/README.md) | live `FPS: N` readout at the bottom right of the scan page: the **real** UI frame rate (frameSwapped counter) inserted into the compressed scan page QML at DLL map time - the vendor "FPS: 80-90" is a constant capture-pipeline statistic, not rendered frames | ✅ live-verified on 2.x (file stamp 3.1.x, v1.0.0) |
-| [laser50](modules/laser50/README.md) | the complete 50-line feature, one switch: detours the exported `set_match_plane_id_vulkan` (by name) to widen the plane-id tuple `(3,21,3,21)` → `(0,24,0,24)` so all 25+25 lines reach the cloud, **and** rewrites only the label's argument (`.arg(50)`, translated qsTr source kept) so the Light Source Mode button reads `50 lines`; `7 lines` stays stock | ✅ live-verified on 2.x (file stamp 3.1.x, v1.1.0: 25×25 lines in a real scan + `50 lines` button, EN UI intact) |
-| [fitfill](modules/fitfill/README.md) | Ctrl+D / *Zoom to Fit* frames the model into the viewport: forces the manipulator's `setIsZoomOptimization` export off (the same switch the community patchset's version-bound byte patch cleared - semantics now RE'd: pinned camera distance mode); from 2.1.0-10 additionally forces `setEnableScanScale(true)` at its single call site (in-memory, import-anchored) | ⚠️ hook mechanism verified on 2.0.0-45; on 2.1.0-10 the flag became dead code (analysis: [zoom-fit-optimization.md §6](docs/research/zoom-fit-optimization.md)) - v1.1.0 adds the new anchor (§7), **live test pending** |
-| [gpu_gate](modules/gpu_gate/README.md) | run EXStar Hub on integrated GPUs (e.g. a Radeon 780M): the vendor startup gate refuses every non-discrete GPU with a "requires NVIDIA RTX 3060" dialog before the pipeline - pure Vulkan behind it - ever runs; one in-memory byte (`jne`→`ja`) found by a unique instruction pattern lets INTEGRATED/OTHER devices reach the vendor's *own* AMD/NVIDIA checks (which pass them), while VIRTUAL/CPU stay refused; behavior-neutral on machines that already pass | ✅ live-verified on 2.1.0-10 (v1.0.0, 2026-11-19 NVIDIA self-test; the relaxed AMD branch field-verified on 2.0.0-45 on a Radeon 780M) |
-| [selective_mesh](modules/selective_mesh/README.md) | pick which scans feed the **common mesh**: hide a scan's **eye icon** in the project list and the next merge is built without it - one in-memory detour on the single exported question `HandlePrjFile::isGenerateCloud` (only Sn3DMultiProjects.dll imports it), answered through the vendor's own "no cloud" branch, so stored data, display and per-scan export stay stock. The eye state crosses into the processes that build the mesh as `[uuid] included = 0` in `selective-mesh.ini`, and it lives exactly as long as the run: the hub clears those sections when it starts, because the vendor shows every scan again when a project is re-opened (1.8.0 - the hand-editable `[folder]` sections, the `.map.txt` roster and the manager's roster window were retired with it, the eye is the only interface). Since 1.7.0 a merge this module would leave with **no** scan runs as if all eyes were open (the vendor's post-process never finishes on empty input), reading that merge's own scan list straight out of the caller's registers - trusted only when the list it points at contains the scan being asked about, no Qt call, `tools/merge_list_lab.c` proves the container layout against the shipped Qt. The viewport half (re-asserting a hidden eye after the Mesh Model environment switch) is **off by default**: it calls the vendor's show/hide slot and can hang the hub (1.6.1) | ✅ live-verified on 2.1.0-10 (mesh exclusion + eye binding across processes 1.4.7/2026-11-24; 1.6.2 eye-click fix re-confirmed 2026-11-26; the all-hidden guard live-verified 2026-11-26: every eye hidden -> the merge finishes with all scans instead of stalling at 80 %); 1.8.0 (eye-only interface, session-scoped state) built, pending live check; joined as `merge_select` with manager 1.5.0, renamed Selective Mesh in 1.6.0 |
+| [marker_inframe](modules/marker_inframe/README.md) | in-frame marker grows in size instead of flashing the red "detected in current scan frame" color; the marker keeps its color, so it composes with Marker Quality | ✅ tested on 2.x (file stamp 3.1.49) through 2.1.0-14 (armed and hooked, 2026-11-27) |
+| [marker_quality](modules/marker_quality/README.md) | tracking markers are painted by observation quality: dark red (seen) → yellow (decent) → green (fully tracked, latched) | ✅ tested on 2.x (file stamp 3.1.49) through 2.1.0-14 (armed and hooked, 2026-11-27) |
+| [popup_dim](modules/popup_dim/README.md) | grey veils behind popups become light translucent overlays; the solid grey background of busy overlays (project loading / processing / exiting) becomes frosted glass over the live page - redirected at its single shared source | ✅ live-verified on 2.x (file stamp 3.1.x) through 2.1.0-10 (v1.2.8, 2026-11-18); re-hooked on 2.1.0-14 (2026-11-27) with `verified=5 restored=0 fault=0` on every target |
+| [wallpaper](modules/wallpaper/README.md) | custom application background: the vendor's embedded JPEG in AppUi.dll is replaced in process memory with `modules\wallpaper.jpg` (placed and converted by the Mod Manager); stock wallpaper returns on *Reset* | ✅ live-verified on 2.x (file stamp 3.1.x, v1.0.0); on 2.1.0-14 it fails open as designed - the update deleted the user's `modules\wallpaper.jpg`, so the module logs `no ... wallpaper.jpg - stock wallpaper kept` and declines until the image is placed again |
+| [laser50](modules/laser50/README.md) | the complete 50-line feature, one switch: detours the exported `set_match_plane_id_vulkan` (by name) to widen the plane-id tuple `(3,21,3,21)` → `(0,24,0,24)` so all 25+25 lines reach the cloud, **and** rewrites only the label's argument (`.arg(50)`, translated qsTr source kept) so the Light Source Mode button reads `50 lines`; `7 lines` stays stock | ✅ live-verified on 2.x (file stamp 3.1.x, v1.1.0: 25×25 lines in a real scan + `50 lines` button, EN UI intact); re-hooked on 2.1.0-14 (2026-11-27) - export detour plus `caption ScanPage_E7.dll ... 1 caption(s) rewritten (ok)` |
+| [fitfill](modules/fitfill/README.md) | Ctrl+D / *Zoom to Fit* frames the model into the viewport: forces the manipulator's `setIsZoomOptimization` export off (the same switch the community patchset's version-bound byte patch cleared - semantics now RE'd: pinned camera distance mode); from 2.1.0-10 additionally forces `setEnableScanScale(true)` at its single call site (in-memory, import-anchored) | ⚠️ hook mechanism verified on 2.0.0-45; on 2.1.0-10 the flag became dead code (analysis: [zoom-fit-optimization.md §6](docs/research/zoom-fit-optimization.md)) - v1.1.0 adds the new anchor (§7); on 2.1.0-14 **both hooks fire in a live session** - `scan scale forced to 1 at sn3d.digit.scenecontrol.dll+0xC4865` and `setIsZoomOptimization(1) -> forwarding 0` (2026-11-27) - while the visible Ctrl+D re-fill is still owed |
+| [gpu_gate](modules/gpu_gate/README.md) | run EXStar Hub on integrated GPUs (e.g. a Radeon 780M): the vendor startup gate refuses every non-discrete GPU with a "requires NVIDIA RTX 3060" dialog before the pipeline - pure Vulkan behind it - ever runs; one in-memory byte (`jne`→`ja`) found by a unique instruction pattern lets INTEGRATED/OTHER devices reach the vendor's *own* AMD/NVIDIA checks (which pass them), while VIRTUAL/CPU stay refused; behavior-neutral on machines that already pass | ✅ live-verified on 2.1.0-10 (v1.0.0, 2026-11-19 NVIDIA self-test; the relaxed AMD branch field-verified on 2.0.0-45 on a Radeon 780M); on 2.1.0-14 the pattern resolved at the predicted `Sn3DSpeckleNew.dll` RVA 0x1AB6B5 (2026-11-27) |
+| [selective_mesh](modules/selective_mesh/README.md) | pick which scans feed the **common mesh**: hide a scan's **eye icon** in the project list and the next merge is built without it - one in-memory detour on the single exported question `HandlePrjFile::isGenerateCloud` (only Sn3DMultiProjects.dll imports it), answered through the vendor's own "no cloud" branch, so stored data, display and per-scan export stay stock. The eye state crosses into the processes that build the mesh as `[uuid] included = 0` in `selective-mesh.ini`, and it lives exactly as long as the run: the hub clears those sections when it starts, because the vendor shows every scan again when a project is re-opened (1.8.0 - the hand-editable `[folder]` sections, the `.map.txt` roster and the manager's roster window were retired with it, the eye is the only interface). Since 1.7.0 a merge this module would leave with **no** scan runs as if all eyes were open (the vendor's post-process never finishes on empty input), reading that merge's own scan list straight out of the caller's registers - trusted only when the list it points at contains the scan being asked about, no Qt call, `tools/merge_list_lab.c` proves the container layout against the shipped Qt. The viewport half (re-asserting a hidden eye after the Mesh Model environment switch) is **off by default**: it calls the vendor's show/hide slot and can hang the hub (1.6.1) | ✅ live-verified on 2.1.0-10 (mesh exclusion + eye binding across processes 1.4.7/2026-11-24; 1.6.2 eye-click fix re-confirmed 2026-11-26; the all-hidden guard live-verified 2026-11-26: every eye hidden -> the merge finishes with all scans instead of stalling at 80 %); 1.8.0 (eye-only interface, session-scoped state) live-verified on 2.1.0-14 (2026-11-27): two of three eyes hidden -> both `-> SKIP`, vendor `meshFinished`, and the all-hidden guard read the merge list with `self at #1, 0 unreadable` on the recompiled `Sn3DMultiProjects.dll`, so the item layout holds; joined as `merge_select` with manager 1.5.0, renamed Selective Mesh in 1.6.0 |
 
 All modules except selective_mesh (and gpu_gate) were re-verified live against the
 vendor update **2.1.0-10 (file stamp 3.1.49)** on 2026-11-18 with zero code
 changes - migration evidence:
 [update-2.1.0-10-migration.md](docs/research/update-2.1.0-10-migration.md).
 
+**Real FPS** left the set on 2026-11-27 (manager 1.7.1): on 2.1.0-14 the hub
+closes itself a few seconds into the scan page whenever its QML insert is
+applied. Bisected on the installed app - the module alone reproduces the exit,
+each of the other eight survives with no symptom. The insert itself still
+lands byte-identically (the `/// ScanPage_E7` record is unchanged between
+2.1.0-10 and 2.1.0-14), so what broke is how the new build consumes the
+patched page. A frame-rate readout is not worth that, so the module is
+retired; a leftover `modules\fps.dll` is cleaned up by the manager's legacy
+list. Sources and its README are intact in the git history (manager ≤ 1.7.0),
+and the compressed-QML mechanism it pioneered stays documented in
+[scanpage-qml-resources.md](docs/research/scanpage-qml-resources.md) -
+laser50's caption half still uses it.
+
 Exception found 2026-11-19: **fitfill** - the vendor dropped the flag it
 forces on 2.1.0-10, so the original hook is a no-op there; v1.1.0 adds
 the replacement anchor for the new pipeline (see
 [zoom-fit-optimization.md §6-§7](docs/research/zoom-fit-optimization.md)),
-live verification pending.
+whose two hooks were seen firing in a real session on 2.1.0-14 (2026-11-27).
 **gpu_gate** joined the set with manager 1.3.9 (2026-11-19); its full
 startup-gate research:
 [gpu-gate-amd-support.md](docs/research/gpu-gate-amd-support.md).
@@ -47,14 +59,18 @@ selection research (vendor call sites, folder-key design, community
 patchset comparison):
 [merge-common-mesh.md](docs/research/merge-common-mesh.md).
 
-The next vendor update, **2.1.0-14**, was checked **offline against the signed
-installer payload** before installation (2026-11-27): all 73 anchors the
-modules use are equal, the manager stamp gate (`3.1.`) and the `winmm`
-injection chain are intact, and no vendor file collides with the mod files.
-No module or manager code change is needed; the live pass is the only step
-left after installing, with one item to watch (the merge item layout owned by
-the recompiled `Sn3DMultiProjects.dll`, which fails open to stock behaviour):
-[vendor-update-2.1.0-14.md](docs/research/vendor-update-2.1.0-14.md).
+The next vendor update, **2.1.0-14**, was first checked **offline against the
+signed installer payload** (2026-11-27): all 73 anchors the modules use are
+equal, the manager stamp gate (`3.1.`) and the `winmm` injection chain are
+intact, and the payload ships no file that collides with the mod files. It is
+now installed and **live-verified**: every module armed and hooked on the
+first start with no code change, and the hub runs normally
+([vendor-update-2.1.0-14.md](docs/research/vendor-update-2.1.0-14.md)).
+Two things the offline pass could not see, both recorded there: the setup
+**removes the mod files from the application folder** (re-run the Mod Manager
+after every vendor update - `exstar_mods.state` and a file backup make that
+routine), and the fps QML insert is no longer survivable on this build, which
+retired the module.
 
 ## Mod Manager
 
@@ -148,7 +164,8 @@ Reverse-engineering protocols behind the features
   signal and why `glUniform4fv` hooking beats patching (marker_quality);
 * [scanpage-qml-resources.md](docs/research/scanpage-qml-resources.md) —
   the vendor's compressed QML (Qt zrc) format, the safe in-memory write
-  protocol, `.qm` catalog pitfalls (popup_dim, fps, laser50 `[caption]`);
+  protocol, `.qm` catalog pitfalls (popup_dim, laser50 `[caption]`; its
+  first user was the retired fps);
 * [laser-plane-ids.md](docs/research/laser-plane-ids.md) — the
   `set_match_plane_id_vulkan` window and the "50 lines" caption (laser50);
 * [zoom-fit-optimization.md](docs/research/zoom-fit-optimization.md) — the
@@ -248,7 +265,7 @@ file stamp is what compatibility actually follows.
 
 | EXStar Hub (product) | file stamp | Tested | Notes |
 |---|---|---|---|
-| 2.1.0-14 | 3.1.49 | 🟡 offline | the signed installer payload was compared with 2.1.0-10 before installing (2026-11-27): 73/73 anchors equal, 5 binaries recompiled but none of their anchored bytes moved; live pass pending installation |
+| 2.1.0-14 | 3.1.49 | ✅ | installed and live-verified 2026-11-27 (manager 1.7.1): every module armed and hooked on the first start, hub stable; the setup **deletes the mod files** from the app folder, so the Mod Manager has to be run again after an update; **fps** retired on this build (it closed the hub on the scan page) |
 | 2.1.0-10 | 3.1.49 | ✅ | Windows 11 x64, NVIDIA driver; full re-verification 2026-11-18; gpu_gate self-test 2026-11-19 |
 | 2.0.0-45 | 3.1.49 | ✅ | the original research target (same stamp family); the gpu_gate relaxed AMD branch was field-verified here on a Radeon 780M |
 | other 2.x / other stamps | - | ? | re-check research anchors before deploying |

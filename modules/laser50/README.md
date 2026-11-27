@@ -16,7 +16,7 @@
 | Root cause - lines | the pipeline matches laser "plane ids" inside a window: the scan platform calls the exported `Sn3DAlgorithm::set_match_plane_id_vulkan(ctx, &startId, &endId, &startIdR, &endIdR)` with `(3, 21, 3, 21)`; the export only logs and tail-calls an internal store (`FUN_1804b24b0` on file stamp 3.1.x: four `mov` writing the ints to `ctx+0x25534/38/3C/40`), so the window is fixed by the **values the caller passes**, not by any config file |
 | Root cause - caption | the laser settings QML (`ScanSettingModelProviderLaser`, a compressed qrc record inside `ScanPage_E7.dll`) labels the mode with `text: qsTr("%1线").arg($scanSettingModelLaser.crossLaserLineShowNum)` - the hanzi source string **is** translated (vendor `.qm` catalogs: `"%1线"` → `"%1 lines"` in English), the number comes from the C++ model property (= 39, nominal for the (3,21) window); the twin button uses `parallelLaserLineShowNum` (= 7) |
 | Fix - lines | a detour (`host->hook`, MinHook) at the export entry, found by **export name** in `algorithmLzy.dll`; when the four referenced ints equal the configured `from_*` tuple `(3,21,3,21)` the original is called with pointers to our `to_*` copy `(0,24,0,24)` instead; any other call (e.g. the 7-line mode) passes through untouched |
-| Fix - caption | map-time text rewrite of that qrc record (the fps module's zlib machinery), replacing **only the formatted number**: `.arg($scanSettingModelLaser.crossLaserLineShowNum)` → `.arg(50)`. The translated `qsTr` source stays byte-identical, so catalogs keep working in every locale; `7 lines` is not matched and stays stock |
+| Fix - caption | map-time text rewrite of that qrc record (the shared zlib write path in `include\exstar_qrc.h`), replacing **only the formatted number**: `.arg($scanSettingModelLaser.crossLaserLineShowNum)` → `.arg(50)`. The translated `qsTr` source stays byte-identical, so catalogs keep working in every locale; `7 lines` is not matched and stays stock |
 | Key source file | `modules/laser50/laser50.c` (`detour`, `tryInstall`, `capRecord`); export lookup via the shared `include\exstar_export.h`, the caption's qrc write path via the shared `include\exstar_qrc.h` |
 | Offline check | lines: `dumpbin /exports algorithmLzy.dll` shows exactly one `?set_match_plane_id_vulkan@Sn3DAlgorithm@@YA?AW4RetVal@1@PEAXAEBH111@Z`; Ghidra: log + tail-call to the four-dword store; the only importing module is `SnAlgAppPlat.dll` (loaded dynamically by scan processes - no EXE links it). Caption: `tools\replace_lab.exe "<ScanPage_E7.dll>" "ScanSettingModelProviderLaser" pat_from.bin pat_to.bin` - exactly one record (`@file 0x98C90E raw=67753 lc=9777 pattern=1`), `patched=9587 FITS` (slack 194 B) |
 | Runtime proof | `%LOCALAPPDATA%\ExStarHubMods\mod.log`: `laser50: hooked ?set_match_plane_id_vulkan@... strict=1 (3,21,3,21) -> (0,24,0,24)` + per-scan `laser50: call N: (3,21,3,21) -> remap`; `laser50: caption ScanPage_E7.dll stream @0x98DB0E raw 67753->67711, packed 9777<-9587, 1 caption(s) rewritten (ok)` (live VA = file +0x1200, never hardcoded); visually: 25×25 lines in a real scan + `50 lines` / `7 lines` buttons (user screenshots, 2026-11-17) |
@@ -86,7 +86,8 @@ formatted with.** `.arg(50)` keeps the catalog key intact and reads
 The replacement is *shorter* than the pattern (63 → 21 B), so the
 re-deflate headroom is guaranteed; framing rules (fixed next-record
 boundary, `[u32 BE rawSize]` header, verify-by-reinflate with byte-exact
-backup/restore) are the fps module's.
+backup/restore) come from `include\exstar_qrc.h`, whose first user was the
+retired fps module.
 
 ## Configuration
 

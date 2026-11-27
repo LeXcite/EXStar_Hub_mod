@@ -1,9 +1,12 @@
 # Vendor compressed QML resources (Qt zrc) — mechanism protocol
 
-The general knowledge behind the `popup_dim`, `fps` and `laser50 [caption]` modules: where the
+The general knowledge behind the `popup_dim` and `laser50 [caption]` modules (and, until it was
+retired on 2026-11-27, the `fps` module): where the
 scan page's QML lives, how it is packed, how it is patched in process memory before the first
 render, and which traps stand in the way. The feature-batch status journal is
-`batch-2026-11-17-status.md`; product details are in the modules' READMEs.
+`batch-2026-11-17-status.md`; product details are in the modules' READMEs. Why fps was retired
+even though the patch it applies is byte-identical to the one that worked: the live pass of
+`vendor-update-2.1.0-14.md`.
 
 ---
 

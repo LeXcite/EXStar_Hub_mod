@@ -1,11 +1,12 @@
 /*
  * exstar_qrc.h - shared machinery for modules that rewrite compressed
  * QML resources (Qt "zrc" blobs) inside a mapped vendor DLL. Used by
- * the fps and laser50 modules; popup_dim predates it and keeps its own
+ * the laser50 module; popup_dim predates it and keeps its own
  * equal-length variant (do not refactor a live-verified module for
  * style points).
  *
- * The resource model (reverse-engineered, see modules/fps/README.md):
+ * The resource model (reverse-engineered, see
+ * docs/research/scanpage-qml-resources.md):
  *   read-only sections of the vendor DLL contain records laid out as
  *   [u32 BE rawSize][zlib stream]; the app's own zlib1.dll inflates
  *   them at engine startup. A module catching the DLL via
