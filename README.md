@@ -18,8 +18,7 @@ verification and failure modes - readable cold, no external context needed.
 
 | Module | Description | Status |
 |---|---|---|
-| [marker_inframe](modules/marker_inframe/README.md) | in-frame marker grows in size instead of flashing the red "detected in current scan frame" color; the marker keeps its color, so it composes with Marker Quality | ✅ tested on 2.x (file stamp 3.1.49) through 2.1.0-14 (armed and hooked, 2026-11-27) |
-| [marker_quality](modules/marker_quality/README.md) | tracking markers are painted by observation quality: dark red (seen) → yellow (decent) → green (fully tracked, latched) | ✅ tested on 2.x (file stamp 3.1.49) through 2.1.0-14 (armed and hooked, 2026-11-27) |
+| [marker_quality](modules/marker_quality/README.md) | a tracking marker's **disc** shows how well the scanner observed it (dark red = seen, yellow = decent, green = fully tracked, green latches) and its **outline** shows that the marker is in the scanner's field of view this frame (blue) - the vendor's red flash is gone, so quality stays readable while the marker is still in view | ✅ quality path and outline both live-verified by the owner on 2.x (file stamp 3.1.49) through 2.1.0-14, 2026-11-28 (v1.1.8). The vendor never resolves `frontExternalColor` by name for a marker: its ring comes from a channel one StateSet *below* the markers and shared by them, so each marker gets a channel of its own, armed with `OVERRIDE_VALUES` while it is in view and without it again when the marker leaves. `mod.log` names the case (`outline: made on the marker's own StateSet`, or that the entry belongs to the vendor) and the heartbeat counts the writes |
 | [popup_dim](modules/popup_dim/README.md) | grey veils behind popups become light translucent overlays; the solid grey background of busy overlays (project loading / processing / exiting) becomes frosted glass over the live page - redirected at its single shared source | ✅ live-verified on 2.x (file stamp 3.1.x) through 2.1.0-10 (v1.2.8, 2026-11-18); re-hooked on 2.1.0-14 (2026-11-27) with `verified=5 restored=0 fault=0` on every target |
 | [wallpaper](modules/wallpaper/README.md) | custom application background: the vendor's embedded JPEG in AppUi.dll is replaced in process memory with `modules\wallpaper.jpg` (placed and converted by the Mod Manager); stock wallpaper returns on *Reset* | ✅ live-verified on 2.x (file stamp 3.1.x, v1.0.0); on 2.1.0-14 it fails open as designed - the update deleted the user's `modules\wallpaper.jpg`, so the module logs `no ... wallpaper.jpg - stock wallpaper kept` and declines until the image is placed again |
 | [laser50](modules/laser50/README.md) | the complete 50-line feature, one switch: detours the exported `set_match_plane_id_vulkan` (by name) to widen the plane-id tuple `(3,21,3,21)` → `(0,24,0,24)` so all 25+25 lines reach the cloud, **and** rewrites only the label's argument (`.arg(50)`, translated qsTr source kept) so the Light Source Mode button reads `50 lines`; `7 lines` stays stock | ✅ live-verified on 2.x (file stamp 3.1.x, v1.1.0: 25×25 lines in a real scan + `50 lines` button, EN UI intact); re-hooked on 2.1.0-14 (2026-11-27) - export detour plus `caption ScanPage_E7.dll ... 1 caption(s) rewritten (ok)` |
@@ -100,8 +99,8 @@ host and all modules are embedded as resources):
   density are detected at startup; force it with `--zoom 1.5`).
   Modules with tunable behavior show inline controls that write the
   matching ini keys and apply after an EXStar Hub restart:
-  *Marker In-Frame*: a *scale* slider (in-frame scale). *Marker
-  Quality*: a "marker positioning quality" preset row - one click
+  *Marker Quality*: a "marker positioning quality" preset row - one
+  click
   sets the three coupled green thresholds together (Coarse 0.25 mm /
   Medium 0.1 mm / Fine 0.05 mm / Ultra 0.02 mm spread, with
   matching frames and viewing directions); the active preset is read
@@ -120,7 +119,7 @@ host and all modules are embedded as resources):
 
 ```text
 ExStarModManager.exe --list
-ExStarModManager.exe --install --modules marker_inframe[,id2] [--scale 1.5] [--app "D:\...\EXStar Hub"]
+ExStarModManager.exe --install --modules marker_quality[,id2] [--app "D:\...\EXStar Hub"]
 ExStarModManager.exe --remove  --modules id1,id2
 ExStarModManager.exe --restore
 ExStarModManager.exe --zoom 1.5        # GUI only: force UI scale 1.0..4.0
@@ -170,8 +169,10 @@ install. Details: [docs/architecture.md](docs/architecture.md).
 Reverse-engineering protocols behind the features
 ([docs/research/](docs/research/)):
 
-* [marker-pipeline.md](docs/research/marker-pipeline.md) — the red-marker
-  signal and why `glUniform4fv` hooking beats patching (marker_quality);
+* [marker-pipeline.md](docs/research/marker-pipeline.md) - the red-marker
+  signal and the two interception routes it proved: the `glUniform4fv` hook
+  (retired with marker_inframe) and the osg uniforms marker_quality writes
+  today;
 * [scanpage-qml-resources.md](docs/research/scanpage-qml-resources.md) —
   the vendor's compressed QML (Qt zrc) format, the safe in-memory write
   protocol, `.qm` catalog pitfalls (popup_dim, laser50 `[caption]`; its
@@ -209,7 +210,7 @@ Output:
 ```
 build\winmm.dll                   bootstrap proxy
 build\ExStarRec.dll               module host
-build\modules\marker_inframe.dll  modules
+build\modules\marker_quality.dll  modules
 build\examples\template.dll       example module (not deployed)
 build\ExStarModManager.exe        one-file manager/installer
 ```
@@ -259,7 +260,16 @@ touched.
 [host]
 log = 0              ; 1 -> %LOCALAPPDATA%\ExStarHubMods\mod.log
 
-[marker_inframe]
+; Multi-process injection is not a second switch: the Mod Manager
+; recomputes [host] sibling_all / sibling_modules from the module
+; switches on every install and remove, so a module that is off is
+; listed nowhere.  What may appear there at all is a per-module
+; capability in the manager table (currently marker_quality and
+; selective_mesh, both proven inside scanservice.exe):
+; sibling_all = 1
+; sibling_modules = marker_quality,selective_mesh
+
+[marker_quality]
 enabled = 1
 ```
 

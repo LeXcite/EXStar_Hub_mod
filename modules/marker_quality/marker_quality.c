@@ -1,6 +1,8 @@
 /*
- * marker_quality.c - paint tracking markers red / yellow / green according
- * to how well the scanner has observed them, EXStar Hub 2.x (file stamp 3.1.49).
+ * marker_quality.c - owns everything the tracking markers look like: their
+ * color says how well the scanner has observed them (red / yellow / green),
+ * their outline says which marker is in the scanner's view right now
+ * (blue), EXStar Hub 2.x (file stamp 3.1.49).
  *
  * Architecture (two sides inside ONE module, mirroring the proven
  * production pipeline; the module loads into every app process, each side
@@ -22,11 +24,19 @@
  *     build) and swap the pointer that references it (renderer+0x28CAA8
  *     statically verified).  Every frame the vendor now calls our hook
  *     with owner = { ?, osg::Group*, visibility-array* }: we forward to
- *     the original stub and then override the per-child osg uniform
- *     "frontInnerColor" with the quality color for that marker id.
+ *     the original stub and then override two per-child osg uniforms -
+ *     "frontInnerColor" (the disc) with the quality color for that marker
+ *     id, and "frontExternalColor" (the outline) with the in-view color.
+ *     "In the current frame" is read straight from what the vendor just
+ *     wrote: red into the disc means the node is in CURRENT_MARKER
+ *     (docs/research/marker-pipeline.md), and the vendor never touches
+ *     the outline at runtime, so the outline is a channel of its own.
  *     Marker id per child index comes from bindings captured on
  *     setMarkerPoints (render chain node+0x150 -> mix, +0x138 -> geom,
  *     geom+0x220 -> key vector, geom+0x248 -> state -> +8 visibility).
+ *     The outline needs no id, no binding and no bridge file: it works
+ *     from the first frame of a project, also before any scanning, and
+ *     also if the scan side never got a sibling slot.
  *
  * Rules honored: injection only, zero RVAs (names + signatures only),
  * DllMain untouched, SEH around every foreign pointer, no file patching,
@@ -53,7 +63,7 @@
 #include "exstar_sdk.h"
 
 #define MOD_ID      "marker_quality"
-#define MOD_VER     "1.0.2"
+#define MOD_VER     "1.1.8"
 
 /* vendor exports, resolved by name only -------------------------------- */
 #define EXP_PUT_FRAME \
@@ -970,31 +980,63 @@ static unsigned (*p_osg_num_children)(void *);
 static void  *(*p_osg_get_state_set)(void *);
 static void  *(*p_osg_get_uniform)(void *, const void *);  /* std::string& */
 static int    (*p_osg_set_uniform)(void *, const void *);  /* Vec4f&       */
-static int    (*p_osg_uniform_get)(const void *, float *); /* get(Vec4f&)  */
+static int    (*p_osg_uniform_get)(const void *, float *); /* get(Vec4f&) =
+                                              * the in-view detector        */
+static int    (*p_osg_uniform_type)(const void *);  /* Uniform::getType()    */
+static void  *(*p_osg_get_or_create)(void *, const void *, int, unsigned);
+                                             /* StateSet::getOrCreateUniform(
+                                              * const std::string&, Type, n)  */
+static void     (*p_osg_add_uniform)(void *, void *, unsigned);
+                                             /* StateSet::addUniform(Uniform*,
+                                              * overrideMask) - the only way to
+                                              * say "nothing below me wins"    */
+static void     (*p_osg_remove_uniform)(void *, const void *);
+                                             /* StateSet::removeUniform(const
+                                              * std::string&) - taking the entry
+                                              * the module made away is what
+                                              * hands the ring back to the
+                                              * vendor's channel below         */
 static volatile LONG g_color_cb_calls;
-static volatile LONG g_color_writes;
 static volatile LONG g_color_missing_uniform;
 static volatile LONG g_color_missing_binding;
 static volatile LONG g_palette_markers;
 static ULONGLONG      g_hb_tick;               /* render-side heartbeat     */
 
-/* ---- in-frame sharing with marker_inframe ---------------------------- *
- * Both modules drive the same osg uniform `frontInnerColor`.  To keep
- * marker_inframe working (it enlarges in-frame markers), we do NOT hide
- * the vendor red from it: a marker the vendor just painted red (= in the
- * current scanner frame) gets its quality color with the green byte +1
- * (invisible, 1/255).  marker_inframe detects the in-frame marker by an
- * exact float match against the tagged colors exported below.
- * Contract shared with modules\marker_inframe\marker_inframe.c:
- *   - vendor red test:      R >= 0.55 && G <= 0.38 && B <= 0.38
- *   - ex_mod_inframe_snapshot() -> distinct float4 colors in use now.
- * Same GL thread writes (this callback) and reads (uniform upload), and
- * the callback runs before the frame's draws - no locking needed.      */
-static int           g_share_inframe = 1;
-static volatile LONG g_color_tagged;
-static uint32_t      g_tag_argb[3];            /* collected during a pass */
-static float         g_tag_vals[3 * 4];        /* published tuples        */
-static volatile LONG g_tag_count;
+/* ---- the in-view outline -----------------------------------------------
+ * The vendor signals "this marker is in the scanner's current frame" by
+ * writing red into the per-child uniform `frontInnerColor`.  We read that
+ * write back and spend it on a channel the quality palette never uses:
+ * the marker's outline, `frontExternalColor`, which the vendor does not
+ * change at runtime (live uniform dump: only u1 ever gets a red upload,
+ * the outline stays black - docs/research/marker-pipeline.md).  The disc
+ * keeps carrying the quality color, so both signals are readable at the
+ * same time: steer by the outline, read quality off the disc.
+ *
+ * The vendor only ever paints the disc, and the ring channel it leaves behind
+ * sits below the markers and is shared by them, so the module gives each marker
+ * a channel of its own (the vendor's own getOrCreateUniform, armed with
+ * OVERRIDE_VALUES), puts the highlight in it while the marker is in the
+ * scanner's view and takes that entry away again when the marker leaves: the
+ * vendor's own channel below paints the ring once more, with whatever value it
+ * holds then (the channel code tells how it was measured).  Nothing is
+ * invented and nothing can stay lit.
+ *
+ * The in-frame test below is the shared vendor contract, unchanged:
+ *   R >= 0.55 && G <= 0.38 && B <= 0.38                                    */
+static int           g_inframe       = 1;   /* 0 = stock look entirely    */
+static int           g_inframe_create = 1;  /* make a channel for a marker
+                                             * that has none (inframe_create)*/
+static int           g_inframe_disc;        /* 1 = highlight the disc     */
+static int           g_hide_red       = 1;  /* 1 = no vendor red flash    */
+static uint32_t      g_hl_rgb   = 0x0078FFu;/* 0,120,255                  */
+static float         g_hl_alpha = 1.0f;
+static volatile LONG g_hl_outline;          /* outline written: in frame  */
+static volatile LONG g_hl_restored;         /* outline written: its own   */
+static volatile LONG g_hl_no_outline;       /* in frame, no channel to use */
+static volatile LONG g_hl_channel_made;     /* channels the module created */
+static volatile LONG g_disc_quality;        /* disc = quality color       */
+static volatile LONG g_disc_blank;          /* disc = white, no data yet  */
+static volatile LONG g_disc_highlight;      /* disc = highlight color     */
 
 /* palette mirrored from the bridge file (hub side) */
 static SRWLOCK   g_pal_lock = SRWLOCK_INIT;
@@ -1064,14 +1106,528 @@ static void palette_refresh(void)
         g_host->log("mq: palette seq=%u painted=%d", seq, painted);
 }
 
+/* the two uniform names of a marker child, in the layout MSVC uses for
+ * std::string (measured and proven by tools\str_lab.c):
+ *
+ *     @0   union { char buffer[16]; char *pointer; }   16 bytes
+ *     @16  size_t size
+ *     @24  size_t capacity
+ *
+ * and the STL reads buffer when capacity <= 15, pointer otherwise.  So
+ * "frontInnerColor", 15 characters, is described inline (capacity 15),
+ * while "frontExternalColor", 18 characters, needs the pointer plus EIGHT
+ * BYTES OF PADDING: without them `size` lands inside the union and the
+ * capacity reads as zero, and every lookup of a name longer than 15
+ * characters misses quietly (measured live 2026-11-27: the outline channel
+ * looked absent for exactly this reason).  The capacity itself only has to
+ * be above 15.
+ * The string is never destroyed (this is C, and the vendor map lookup only
+ * reads), so a pointer at static text is safe. */
+struct sso_str { char text[16]; size_t size, capacity; };
+struct ref_str { const void *ptr; size_t pad; size_t size, capacity; };
+
+/* the shared vendor contract: red disc == node is in CURRENT_MARKER */
+static int isVendorRed(const float *v)
+{
+    return v[0] >= 0.55f && v[1] <= 0.38f && v[2] <= 0.38f;
+}
+
+static void setVec4(void *uniform, uint32_t rgb, float alpha,
+                    volatile LONG *counter)
+{
+    float v[4];
+
+    v[0] = (float) (((rgb >> 16) & 255u) / 255.0);
+    v[1] = (float) (((rgb >> 8)  & 255u) / 255.0);
+    v[2] = (float) (( rgb        & 255u) / 255.0);
+    v[3] = alpha;
+    if (p_osg_set_uniform(uniform, v) && counter)
+        InterlockedIncrement(counter);
+}
+
+/* the two uniform names of a marker, in the layout MSVC uses for std::string
+ * (measured and proven by tools\str_lab.c): a 16-byte union
+ * { buffer | pointer }, then size @16 and capacity @24, and the STL reads the
+ * inline buffer when capacity <= 15.  "frontInnerColor" is 15 characters and
+ * fits inline; "frontExternalColor" is 18 and has to be described as a heap
+ * string, which needs eight bytes of padding between the pointer and the
+ * size.  Both point at static text: the vendor lookup only reads. */
+static const char RING_TEXT[] = "frontExternalColor";
+static const struct sso_str NAME_DISC = { "frontInnerColor", 15, 15 };
+static const struct ref_str NAME_RING = { RING_TEXT, 0, 18, 18 };
+
+/* ------------------------------------------------------ the outline channel
+ * Where the ring color comes from, read out of the vendor's own code: the
+ * function that builds one marker, `Sn3D::RenderKit::MarkerPoint::createMarkerPoint`
+ * (librenderkit.dll), does
+ *
+ *      StateSet *ss = geometry->getOrCreateStateSet();
+ *      ss->addUniform(new osg::Uniform("frontExternalColor", param + 0x0c));
+ *      ss->addUniform(new osg::Uniform("frontInnerColor",   param + 0x2c));
+ *
+ * so the ring color is not a setting of the whole program, and the vendor never
+ * writes it again at runtime - its in-view flash only ever touches the disc.
+ *
+ * Where it sits in a running scene the live runs settled (2026-11-28): the map
+ * of a marker's own StateSet holds ONLY frontInnerColor, and the ring's
+ * frontExternalColor sits one StateSet BELOW it, with two different markers
+ * walking down to the same uniform object.  That channel cannot carry a
+ * per-marker signal - one write would light the whole field - so the marker is
+ * given a channel of its own, which OSG lets a StateSet use against one below
+ * it only with a bit: State::pushUniformList (include/osg/State, same code in
+ * osg158-osg.dll at RVA 0x18003b770)
+ *
+ *      else if ((us.uniformVec.back().second & StateAttribute::OVERRIDE) &&
+ *               !(aitr->second.second & StateAttribute::PROTECTED))
+ *          // push existing back since override keeps the previous value.
+ *
+ * OVERRIDE_VALUES (2) on the entry, written by addUniform(Uniform*, mask),
+ * which keys by uniform->getName() and stores `mask & 6`.  Worth noting what
+ * that means for a channel this module makes: getOrCreateUniform (RVA 0x14dd40)
+ * ends in addUniform(this, uniform, 1), and 1 & 6 is 0 - a fresh channel has no
+ * override at all, which is why an earlier build of this module painted into it
+ * and showed nothing.
+ *
+  * HOW THE CUE IS PAINTED - and why nothing is remembered between frames.  Two
+  * live runs of 2026-11-28 measured the two ways of getting this wrong:
+  *
+  *   - a resolved uniform pointer kept across frames is a pointer to something
+  *     the scene may no longer draw: 163 channels resolved for 49 markers, with
+  *     207 highlight writes going nowhere, the outline visible for one moment;
+  *   - a list of "the channels I made" is remembered state too, and it only
+  *     shrinks if a marker is ever seen leaving the view.  Under a scanner a
+  *     marker is not taken out of view, it is replaced by a new node with a new
+  *     StateSet, so the list never shrank: 1025 entries for 49 markers, and the
+  *     cue switched itself off at its own limit while the counters still looked
+  *     healthy.
+  *
+  * So every frame the marker's own map is read again and acted on as it is now:
+  *
+  *   in view    the marker's own entry is what is written; when it is missing it
+  *              is made (getOrCreateUniform, value type copied from the disc
+  *              uniform) and armed with OVERRIDE_VALUES;
+  *   out of view the entry is REMOVED (StateSet::removeUniform), which hands the
+  *              ring back to the vendor's own channel below - with whatever
+  *              value that channel holds at that moment, so nothing is frozen
+  *              and no "not in view" color has to be invented;
+  *   an entry that is not one this module painted is left alone entirely.  Which
+  *              one that is, is read from the object rather than remembered: an
+  *              entry holding the highlight color can only have been painted by
+  *              this module, and one holding anything else is the vendor's, and
+  *              this module has no honest color to put back into it.
+  *
+  * Guards: everything read out of the scene is checked (SEH around the calls,
+  * colors required to be 0..1 before a read result is trusted), removal happens
+  * only on a transition so the marker's map is not churned every frame, and the
+  * cue is one `inframe = 0` away from a stock look. */
+static SRWLOCK  g_chan_lock = SRWLOCK_INIT;
+static int      g_chanReported;
+static int      g_chanOffReported;
+static int      g_chanDeepReported;
+static int      g_chanRefused;                 /* a foreign object misbehaved:
+                                                * stop, colors are unaffected */
+
+/* --------------------------------------------------- the StateSet uniform map */
+#define SS_UNIFORM_MAP  0xb0
+#define NODE_LEFT       0x00
+#define NODE_ROOT       0x08       /* the header's _Parent: where the tree is */
+#define NODE_RIGHT      0x10
+#define NODE_ISNIL      0x19
+#define NODE_KEY        0x20
+#define NODE_KEY_SIZE   0x30
+#define NODE_KEY_CAP    0x38
+#define NODE_VALUE      0x40       /* the value: ref_ptr<Uniform>            */
+#define NODE_MASK       0x48       /* the entry's override bits, `mask & 6` in
+                                    * addUniform: 2 = OVERRIDE_VALUES,
+                                    * 4 = PROTECTED_VALUES                   */
+#define NAMES_CAP       192
+#define OVR_VALUES      2u         /* StateAttribute::OVERRIDE, the bit OSG
+                                    * checks against a deeper StateSet        */
+
+/* the key of one node as C text; 0 when it cannot be read */
+static int node_key_name(const void *node, char *out, size_t cap)
+{
+    const char *data = NULL;
+    char text[40];
+    size_t size = 0, capacity = 0, n;
+
+    if (out && cap)
+        out[0] = '\0';
+    if (!safe_read(&data, (const char *) node + NODE_KEY, 8) ||
+        !safe_read(&size, (const char *) node + NODE_KEY_SIZE, 8) ||
+        !safe_read(&capacity, (const char *) node + NODE_KEY_CAP, 8) ||
+        size > sizeof text - 1)
+        return 0;
+    if (capacity > 15) {                      /* heap: the union is a pointer */
+        if (!safe_read(text, data, size))
+            return 0;
+    } else {                                  /* the 16-byte inline buffer    */
+        if (!safe_read(text, (const char *) node + NODE_KEY, size))
+            return 0;
+    }
+    text[size] = '\0';
+    if (out && cap) {
+        n = size < cap - 1 ? size : cap - 1;
+        memcpy(out, text, n);
+        out[n] = '\0';
+    }
+    return 1;
+}
+
+/* in-order walk, bounded.  With `want` it stops at the first node of that name
+ * and reports the uniform and the entry's override bits; with want == NULL it
+ * only collects the names for the log. */
+static void umap_walk(const void *node, int depth, const char *want,
+                      void **found, unsigned *mask, char *names, int *nNames)
+{
+    char name[40] = "";
+    const void *child;
+    char isNil = 1;
+
+    if (!node || depth <= 0 || *found)
+        return;                    /* a name appears once in a map           */
+    if (!safe_read(&isNil, (const char *) node + NODE_ISNIL, 1) || isNil)
+        return;                    /* the header is also the sentinel        */
+    if (safe_read(&child, (const char *) node + NODE_LEFT, 8))
+        umap_walk(child, depth - 1, want, found, mask, names, nNames);
+    if (*found)
+        return;
+    if (node_key_name(node, name, sizeof name)) {
+        if (names && nNames && *nNames < 10) {
+            size_t len = strlen(names);
+            size_t add = strlen(name);
+            if (len + add + 3 < NAMES_CAP) {
+                if (len)
+                    names[len++] = ' ';
+                memcpy(names + len, name, add);
+                names[len + add] = '\0';
+            }
+            (*nNames)++;
+        }
+        if (want && strcmp(name, want) == 0) {
+            safe_read(found, (const char *) node + NODE_VALUE, 8);
+            if (*found && mask)
+                safe_read(mask, (const char *) node + NODE_MASK, 4);
+        }
+    }
+    if (safe_read(&child, (const char *) node + NODE_RIGHT, 8))
+        umap_walk(child, depth - 1, want, found, mask, names, nNames);
+}
+
+/* the entry named `want` in THIS StateSet's map: its uniform, its override
+ * bits (mask, optional) and, in names, everything the map holds.
+ *
+ * The map is read by hand because StateSet::getUniform, the vendor's own
+ * lookup, answers NULL for this name on every marker live while the ring still
+ * paints - and because getUniform cannot report the override bits, which here
+ * are the whole question.  The layout is not guessed: it is how
+ * getUniform@StateSet@osg (RVA 0x14e310) walks the map and how
+ * addUniform@StateSet@osg (RVA 0x14c2f0) fills it.
+ *
+ * The trap this nearly cost a third live round: the module also walks Qt's
+ * QMap on the scan side, whose node offsets are 8/16/24/32.  Those offsets on
+ * a std::map find nothing - and once produced a confident wrong conclusion. */
+static void *map_lookup(void *states, const char *want, unsigned *mask,
+                        char *names)
+{
+    const void *header = NULL, *root = NULL;
+    void *found = NULL;
+    int n = 0;
+
+    if (names)
+        names[0] = '\0';
+    if (mask)
+        *mask = 0;
+    if (!states ||
+        !safe_read(&header, (const char *) states + SS_UNIFORM_MAP, 8) ||
+        !safe_read(&root, (const char *) header + NODE_ROOT, 8))
+        return NULL;
+    umap_walk(root, 24, want, &found, mask, names, &n);
+    return found;
+}
+
+/* Creates the channel where a marker's own belongs: on the marker's own
+ * StateSet, with the value TYPE copied from the disc uniform rather than
+ * guessed.  getOrCreateUniform inserts it with no override bits, so the
+ * arming is done here - without it the channel loses to the vendor's deeper
+ * one, which is exactly what an earlier build of this module did. */
+static void *ring_create(void *states, void *disc)
+{
+    void *u = NULL;
+    int type;
+
+    if (!p_osg_get_or_create || !p_osg_uniform_type || !states || !disc)
+        return NULL;
+    __try {
+        type = p_osg_uniform_type(disc);       /* FLOAT_VEC4 in practice      */
+        if (type < 0)
+            return NULL;
+        u = p_osg_get_or_create(states, &NAME_RING, type, 1);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return NULL;
+    }
+    if (!u)
+        return NULL;
+    if (!p_osg_add_uniform) {
+        g_host->log("mq: outline: StateSet::addUniform is not resolved, so a "
+                    "channel of the marker's own cannot be armed against the "
+                    "vendor's deeper one; the outline stays off");
+        return NULL;
+    }
+    __try {
+        p_osg_add_uniform(states, u, OVR_VALUES);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_chanRefused = 1;
+        return NULL;
+    }
+    return u;
+}
+
+/* Takes the channel away again.  removeUniform is the vendor's own call, and it
+ * is what makes "out of view" the stock ring: with the marker's own entry gone,
+ * the channel below the marker paints again, with the value the vendor gave it
+ * at that moment. */
+static void ring_remove(void *states, void *u)
+{
+    if (!states || !p_osg_remove_uniform)
+        return;
+    __try {
+        p_osg_remove_uniform(states, &NAME_RING);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_chanRefused = 1;
+        return;
+    }
+}
+
+static void chan_report(void *states, void *u)
+{
+    char names[NAMES_CAP] = "";
+
+    if (g_chanReported)
+        return;
+    g_chanReported = 1;
+    map_lookup(states, NULL, NULL, names);
+    g_host->log("mq: outline: made on the marker's own StateSet - channel %p, "
+                "armed with OVERRIDE_VALUES (the marker's map now holds [%s])",
+                u, names[0] ? names : "(empty)");
+}
+
+static void chan_report_off(const char *how)
+{
+    if (g_chanOffReported)
+        return;
+    g_chanOffReported = 1;
+    g_host->log("mq: outline: %s; the in-view cue stays off, colors "
+                "unaffected", how);
+}
+
+/* The reads and the writes go through SEH, and a value read is only trusted
+ * when it is a color: the objects come out of the scene, not out of a call
+ * this module made. */
+static int ring_read(void *u, float *v)
+{
+    int i, ok = 0;
+
+    if (!p_osg_uniform_get)
+        return 0;
+    __try {
+        ok = p_osg_uniform_get(u, v);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_chanRefused = 1;
+        return 0;
+    }
+    if (!ok)
+        return 0;
+    for (i = 0; i < 4; i++)
+        if (!(v[i] >= -0.001f && v[i] <= 1.001f))
+            return 0;
+    return 1;
+}
+
+static int ring_write(void *u, const float *v)
+{
+    int ok = 0;
+
+    __try {
+        ok = p_osg_set_uniform(u, v);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_chanRefused = 1;
+        return 0;
+    }
+    return ok;
+}
+
+/* One look down the marker's tree, for the log only: where the vendor keeps the
+ * ring this module is overriding, and with which bits.  Bounded, SEH, and it
+ * says PROTECTED if that is what the vendor marked - the one thing an override
+ * above it cannot beat, in which case the log states that the outline cannot be
+ * made per marker here instead of leaving it a silent nothing. */
+static void ring_report_deeper(void *node, int depth)
+{
+    void *states, *u;
+    unsigned n, i, mask = 0;
+
+    if (g_chanDeepReported || !node || depth <= 0)
+        return;
+    if (!p_osg_num_children || !p_osg_get_child)
+        return;
+    __try {
+        n = p_osg_num_children(node);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return;
+    }
+    if (n > 8)
+        n = 8;
+    for (i = 0; i < n; i++) {
+        void *part = NULL;
+
+        __try {
+            part = p_osg_get_child(node, i);
+            states = part ? p_osg_get_state_set(part) : NULL;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return;
+        }
+        if (!states)
+            continue;
+        u = map_lookup(states, RING_TEXT, &mask, NULL);
+        if (u) {
+            float v[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+            g_chanDeepReported = 1;
+            if (ring_read(u, v))
+                g_host->log("mq: outline: the vendor's ring color comes from "
+                            "%p, below the marker: %.2f %.2f %.2f alpha %.2f, "
+                            "entry override bits %u%s",
+                            u, v[0], v[1], v[2], v[3], mask,
+                            (mask & 4u)
+                                ? " - PROTECTED, so nothing above it can win "
+                                  "and the outline stays off"
+                                : (mask & 2u)
+                                    ? " - the vendor's own OVERRIDE"
+                                    : "");
+            else
+                g_host->log("mq: outline: the vendor's ring color comes from "
+                            "%p, below the marker, but its value could not be "
+                            "read; entry override bits %u", u, mask);
+            return;
+        }
+        ring_report_deeper(part, depth - 1);
+        if (g_chanDeepReported)
+            return;
+    }
+}
+
+/* Is this the channel this module paints, or the vendor's own?  The answer is
+ * read from the object and not remembered: an entry that holds the highlight
+ * color can only have been painted by this module, and one that holds anything
+ * else belongs to the vendor and is left alone.
+ *
+ * A remembered list was the first attempt and it cannot work here.  A marker
+ * under the scanner is not taken out of view, it is replaced by a new node with
+ * a new StateSet, so an entry that was added to a list is never seen leaving and
+ * the list fills up: the live run of 2026-11-28 measured 1025 entries for 49
+ * markers and then switched the cue off by its own guard.  Nothing is kept
+ * across frames now. */
+static void hl_color(float *v)
+{
+    v[0] = (float) ((g_hl_rgb >> 16) & 255u) / 255.0f;
+    v[1] = (float) ((g_hl_rgb >> 8)  & 255u) / 255.0f;
+    v[2] = (float) ( g_hl_rgb        & 255u) / 255.0f;
+    v[3] = g_hl_alpha;
+}
+
+static int ring_is_ours(void *u, const float *hl)
+{
+    float v[4];
+    int i;
+
+    if (!ring_read(u, v))
+        return 0;
+    for (i = 0; i < 4; i++)
+        if (v[i] - hl[i] > 0.001f || hl[i] - v[i] > 0.001f)
+            return 0;
+    return 1;
+}
+
+/* One marker, one frame, and nothing carried into it from the last frame: the
+ * marker's own map is read again and acted on as it is now, because the vendor
+ * replaces markers while it scans and a pointer kept from before that points at
+ * something the scene no longer draws.
+ *
+ *   in view    the marker's own entry is painted, made and armed with
+ *              OVERRIDE_VALUES when it is missing;
+ *   out of view an entry this module painted is REMOVED, which hands the ring
+ *              back to the vendor's channel below with whatever value that
+ *              channel holds then; an entry that is not ours is left alone;
+ *   nothing    nothing to do, nothing to undo. */
+static void outline_one(void *marker, void *states, void *disc, int inFrame)
+{
+    float hl[4], v[4];
+    unsigned mask = 0;
+    void *u;
+
+    hl_color(hl);
+    AcquireSRWLockExclusive(&g_chan_lock);
+    if (!g_chanRefused) {
+        u = map_lookup(states, RING_TEXT, &mask, NULL);
+
+        if (u && !ring_is_ours(u, hl)) {
+            /* not ours: the vendor owns this marker's ring, and there is no
+             * color of ours that would be honest to put back into it */
+            chan_report_off("a marker carries its own \"frontExternalColor\", "
+                            "which this module does not own and therefore "
+                            "leaves to the vendor");
+            goto done;
+        }
+
+        if (inFrame) {
+            if (!u) {
+                if (!g_inframe_create) {
+                    InterlockedIncrement(&g_hl_no_outline);
+                    goto done;
+                }
+                ring_report_deeper(marker, 3);
+                u = ring_create(states, disc);
+                if (!u) {
+                    if (!g_chanRefused)
+                        chan_report_off("a channel could not be made on the "
+                                        "marker's own StateSet");
+                    goto done;
+                }
+                InterlockedIncrement(&g_hl_channel_made);
+                mask = OVR_VALUES;
+            }
+            v[0] = hl[0]; v[1] = hl[1]; v[2] = hl[2]; v[3] = hl[3];
+            if (ring_write(u, v)) {
+                /* a StateSet the scene rebuilt would have lost the bit */
+                if ((mask & 6u) != OVR_VALUES && p_osg_add_uniform) {
+                    __try {
+                        p_osg_add_uniform(states, u, OVR_VALUES);
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        g_chanRefused = 1;
+                        goto done;
+                    }
+                }
+                chan_report(states, u);
+                InterlockedIncrement(&g_hl_outline);
+            }
+        } else if (u) {
+            ring_remove(states, u);            /* the vendor's ring paints     */
+            InterlockedIncrement(&g_hl_restored);
+        }
+    }
+done:
+    ReleaseSRWLockExclusive(&g_chan_lock);
+}
+
 static void hook_color_update(void *owner)
 {
     LONG n;
     uintptr_t group = 0, flags = 0, vr[2] = { 0, 0 };
     unsigned char vis[MAX_IDS];
     size_t count, i;
-    int nTagged = 0;
     const Binding *bind = NULL;
+    int palValid;
 
     if (g_orig_color_update)
         g_orig_color_update(owner);          /* vendor paints first        */
@@ -1084,14 +1640,18 @@ static void hook_color_update(void *owner)
     {
         ULONGLONG now = GetTickCount64();
         if (g_verbose && now - g_hb_tick >= 30000) {
-            g_hb_tick = now;
-            g_host->log("mq: render hb pid=%lu cb=%ld writes=%ld noUniform=%ld "
-                        "noBinding=%ld palette=%d/%d tagged=%ld",
+            g_hb_tick = now;                 /* else: one line per frame   */
+            g_host->log("mq: render hb pid=%lu cb=%ld qdisc=%ld blank=%ld "
+                        "discHl=%ld outline=%ld restored=%ld noChannel=%ld "
+                        "made=%ld noDisc=%ld noBinding=%ld palette=%d/%d",
                         (unsigned long) GetCurrentProcessId(), (long) n,
-                        (long) g_color_writes, (long) g_color_missing_uniform,
+                        (long) g_disc_quality, (long) g_disc_blank,
+                        (long) g_disc_highlight, (long) g_hl_outline,
+                        (long) g_hl_restored, (long) g_hl_no_outline,
+                        (long) g_hl_channel_made,
+                        (long) g_color_missing_uniform,
                         (long) g_color_missing_binding,
-                        (int) g_palette_valid, (int) g_palette_markers,
-                        (long) g_color_tagged);
+                        (int) g_palette_valid, (int) g_palette_markers);
         }
     }
 
@@ -1116,92 +1676,68 @@ static void hook_color_update(void *owner)
             break;
         }
     if (!bind) {
-        ReleaseSRWLockShared(&g_bind_lock);
         InterlockedIncrement(&g_color_missing_binding);
         if (g_verbose && n <= 8)
-            g_host->log("mq: colorCb no binding for flags=%p count=%zu",
+            g_host->log("mq: colorCb no binding for flags=%p count=%zu "
+                        "(no quality colors for this group, the outline "
+                        "is independent of it)",
                         (void *) flags, count);
-        return;
     }
 
     AcquireSRWLockShared(&g_pal_lock);
-    if (!g_palette_valid) {
-        ReleaseSRWLockShared(&g_pal_lock);
-        ReleaseSRWLockShared(&g_bind_lock);
-        return;
-    }
-    nTagged = 0;
+    palValid = g_palette_valid;
+
     for (i = 0; i < count; i++) {
-        uint64_t id = bind->ids[i];
-        uint32_t argb, use;
-        float rgba[4];
-        void *child, *states, *uniform;
-        /* MSVC x64 std::string; "frontInnerColor" (15 chars) fits the SSO
-         * buffer: { buf[16], size, capacity }                                */
-        struct { char text[16]; size_t size, capacity; } name =
-            { "frontInnerColor", 15, 15 };
+        void *child, *states, *disc;
+        int inFrame = 0;
+        uint32_t argb = 0;
 
         if ((int8_t) vis[i] < 0)
             continue;                        /* hidden marker              */
-        if (id >= MAX_IDS)
-            continue;
-        argb = g_palette.argb[id];
-        if ((argb >> 24) != 255)
-            continue;                        /* unseen -> vendor color     */
-        use = argb;
         __try {
             child   = p_osg_get_child((void *) group, (unsigned) i);
             states  = child ? p_osg_get_state_set(child) : NULL;
-            uniform = states ? p_osg_get_uniform(states, &name) : NULL;
-            if (!uniform) {
-                InterlockedIncrement(&g_color_missing_uniform);
-            } else {
-                if (g_share_inframe && p_osg_uniform_get) {
-                    /* what did the vendor just write here? red = in frame */
-                    float cur[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-                    if (p_osg_uniform_get(uniform, cur) &&
-                        cur[0] >= 0.55f && cur[1] <= 0.38f &&
-                        cur[2] <= 0.38f) {
-                        uint32_t t = argb, k;
-                        if (((argb >> 8) & 255u) < 255u)
-                            t += 1u << 8;    /* invisible in-frame tag     */
-                        for (k = 0; k < (uint32_t) nTagged; k++)
-                            if (g_tag_argb[k] == t)
-                                break;
-                        if (k == (uint32_t) nTagged && nTagged < 3)
-                            g_tag_argb[nTagged++] = t;
-                        use = t;
-                    }
-                }
-                rgba[0] = (float) (((use >> 16) & 255u) / 255.0);
-                rgba[1] = (float) (((use >> 8)  & 255u) / 255.0);
-                rgba[2] = (float) (( use        & 255u) / 255.0);
-                rgba[3] = 1.0f;
-                if (p_osg_set_uniform(uniform, rgba)) {
-                    InterlockedIncrement(&g_color_writes);
-                    if (use != argb)
-                        InterlockedIncrement(&g_color_tagged);
-                }
-            }
+            disc    = states ? p_osg_get_uniform(states, &NAME_DISC) : NULL;
         } __except (EXCEPTION_EXECUTE_HANDLER) {
-            break;
+            break;                           /* the chain broke: stop here */
         }
+        if (!disc) {
+            InterlockedIncrement(&g_color_missing_uniform);
+            continue;
+        }
+
+        /* what did the vendor write into the disc THIS frame? */
+        if (g_inframe && p_osg_uniform_get) {
+            float cur[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+            if (p_osg_uniform_get(disc, cur) && isVendorRed(cur))
+                inFrame = 1;
+        }
+
+        /* ---- the disc belongs to the quality stages ---- */
+        if (bind && palValid) {
+            uint64_t id = bind->ids[i];
+
+            if (id < MAX_IDS)
+                argb = g_palette.argb[id];
+        }
+        if ((argb >> 24) == 255) {
+            setVec4(disc, argb, 1.0f, &g_disc_quality);
+        } else if (inFrame) {
+            /* no quality data for this marker: the vendor red would flash
+             * here, which is exactly the signal the outline now carries */
+            if (g_inframe && g_inframe_disc)
+                setVec4(disc, g_hl_rgb, g_hl_alpha, &g_disc_highlight);
+            else if (g_hide_red)
+                setVec4(disc, 0x00FFFFFFu, 1.0f, &g_disc_blank);
+        }
+
+        /* ---- the outline carries "in the scanner's view" ---- */
+        if (g_inframe && !g_inframe_disc)
+            outline_one(child, states, disc, inFrame);
     }
     ReleaseSRWLockShared(&g_pal_lock);
     ReleaseSRWLockShared(&g_bind_lock);
-    {   /* publish the tagged colors for marker_inframe; the float math
-         * below is byte-identical to the rgba computation above, so the
-         * upload-time comparison is an exact match                       */
-        int k;
-        for (k = 0; k < nTagged; k++) {
-            g_tag_vals[k * 4 + 0] = (float) (((g_tag_argb[k] >> 16) & 255u) / 255.0);
-            g_tag_vals[k * 4 + 1] = (float) (((g_tag_argb[k] >> 8)  & 255u) / 255.0);
-            g_tag_vals[k * 4 + 2] = (float) (( g_tag_argb[k]        & 255u) / 255.0);
-            g_tag_vals[k * 4 + 3] = 1.0f;
-        }
-        MemoryBarrier();
-        InterlockedExchange(&g_tag_count, nTagged);
-    }
 }
 
 static int scan_color_slot(HMODULE mod)
@@ -1311,10 +1847,33 @@ static int osg_exports_ready(HMODULE osg)
         GetProcAddress(osg, "?getUniform@StateSet@osg@@QEAAPEAVUniform@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z");
     p_osg_set_uniform = (int (*)(void *, const void *)) (void *)
         GetProcAddress(osg, "?set@Uniform@osg@@QEAA_NAEBVVec4f@2@@Z");
-    /* optional: reading the vendor value enables the in-frame sharing
-     * with marker_inframe; its absence only degrades that cooperation */
+    /* optional: reading the vendor value is what detects "marker in
+     * view"; without it the module still paints the quality colors, it
+     * just leaves the vendor's in-view flash alone */
     p_osg_uniform_get = (int (*)(const void *, float *)) (void *)
         GetProcAddress(osg, "?get@Uniform@osg@@QEBA_NAEAVVec4f@2@@Z");
+    /* Optional.  The outline cue needs a channel, and the live runs of
+     * 2026-11-27/28 showed what it takes: the name lookup is not enough to
+     * find one, the channel that does exist sits below the marker and is
+     * shared, so the module reads the StateSet's uniform map itself (see the
+     * channel code) and paints a channel of the marker's OWN, made the way the
+     * vendor makes them - getOrCreateUniform with the `Type` copied from the
+     * disc uniform rather than guessed - and given OVERRIDE_VALUES by
+     * addUniform, which is the only thing in OSG that lets it win against the
+     * shared one below.  What was in it is remembered, so "out of view" is that
+     * value and not a color this module invented. */
+    p_osg_uniform_type = (int (*)(const void *)) (void *)
+        GetProcAddress(osg, "?getType@Uniform@osg@@QEBA?AW4Type@12@XZ");
+    p_osg_get_or_create =
+        (void *(*)(void *, const void *, int, unsigned)) (void *)
+        GetProcAddress(osg, "?getOrCreateUniform@StateSet@osg@@QEAAPEAVUnif"
+        "orm@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@"
+        "std@@W4Type@32@I@Z");
+    p_osg_add_uniform = (void (*)(void *, void *, unsigned)) (void *)
+        GetProcAddress(osg, "?addUniform@StateSet@osg@@QEAAXPEAVUniform@2@I@Z");
+    p_osg_remove_uniform = (void (*)(void *, const void *)) (void *)
+        GetProcAddress(osg, "?removeUniform@StateSet@osg@@QEAAXAEBV?$basic_"
+        "string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z");
     return p_osg_get_child && p_osg_num_children && p_osg_get_state_set &&
            p_osg_get_uniform && p_osg_set_uniform;
 }
@@ -1408,6 +1967,29 @@ static void install_thread(void *unused)
                 "render=%p",
                 (unsigned long) GetCurrentProcessId(), qt_done, put_done,
                 smp_done, slot_done, render);
+    if (g_paint_side) {
+        if (g_inframe && !p_osg_uniform_get) {
+            g_host->log("mq: in-view cue disabled - osg Uniform::get not "
+                        "resolved (the red test needs it); colors unaffected");
+            g_inframe = 0;
+        }
+        g_host->log("mq: in-view cue armed where=%s rgb=%u,%u,%u alpha=%.2f "
+                    "hideRed=%d create=%d%s",
+                    g_inframe ? (g_inframe_disc ? "disc" : "outline") : "off",
+                    (unsigned) ((g_hl_rgb >> 16) & 255u),
+                    (unsigned) ((g_hl_rgb >> 8) & 255u),
+                    (unsigned) (g_hl_rgb & 255u),
+                    g_hl_alpha, g_hide_red, g_inframe_create,
+                     (!g_inframe || g_inframe_disc) ? ""
+                     : (p_osg_get_or_create && p_osg_uniform_type &&
+                        p_osg_add_uniform && p_osg_remove_uniform)
+                         ? ""
+                         : " (StateSet::getOrCreateUniform, Uniform::getType, "
+                           "StateSet::addUniform or StateSet::removeUniform not "
+                           "resolved: the outline is a channel of the marker's "
+                           "own that overrides the shared one and is taken away "
+                           "again, so the cue stays off)");
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1426,19 +2008,10 @@ EX_EXPORT const ExModuleInfo *ex_get_info(void)
 {
     static const ExModuleInfo info = {
         EX_ABI_VERSION, MOD_ID, "Marker Quality", MOD_VER,
-        "paint markers red/yellow/green by tracking quality (scan->hub bridge)"
+        "marker color = tracking quality, colored outline = marker in view "
+        "(scan->hub bridge)"
     };
     return &info;
-}
-
-/* Cross-module contract (see the in-frame sharing block above and
- * modules\marker_inframe\marker_inframe.c): hands marker_inframe the
- * exact float4 colors this module used THIS frame for in-frame markers
- * (quality color with green byte +1).  Called on the GL thread only. */
-EX_EXPORT int ex_mod_inframe_snapshot(const float **vals)
-{
-    *vals = g_tag_vals;
-    return (int) InterlockedCompareExchange(&g_tag_count, 0, 0);
 }
 
 EX_EXPORT int ex_init(const ExHost *host)
@@ -1459,16 +2032,32 @@ EX_EXPORT int ex_init(const ExHost *host)
     g_verbose          = host->cfg_int(host, "verbose", 1);
     g_scan_side        = host->cfg_int(host, "scan_side", 1);
     g_paint_side       = host->cfg_int(host, "paint_side", 1);
-    g_share_inframe    = host->cfg_int(host, "share_inframe", 1);
+    {   /* the in-view cue: outline (default) or disc, see the
+         * "in-view outline" block above */
+        char buf[64];
+
+        g_inframe  = host->cfg_int(host, "inframe", 1);
+        g_hide_red = host->cfg_int(host, "hide_red", 1);
+        g_inframe_create = host->cfg_int(host, "inframe_create", 1);
+        g_inframe_disc =
+            host->cfg_string(host, "inframe_where", buf, sizeof buf) &&
+            _stricmp(buf, "disc") == 0;
+        g_hl_rgb   = pack_argb(host->cfg_int(host, "inframe_r", 0),
+                               host->cfg_int(host, "inframe_g", 120),
+                               host->cfg_int(host, "inframe_b", 255));
+        g_hl_alpha = (float) host->cfg_int(host, "inframe_a", 255) / 255.0f;
+        if (g_hl_alpha < 0.0f) g_hl_alpha = 0.0f;
+        if (g_hl_alpha > 1.0f) g_hl_alpha = 1.0f;
+    }
     if (g_green_frames < 1)   g_green_frames = 1;
     if (g_green_spread_um < 1) g_green_spread_um = 1;
     if (g_green_supported < 1) g_green_supported = 1;
     if (g_yellow_frames < 1)  g_yellow_frames = 1;
     if (g_publish_ms < 100)   g_publish_ms = 100;
 
-    /* dark red on purpose: R=128/255=0.50 sits below the 0.55 threshold
-     * of the shared vendor-red detector, so a quality-red marker never
-     * looks "in frame" to marker_inframe (see contract above)         */
+    /* dark red on purpose: R=128/255=0.50 sits below the 0.55 threshold of
+     * the vendor-red detector above, so a marker that is merely painted
+     * quality-red never reads back as "in the scanner's view" */
     g_argb[0] = pack_argb(host->cfg_int(host, "red_r",   128),
                           host->cfg_int(host, "red_g",   24),
                           host->cfg_int(host, "red_b",   24));

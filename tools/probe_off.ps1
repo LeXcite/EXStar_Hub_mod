@@ -11,8 +11,9 @@ $ini = Join-Path $app 'modules.ini'
 $txt = Get-Content $ini -Raw
 $txt = [regex]::Replace($txt, '(?s)\[marker_probe\].*?(?=\[|$)', '')
 $txt = $txt -replace '(?m)^\s*log\s*=\s*1', 'log = 0'   # back to quiet
-# re-enable the shipping module that probe_prep switched off
-$txt = $txt -replace '(?m)(\[marker_inframe\]\r?\n)enabled = 0', '$1enabled = 1'
+# re-enable the shipping module that probe_prep switched off: they own the
+# same color slot, so only one of them may be on
+$txt = $txt -replace '(?m)(\[marker_quality\]\r?\n)enabled = 0', '$1enabled = 1'
 Set-Content -Path $ini -Value $txt.TrimEnd() -Encoding ASCII
 'probe OFF: modules.ini ='
 Get-Content $ini | Out-String

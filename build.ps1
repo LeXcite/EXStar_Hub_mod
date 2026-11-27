@@ -9,7 +9,7 @@
 
     build\winmm.dll                        bootstrap proxy
     build\ExStarRec.dll                    module host
-    build\modules\marker_inframe.dll        modules
+    build\modules\marker_quality.dll         modules
     build\examples\template.dll            example modules (not deployed)
     build\ExStarModManager.exe             installer/manager (all of the
                                            above embedded as resources)
@@ -53,7 +53,6 @@ $mhObj   = @(
 
 # deployable modules: add one line per new module here
 $modules = @(
-    'modules\marker_inframe\marker_inframe.c',
     'modules\marker_probe\marker_probe.c',   # dev diagnostic, never embedded
     'modules\ui_probe\ui_probe.c',           # dev diagnostic, never embedded
     'modules\marker_quality\marker_quality.c',
@@ -68,7 +67,6 @@ $examples = @('examples\template\template.c')
 # modules embedded into the manager: 'id' + sources of binary and ini template
 # (must match the registry inside src\manager.c)
 $managerMods = @(
-    @{ id = 'marker_inframe'; ini = 'modules\marker_inframe\marker_inframe.ini' }
     @{ id = 'marker_quality'; ini = 'modules\marker_quality\marker_quality.ini' }
     @{ id = 'popup_dim';      ini = 'modules\popup_dim\popup_dim.ini' }
     @{ id = 'wallpaper';      ini = 'modules\wallpaper\wallpaper.ini' }
@@ -77,7 +75,7 @@ $managerMods = @(
     @{ id = 'selective_mesh'; ini = 'modules\selective_mesh\selective_mesh.ini' }
 )
 
-$version = '1.7.2'   # product version; release exe is copied as ExStarModManager_<version>.exe
+$version = '1.8.0'   # product version; release exe is copied as ExStarModManager_<version>.exe
 
 function New-VersionRes($path, $desc, $origName) {
     $vq = ($version -split '\.').Trim()

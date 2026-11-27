@@ -28,19 +28,28 @@ not included in git).
 | Module | Version | What it does |
 |---|---|---|
 | popup_dim | 1.2.8 | gray veil → frosted glass, dims the veils |
-| marker_quality | 1.0.2 | marker color by observation quality (latch-green) |
-| marker_inframe | 1.1.0 | in-frame marker grows instead of a red flash |
+| marker_quality | 1.1.8 | marker disc by observation quality (latch-green) + a blue **outline** while the marker is in the scanner's view, which replaces the vendor's red flash (the outline is an entry on the marker's own StateSet, armed with OVERRIDE_VALUES and removed again when the marker leaves; the cue says so in mod.log instead of painting silently) |
 | wallpaper | 1.0.0 | custom app background (in-memory image swap) |
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
 | selective_mesh | 1.8.0 | eye-icon driven common-mesh selection (session ini keyed by scan uuid and shared across processes, meta-object eye watch, hook allowlists); 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`); 1.5.6 reads nested command values and proved the viewport half has nothing to intercept (see 2026-11-25 below); 1.5.8 kept a hidden scan hidden on screen across the environment switch - that re-apply hangs the hub, so it is off by default since 1.6.1; 1.6.0 = renamed Selective Mesh; 1.6.2 = the map walk of a watched scene command is hard-bounded (it could spin forever on a non-map argument and hang the hub) - live-verified 2026-11-26; 1.7.0 = a merge this module would leave empty runs as if all eyes were open, reading the merge's own scan list out of the caller's registers (`merge_list.h`, proven by `tools/merge_list_lab.c`); 1.7.1 = that guard accepts the register block on its content, not on an assumed register name (the first live run falsified `rcx == self`); 1.7.2 = `RegCtx` field names match the measured block order - live-verified 2026-11-26 (all eyes hidden -> full mesh, one eye shown -> only visible scans); 1.8.0 = the eye is the only interface: folder/name identity, the `.map.txt` roster, the `merge-select.ini` migration and the vendor `QString` getters are gone, exclusions are dropped when the hub starts (a fresh session shows every scan, like the vendor itself) |
-| ExStarModManager | 1.7.2 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist (one exception: 1.6.9 renames the `merge_select` token of a hand-made list, never adds one); 1.6.9 removes the legacy `merge_select` files and carries its settings to `selective_mesh`; 1.7.0 drops the Selective Mesh "Scan roster" / "Open folder" buttons and the roster window (the eye in the hub is the module's only interface); 1.7.1 retires fps and deletes a leftover `modules\fps.dll` + its `modules.ini` section through the legacy list; 1.7.2 does the same for fitfill |
+| ExStarModManager | 1.8.0 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist (one exception: 1.6.9 renames the `merge_select` token of a hand-made list, never adds one); 1.6.9 removes the legacy `merge_select` files and carries its settings to `selective_mesh`; 1.7.0 drops the Selective Mesh "Scan roster" / "Open folder" buttons and the roster window (the eye in the hub is the module's only interface); 1.7.1 retires fps and deletes a leftover `modules\fps.dll` + its `modules.ini` section through the legacy list; 1.7.2 does the same for fitfill; 1.8.0 = **the card is the whole switch**: `writeSiblingKeys()` recomputes `[host] sibling_all`/`sibling_modules` from the toggles on every install and remove, the dead `needsSiblings` field becomes `siblingCapable` (a proven capability, held only by `marker_quality` and `selective_mesh`), `migrateRenamedIds()` is dropped with the authoritative writer back in place, a leftover `marker_inframe` is deleted through the legacy list, and an unknown CLI option (the retired `--scale`) is reported instead of ignored; six modules |
 
 Retired: **fps 1.0.0** (2026-11-27, with manager 1.7.1). Live-verified on
 2.0.0-45 and 2.1.0-10, it closes the 2.1.0-14 hub a few seconds into the scan
 page; the bisect and the reason it could not be predicted offline are in
 [vendor-update-2.1.0-14.md](research/vendor-update-2.1.0-14.md). Sources and
 README are in the git history (manager ≤ 1.7.0).
+
+Retired: **marker_inframe 1.1.0** (2026-11-27, with manager 1.8.0). Its cue -
+an in-view marker that grows and gets a colored outline - is now drawn by
+marker_quality 1.1.8 from the same signal, on the outline channel the vendor
+never paints: two modules sharing one uniform, plus four detours on the
+application's hottest GL path, bought a cue that hid the quality color. The
+manager deletes a leftover `modules\marker_inframe.dll`, its ini and its
+`modules.ini` section through the legacy list; the mechanism, the GL route it
+used and its dead ends stay in
+[marker-pipeline.md](research/marker-pipeline.md) (8.2-8.3).
 
 **fitfill 1.1.0** (2026-11-27, with manager 1.7.2), at the owner's request. The
 feature worked on 2.0.0-45, went half-dead on 2.1.0-10 when the vendor moved
@@ -444,6 +453,10 @@ stays hidden on screen. Evidence:
   and left alone (manager 1.6.9 renames an existing `merge_select` token
   to the new id and nothing else), and every future sibling module needs
   its own live proof first.
+  Manager 1.8.0 made the manager the writer again, with the safety moved into
+  the module table: the pair is recomputed from the module cards on every
+  install and remove, so a hand-written value is reported and replaced rather
+  than preserved (card 10 below).
 * 1.4.6 (gate finally live): three defects of the 1.4.3-1.4.5 chain were
   found and fixed - the detour compared `_ReturnAddress()` (the address
   inside the hand-built thunk, never inside the vendor image), so every
@@ -761,7 +774,141 @@ stays hidden on screen. Evidence:
    Two modules left the set that same day: **fps**, forced by the vendor build,
    and **fitfill**, at the owner's request (its two hooks fired, but its visible
    effect had never been confirmed since 2.1.0-10 moved the fit pipeline) -
-   manager 1.7.2 carries both in the legacy list, seven modules remain.
+   manager 1.7.2 carries both in the legacy list, seven modules remain
+   (Marker In-Frame left later the same day, cards 10 and 11 below: six).
+
+## Batch "the card is the whole switch" (2026-11-27) - manager 1.8.0
+
+### 10. Any module alone, any combination, and OFF meaning OFF
+
+**Symptom.** The Marker Quality card said ON, its render side hooked and
+logged in the hub, and no marker ever changed color: every sibling process
+printed `host: skipping 'marker_quality' (not in sibling whitelist)`. The
+scan side - the only place frame observations exist - was never loaded, so
+the palette stayed empty while the UI said the module was enabled.
+
+**Cause.** Two switches described one module. `[marker_quality] enabled` came
+from the card; `[host] sibling_all`/`sibling_modules` had been hand-maintained
+since 1.6.4, when a writer that trusted an unverified `needsSiblings` flag
+re-armed a six-module configuration inside `scanservice.exe` (2026-11-24:
+`0xc0000409` in ucrtbase, which the vendor surfaces as error `0x00000012` on
+project open). That fix traded a loud failure for a quiet one, and
+`needsSiblings` was dead code nothing read - with guessed values, because
+popup_dim, laser50 and gpu_gate said TRUE without ever having run there.
+
+**Implementation** (`writeSiblingKeys()` in `src\manager.c`):
+
+* `siblingCapable` replaces `needsSiblings` and holds only what is proven:
+  `marker_quality` (frames arrive only in `scanservice.exe`) and
+  `selective_mesh` (the post-mesh data is built only there).
+* On **every install and every remove** the manager rewrites `sibling_all` =
+  "some enabled module is capable" and `sibling_modules` = exactly those
+  modules. `modLive()` applies the host's own rule (`isModuleEnabled`: the DLL
+  is present and `[id] enabled` does not say 0), so a card that is off - or
+  whose payload was deleted by hand - is listed nowhere.
+* `migrateRenamedIds()` is gone: renaming a token in a list that is rebuilt
+  from the toggles anyway is meaningless.
+* A changed pair is reported in the job notes (`Scan-service injection:
+  <was> -> <now>`), so a hand-edited `modules.ini` is visible instead of
+  silently winning. `[host] dev_all`/`dev_modules` are not touched - the host
+  lets `dev_all` win, which stays the developer's override.
+
+**Rule going forward.** The card is the only switch a user has, so any
+combination of cards (one module, several, all) has to work without editing
+`modules.ini`, and switching a card off has to leave nothing of that module in
+any process. A module enters `sibling_modules` only after a proven run in that
+process; the flag in the module table is the record of that proof.
+
+### 11. marker_quality 1.1.0 → 1.1.1 - the outline carries "in view", Marker In-Frame retired
+
+The ask: one module owns everything a marker shows when the scanner detects
+it, and the size module goes. The disc keeps showing quality; the outline
+shows the in-view state (blue for the first test), so quality stays readable
+while the marker is still being scanned.
+
+* Detection is unchanged: read back the disc uniform the vendor just wrote
+  (`R >= 0.55, G <= 0.38, B <= 0.38` = the node is in `CURRENT_MARKER`).
+* The output moves to `frontExternalColor`, which the vendor never writes at
+  runtime ([marker-pipeline.md 8.3](research/marker-pipeline.md)), so no
+  channel has to be fought for and no GL detour is needed at all. Measured
+  2026-11-27 it is not resolvable by name on a marker, and section 12 records
+  where it turned out to live and how it is written today.
+* In view the highlight goes into an entry on the marker's own `StateSet`,
+  made when the marker has none (`getOrCreateUniform`, `Type` copied from the
+  disc uniform) and armed with `OVERRIDE_VALUES` - without that bit a
+  `StateSet` loses to the vendor's one below it. Out of view the entry is
+  removed, which hands the ring back to the vendor's channel with whatever
+  value it holds then, so no "not in view" color had to be invented.
+* Nothing about the channel is remembered from one frame to the next: the
+  marker's own uniform map is read again each time, because the vendor
+  replaces markers while it scans. An entry that holds a color this module
+  never paints belongs to the vendor and is left alone, with a line in
+  `mod.log` saying so.
+* New ini knobs: `inframe` (0 = the stock look, colors keep working),
+  `inframe_r`/`inframe_g`/`inframe_b` + `inframe_a`,
+  `inframe_where = ring|disc` (the look can be A/B'd live, no rebuild),
+  `inframe_create = 1` (make a channel when the scene has none),
+  `hide_red = 1` (an in-view marker with no quality data yet shows a white
+  disc instead of the vendor's red).
+* `marker_inframe` retires with it: gone from `build.ps1` and the module
+  table, `g_legacy[]` deletes its dll/ini/section on install, and the
+  manager's `--scale` knob (that module's only slider) went with it - an
+  unknown option is now reported instead of ignored.
+
+**Status as of that round: manager and quality path live, the outline not yet
+seen.** Measured on 2026-11-27 with 1.8.0 installed: the hub and
+`scanservice.exe` both ran the sibling rule (`Scan-service injection:
+selective_mesh -> marker_quality,selective_mesh`, no abort - the one combination
+the 2026-11-24 crash was about), and a scan confirmed the quality colors
+(`palette=1/54`, `qdisc` growing). `getUniform` resolved `frontExternalColor`
+for no marker at all, and that is where section 12 starts.
+
+### 12. marker_quality 1.1.2 → 1.1.8 - the three live rounds that found where the ring lives
+
+1.1.1 shipped with the outline written into the channel it could resolve. It
+could not resolve one, and the reason turned out to be the interesting part:
+`StateSet::getUniform("frontExternalColor")` answers NULL for every marker,
+while the ring still paints - the vendor's shader reads that uniform from a
+`StateSet` *below* the marker, and the walk that finds it is not the API.
+
+* **1.1.2 - 1.1.4** read the `StateSet`'s uniform map by hand, with the layout
+  taken from `getUniform@StateSet@osg` (RVA `0x14e310`) instead of guessed: map
+  at `StateSet + 0xb0`, header root at `header + 8`, `_Isnil` at `node + 0x19`,
+  the key `std::string` at `node + 0x20`, the `Uniform*` at `node + 0x40`, the
+  entry's override bits at `node + 0x48`. One round of this was lost to walking a
+  `std::map` with the offsets of Qt's `QMap` - the module walks both, and the
+  wrong pair produced a confident wrong conclusion.
+* **Measured (1.1.5 / 1.1.6):** a marker's own map holds **only**
+  `frontInnerColor`; `frontExternalColor` sits one `StateSet` below it and two
+  different markers reach the **same** uniform, whose entry mask reads `0`. So
+  the vendor's channel is read-only for this purpose - one write there outlines
+  the whole field. The marker gets a channel of its own, and OSG lets a
+  `StateSet` win against one below it only when its entry carries
+  `OVERRIDE_VALUES` (`osg::State::pushUniformList`, RVA `0x18003b770`);
+  `getOrCreateUniform` inserts with `1 & 6 == 0`, so the bit has to be armed by
+  `addUniform(Uniform*, mask)`.
+* **1.1.7** painted the first outline the owner saw - and lost it after a moment.
+  The log explained it: `made=163` channels for 49 markers, `outline=207`. The
+  module kept the pointer it had resolved, and the vendor replaces markers while
+  it scans, so the writes went into objects the scene no longer drew. The cache
+  is gone: the marker's own map is read again every frame.
+* **1.1.8** removed the other remembered state. "The channels I made" was kept in
+  a table so a vendor entry would never be mistaken for one of ours, but that
+  table only shrinks when a marker is seen leaving the view - and under a scanner
+  a marker is replaced, not taken out of view. `made=1025 live=1024` for 49
+  markers, then the module's own guard switched the cue off while every counter
+  still looked healthy. Ownership is now read from the object: an entry holding
+  the highlight color can only have been painted by this module, and one holding
+  anything else is left to the vendor. Out of view the entry is removed
+  (`StateSet::removeUniform`), so the vendor's ring paints again with whatever it
+  holds at that moment - no "not in view" color had to be invented.
+
+**Status: live-verified by the owner 2026-11-28** on 1.1.8 (file stamp 3.1.49,
+product 2.1.0-14): the blue outline shows on markers the scanner sees and the
+quality colors are unaffected (`qdisc` and `outline` both growing, no refusal
+lines). One path has still not fired in a run: `restored=0` in every heartbeat,
+because a marker that leaves the field is replaced rather than re-drawn out of
+view, so removing the entry is a safety net rather than the normal route.
 
 ## Open regressions
 

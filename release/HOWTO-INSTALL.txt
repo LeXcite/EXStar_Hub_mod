@@ -17,10 +17,12 @@ EXStar Hub.exe is frozen by the vendor, so the manager shows both.
 Mods (each has its own switch)
 ------------------------------
 
-  Marker Quality   - marker color reflects tracking quality:
-                     red = weak, yellow = decent, green = reliable
-  Marker In-Frame  - a marker inside the view grows in size instead of
-                     flashing red (composes with Marker Quality)
+  Marker Quality   - a tracking marker's disc shows how well the scanner
+                     observed it (red = seen, yellow = decent, green =
+                     reliable), and its outline turns blue while the
+                     marker is inside the scanner's view - the stock red
+                     flash is gone, so quality stays readable while you
+                     are still scanning the marker
   Popup Dim        - the heavy grey veil behind popups becomes light
                      and translucent, the busy-overlay background
                      becomes frosted glass
@@ -47,17 +49,29 @@ Install
 4. Flip ON the switches of the modules you want. Done.
 5. Start EXStar Hub.
 
+A module that also has to work inside the scan service (Marker Quality
+watches the frames there) is armed there by the same switch: the manager
+recomputes the injection list in modules.ini on every install and
+remove, so one switch is the whole truth and a switch OFF leaves nothing
+of that module in any process.
+
 If the window is too big or too small for the screen, restart the
 manager with:  ExStarModManager_<version>.exe --zoom 1.5   (1.0 .. 4.0).
 The window auto-scales at every start; --zoom forces the factor.
 
 Tunables (per module card, apply after restart)
 -----------------------------------------------
-- Marker In-Frame: <scale> slider - how much an in-frame marker grows.
 - Popup Dim: <dim> slider - how opaque the veil behind popups stays
   (0 = fully transparent).
 - Marker Quality: preset row <Coarse / Medium / Fine / Ultra> -
-  how precisely markers must be observed to turn green.
+  how precisely markers must be observed to turn green. The in-view
+  outline is tuned in modules\marker_quality.ini only: inframe = 0 turns
+  it off (markers look stock, the colors keep working), inframe_r /
+  inframe_g / inframe_b pick its color, inframe_where = disc moves the
+  cue onto the disc itself, inframe_create = 0 stops the module giving a
+  marker an outline channel of its own when the scene has none (then the
+  cue simply stays off), and hide_red = 0 leaves the stock red on a
+  marker that is in view but has no quality data yet.
 - Wallpaper: <Choose file...> - any jpg/png/bmp, converted to a
   1920x1080 JPEG fitted to the vendor slot; <Reset> - back to the
   stock background.
@@ -84,8 +98,8 @@ Command line (same as the GUI, no UI)
   ExStarModManager_<version>.exe --install --modules id1,id2 [--app "C:\...\EXStar Hub"]
   ExStarModManager_<version>.exe --remove  --modules id1,id2
   ExStarModManager_<version>.exe --restore
-Module ids: marker_quality, marker_inframe, popup_dim, wallpaper,
-laser50, gpu_gate, selective_mesh.
+Module ids: marker_quality, popup_dim, wallpaper, laser50, gpu_gate,
+selective_mesh.
 
 How to see that a module did something
 --------------------------------------
@@ -94,7 +108,17 @@ Every module writes one line to
 "selective_mesh v1.8.0 armed in pid=27920 exe=EXStar Hub.exe". Selective
 Mesh also logs each eye it sees toggled ("eye <uuid> -> HIDDEN") and
 each merge decision ("gate uuid=... -> include|SKIP"), so a scan that
-was left out is explained there.
+was left out is explained there. Marker Quality says what it did to the
+markers there as well: "mq: outline: made on the marker's own StateSet -
+channel ... armed with OVERRIDE_VALUES" when the marker had no outline
+channel of its own and the module gave it one, "mq: outline: the vendor's
+ring color comes from ..." naming where the stock ring really lives, or "mq:
+outline: a marker carries its own frontExternalColor, which this module does
+not own" if the entry belongs to the vendor - then the ring is left to the
+vendor and the cue stays off instead of painting over it. There is also an
+"mq: in-view cue armed where=..." line, and a periodic heartbeat with
+counters (outline=, restored=, made=, noChannel=, qdisc=, blank=), so "there
+is no blue outline" is answered from the log instead of by guessing.
 
 Nothing here modifies vendor files
 ----------------------------------
