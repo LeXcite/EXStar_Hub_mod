@@ -32,6 +32,7 @@ All modules except selective_mesh (and gpu_gate) were re-verified live against t
 vendor update **2.1.0-10 (file stamp 3.1.49)** on 2026-11-18 with zero code
 changes - migration evidence:
 [update-2.1.0-10-migration.md](docs/research/update-2.1.0-10-migration.md).
+
 Exception found 2026-11-19: **fitfill** - the vendor dropped the flag it
 forces on 2.1.0-10, so the original hook is a no-op there; v1.1.0 adds
 the replacement anchor for the new pipeline (see
@@ -45,6 +46,15 @@ startup-gate research:
 selection research (vendor call sites, folder-key design, community
 patchset comparison):
 [merge-common-mesh.md](docs/research/merge-common-mesh.md).
+
+The next vendor update, **2.1.0-14**, was checked **offline against the signed
+installer payload** before installation (2026-11-27): all 73 anchors the
+modules use are equal, the manager stamp gate (`3.1.`) and the `winmm`
+injection chain are intact, and no vendor file collides with the mod files.
+No module or manager code change is needed; the live pass is the only step
+left after installing, with one item to watch (the merge item layout owned by
+the recompiled `Sn3DMultiProjects.dll`, which fails open to stock behaviour):
+[vendor-update-2.1.0-14.md](docs/research/vendor-update-2.1.0-14.md).
 
 ## Mod Manager
 
@@ -238,6 +248,7 @@ file stamp is what compatibility actually follows.
 
 | EXStar Hub (product) | file stamp | Tested | Notes |
 |---|---|---|---|
+| 2.1.0-14 | 3.1.49 | 🟡 offline | the signed installer payload was compared with 2.1.0-10 before installing (2026-11-27): 73/73 anchors equal, 5 binaries recompiled but none of their anchored bytes moved; live pass pending installation |
 | 2.1.0-10 | 3.1.49 | ✅ | Windows 11 x64, NVIDIA driver; full re-verification 2026-11-18; gpu_gate self-test 2026-11-19 |
 | 2.0.0-45 | 3.1.49 | ✅ | the original research target (same stamp family); the gpu_gate relaxed AMD branch was field-verified here on a Radeon 780M |
 | other 2.x / other stamps | - | ? | re-check research anchors before deploying |
