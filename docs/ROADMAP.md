@@ -910,6 +910,12 @@ lines). One path has still not fired in a run: `restored=0` in every heartbeat,
 because a marker that leaves the field is replaced rather than re-drawn out of
 view, so removing the entry is a safety net rather than the normal route.
 
+**Shipped as v1.8.0** (2026-11-28). The tag points at the commit that built
+`release\ExStarModManager_1.8.0.exe`; the GitHub release carries that binary and
+`HOWTO-INSTALL.txt`, and both were downloaded back and hashed against the build
+tree before this line was written - the hashes in the release notes are the
+hashes of the artifacts.
+
 ## Open regressions
 
 | Item | Since | Status |
@@ -917,6 +923,8 @@ view, so removing the entry is a safety net rather than the normal route.
 | fitfill had no effect on 2.1.0-10 → **CLOSED by retirement** | vendor update 2.1.0-10 | diagnosed 2026-11-19: the flag it forces is dead code on the new fit pipeline (analysis: [zoom-fit-optimization.md §6](research/zoom-fit-optimization.md)); replacement anchor found the same day - the `setEnableScanScale(false)` call site in `sn3d.digit.scenecontrol.dll` ([§7](research/zoom-fit-optimization.md)), implemented in fitfill 1.1.0 (import-name-anchored in-memory byte patch). The module then retired with manager 1.7.2 (owner's request, 2026-11-27), so this row closes here: what was proven and what never was are both written up in [zoom-fit-optimization.md](research/zoom-fit-optimization.md). |
 | selective_mesh labels a kept scan "scan id unreadable (fail-open)" | since the 1.4.x reason table | found while reading the 2.1.0-14 merge log (2026-11-27): `decideCloud()` starts `why` at `WHY_NOID` and only overwrites it when a scan is hidden, so a scan nobody ever hid is reported with the fail-open label - while the same line prints its uuid (`gate uuid=6D894BEF-…`). The verdict (`-> include`) is correct; only the word lies, and it makes a healthy log look like a degraded one. Fix is a fifth label ("no eye state") plus a module rebuild and redeploy - not worth a version bump on its own, take it with the next real change |
 | manager window was fixed-size | before 1.3.10 | fixed in manager 1.3.10: `WS_OVERLAPPEDWINDOW` (resizable, minimize, maximize), `WM_SIZE` re-layout of width-dependent controls, `WM_GETMINMAXINFO` floor. Visually confirmed 2026-11-22 during the 1.4.0 UI redesign (any height re-flows the grid; the stock white scrollbar that surfaced at short heights is gone - the only scroll thumb is the custom dark overlay). |
+| the outline's "leave the view" path has never fired in a live run | 1.1.8 | measured 2026-11-28: `restored=0` in every heartbeat of a real scan, because a marker under the scanner is replaced by a new node rather than re-drawn out of view, and the module only ever paints a marker that is in view. So `StateSet::removeUniform` (the hand-back that guarantees nothing stays lit) is a safety net whose trigger has not been observed. It cannot be forced from outside; it shows up the first time a marker is drawn out of view with the entry still on it |
+| `mod.log` says "ExStarRec host 1.2.0" while the product is 1.8.0 | since the first public snapshot | recorded 2026-11-28: `HOST_VERSION` in `src/host.c` is the host's own number and that file has not changed since the snapshot the public history starts at (8725cf2, manager 1.3.7), so no number is wrong - but a user reading the log has nothing to tell that apart from a stale build. With the next host change: stamp it with the product version, or make the banner line say which manager installed it |
 
 ## Rejected
 
