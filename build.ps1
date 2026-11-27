@@ -60,7 +60,6 @@ $modules = @(
     'modules\popup_dim\popup_dim.c',
     'modules\wallpaper\wallpaper.c',
     'modules\laser50\laser50.c',
-    'modules\fitfill\fitfill.c',
     'modules\gpu_gate\gpu_gate.c',
     'modules\selective_mesh\selective_mesh.c'
 )
@@ -74,12 +73,11 @@ $managerMods = @(
     @{ id = 'popup_dim';      ini = 'modules\popup_dim\popup_dim.ini' }
     @{ id = 'wallpaper';      ini = 'modules\wallpaper\wallpaper.ini' }
     @{ id = 'laser50';        ini = 'modules\laser50\laser50.ini' }
-    @{ id = 'fitfill';        ini = 'modules\fitfill\fitfill.ini' }
     @{ id = 'gpu_gate';       ini = 'modules\gpu_gate\gpu_gate.ini' }
     @{ id = 'selective_mesh'; ini = 'modules\selective_mesh\selective_mesh.ini' }
 )
 
-$version = '1.7.1'   # product version; release exe is copied as ExStarModManager_<version>.exe
+$version = '1.7.2'   # product version; release exe is copied as ExStarModManager_<version>.exe
 
 function New-VersionRes($path, $desc, $origName) {
     $vq = ($version -split '\.').Trim()

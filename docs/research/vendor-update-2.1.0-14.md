@@ -91,7 +91,7 @@ true for that skip, and the evidence that it is not.
 | wallpaper 1.0.0 | largest embedded JPEG slot in `AppUi.dll` >= `min_slot` 300000 | slot 837 517 B at file offset 10 056 947 on both sides; `AppUi` `.text` identical | unaffected |
 | fps 1.0.0 | `/// ScanPage_E7` anchor, `id: root` uniqueness, compressed size must fit | `ScanPage_E7` resources identical at the same offsets, literal counts equal; the patch itself still applied `(ok)` in the live pass | **retired**: with only this module enabled the hub closed itself a few seconds into the scan page (see the live pass below) |
 | laser50 1.1.0 | export name matching `set_match_plane_id_vulkan@` in `algorithmLzy.dll` (must be unique), qrc caption record in `ScanPage_E7` | export present exactly once in both, although `algorithmLzy` was rebuilt; `ScanSettingModelProviderLaser` / `crossLaserLineShowNum` literals equal | unaffected |
-| fitfill 1.1.0 | unique exports `?setIsZoomOptimization@CustomizeManipulator@@` (`librenderkit`) and `?setEnableScanScale@RenderKitExtDigitSingleton@` (`librenderkit.extensions.digit`); `sn3d.digit.scenecontrol` must still import the latter and its call-site windows must look the same | all four hold; the import is present in both, and both byte windows are at identical addresses (`mov rcx,rax; xor edx,edx; call [IAT]` 10 hits from RVA 0x49BD2, `mov rcx,rax; mov dl,imm` 14 hits from RVA 0x1BA01) in both builds | unaffected |
+| fitfill 1.1.0 | unique exports `?setIsZoomOptimization@CustomizeManipulator@@` (`librenderkit`) and `?setEnableScanScale@RenderKitExtDigitSingleton@` (`librenderkit.extensions.digit`); `sn3d.digit.scenecontrol` must still import the latter and its call-site windows must look the same | all four hold; the import is present in both, and both byte windows are at identical addresses (`mov rcx,rax; xor edx,edx; call [IAT]` 10 hits from RVA 0x49BD2, `mov rcx,rax; mov dl,imm` 14 hits from RVA 0x1BA01) in both builds | unaffected (the module itself was retired later the same day, on the owner's request - see the live pass) |
 | gpu_gate 1.0.0 | one byte pattern `8B 85 00 03 00 00 83 F8 02 0F 85` in `Sn3DSpeckleNew.dll`, exactly one occurrence | exactly one, at RVA 0x1AB6B5 in both; the rebuilt parts of that file's `.text` are two regions around 0x121900 and 0x138700, far from the gate | unaffected |
 | marker_quality 1.0.2 | color-slot stub signature `48 83 C1 08 E9 77 ED FF FF`, exactly one occurrence; `?putFrameDataIntoFile@HandlePrjFile@@...` and `?setMarkerPoints@ModelNode@ExtDigit@RenderKit@Sn3D@@...` exports; osg and Qt export names; object layouts (`node+0x150`, `+0x138`, `geom+0x220`, `+0x248`), Qt 5.15.10 `QMap`/`QList`/`QVariant` | signature exactly once, at RVA 0x130320 on both sides - the very address the 2.1.0-10 note records, and since the pattern *contains* the relative jump displacement, an identical match also proves the stub target did not move; both exports unique; the module's second precondition - exactly one `.rdata` qword pointing at the stub - also holds on both (one at `0x28CAA8` in the old build, one at `0x28CAE0` in the new one, the shift being the 57-byte growth of the section ahead of it), so the slot swap cannot land on a stale entry; `osg158-osg.dll` and every Qt DLL are content-identical, so neither the osg API nor the container layouts changed | unaffected |
 | marker_inframe 1.1.0 | `frontInnerColor` / `frontExternalColor` literals, osg exports | literal counts equal; osg identical | unaffected |
@@ -155,8 +155,9 @@ eyes hidden → two `SKIP`, mesh finished). See the live pass below.
    - one scan with markers to see quality coloring (marker_quality) - remember
      that only one module may own the color slot, so keep `marker_probe` off;
    - `50 lines` caption and 25+25 lines (laser50);
-   - Ctrl+D re-fills the frame (fitfill - note this is still the open item from
-     2026-11-19: the anchor is in place, a live confirmation is owed);
+   - Ctrl+D re-fills the frame (fitfill). **Moot later the same day**: the
+     module was retired before this checklist could be walked for it, so the
+     visible half was never confirmed - see the live pass;
    - start on an iGPU machine (gpu_gate), and one merge with a single eye open
      (selective_mesh, see above).
 4. Nothing to rebuild. If a live check does fail, the module rebuild is enough:
@@ -216,7 +217,7 @@ the ini files came back byte-identical).
 | popup_dim | `ScanPage_E7.dll zrc zlib=1 cand=73 qml=6 rewritten=5 blocks=5 verified=5 restored=0 fault=0`, `AppUi.dll ... rewritten=5 blocks=6 verified=5`, `pluginSn3DNavigation.dll ... rewritten=2 verified=2`, `CompositeComponents.dll ... rewritten=1 verified=1` |
 | gpu_gate | `Sn3DSpeckleNew.dll gate relaxed at RVA 0x1AB6B5 (jne -> ja ...)` - the RVA the offline check predicted |
 | laser50 | `hooked ?set_match_plane_id_vulkan@Sn3DAlgorithm@@... (target algorithmLzy.dll): strict=1 (3,21,3,21) -> (0,24,0,24)` |
-| fitfill | `hooked ?setIsZoomOptimization@CustomizeManipulator@@QEAAX_N@Z (target librenderkit.dll), forcing value 0`, and it fires: `fitfill: setIsZoomOptimization(1) -> forwarding 0` |
+| fitfill | `hooked ?setIsZoomOptimization@CustomizeManipulator@@QEAAX_N@Z (target librenderkit.dll), forcing value 0`, and it fires: `fitfill: setIsZoomOptimization(1) -> forwarding 0` (the module retired hours later, so this is the last time this line will appear) |
 | marker_quality | `mq: color stub at renderer+0x130320`, `mq: color slot at renderer+0x28CAE0 -> stub`, `mq: color slot hooked`, `mq: install done ... qt=1 put=1 smp=1 slot=1` - the stub RVA and the `.rdata` slot are exactly the pair the offline check measured on the new build |
 | marker_inframe | `armed, scale=1.20 ...`, then `calls=294553 ... draws=885208` - the color path is being walked |
 | selective_mesh | `hooked HandlePrjFile::isGenerateCloud (active for Sn3DMultiProjects.dll callers)` in the hub, the process manager, the scan service and the net server; `eye watch armed` |
@@ -266,6 +267,22 @@ reason table - `why` starts at `WHY_NOID` and is only overwritten for a hidden
 scan, so "a scan nothing said anything about" is reported with the same label as
 "a scan whose id could not be read". The decision is right in both cases
 (`-> include`), only the label is wrong; recorded in `docs/ROADMAP.md`.
+
+### fitfill retired the same day - owner's decision, not a vendor break
+
+Hours after this report's live pass, the owner asked for *Zoom to Fit Fill* to be
+removed as well. Nothing about 2.1.0-14 forced it: the module armed, patched both
+of its anchors and fired them (`scan scale forced to 1 at
+sn3d.digit.scenecontrol.dll+0xC4865`, `setIsZoomOptimization(1) -> forwarding 0`),
+which is exactly the confirmation the 2026-11-19 entry owed it. What was never
+available is the *visible* half - since 2.1.0-10 moved *Zoom to Fit* onto a new
+pipeline, no run had shown the frame re-fill the module exists to produce. Kept,
+it is a hook into the render kit whose effect nobody can point at; the fit
+pipeline it documents stays in
+[zoom-fit-optimization.md](zoom-fit-optimization.md), the sources in the git
+history (manager up to 1.7.1), and manager 1.7.2 lists `fitfill` beside `fps` in
+its legacy cleanup for the same reason: the host enables every DLL it finds, so a
+left-behind file would keep forcing both flags.
 
 ### fps closed the hub, and only fps
 
@@ -327,9 +344,10 @@ an in-memory **QML insert is a runtime contract** - byte-identical resources do
 not guarantee the patched page still loads, which is how fps went.
 
 Both assumptions that were only provable against a running process came back
-resolved: fitfill's new anchor fires, and the merge item layout in
-`Sn3DMultiProjects.dll` decodes exactly as before (3 items, `self at #1`,
-0 unreadable, two hidden eyes honoured, mesh finished). Nothing about this
-update is left unverified except the two things a machine cannot decide for
-itself: whether *Zoom to Fit* now visibly fills the frame, and whether the
-wallpaper is back in place after the update deleted it.
+resolved: fitfill's new anchor fires (and the module was retired hours later on
+the owner's request, so that line is its obituary as much as its proof), and the
+merge item layout in `Sn3DMultiProjects.dll` decodes exactly as before (3 items,
+`self at #1`, 0 unreadable, two hidden eyes honoured, mesh finished). After the
+two retirements the set is seven modules, all of them armed on this build. The
+only thing left for a human to decide is the one thing no log can say: whether
+the wallpaper is back in place after the update deleted the user's image.

@@ -1,7 +1,8 @@
 /*
  * exstar_export.h - locate an exported function by UNIQUE name inside a
- * mapped module, for modules that detour vendor exports (laser50,
- * fitfill). Shared, header-only (static, one copy per module DLL).
+ * mapped module, for modules that detour vendor exports (laser50; the
+ * retired fitfill was its other user). Shared, header-only (static, one
+ * copy per module DLL).
  *
  * Policy: exports are a named, version-stable ABI contract - never hook
  * by RVA/ordinal. The needle is a substring of the (mangled) export

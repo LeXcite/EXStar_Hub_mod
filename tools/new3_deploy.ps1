@@ -1,3 +1,6 @@
+; HISTORICAL (2026-11-17). Not the way to deploy any more: the Mod Manager does
+; all of this, and fitfill was retired on 2026-11-27 (manager 1.7.2), so the
+; module set below is the one of that week, not the current one.
 ; one-shot elevated deploy for the current module set (ASCII only).
 ; Installs the integrated laser50 (25x25 lines + "50 lines" caption)
 ; and fitfill, removes the retired standalone captions module, and

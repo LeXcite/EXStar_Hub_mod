@@ -1,6 +1,12 @@
 # "Zoom to Fit" and the zoom-optimization mode — RE protocol
 
-The knowledge behind the `fitfill` module. Status journal: `batch-2026-11-17-status.md`.
+The knowledge behind the **retired** `fitfill` module (removed 2026-11-27, with
+manager 1.7.2, at the owner's request: its hooks still fired on 2.1.0-14 but the
+visible re-fill had never been confirmed since 2.1.0-10 moved the fit pipeline).
+This file stays as the map of the vendor's fit pipeline - it is the reference for
+what "Zoom to Fit" actually does, and the only way to pick the feature up again.
+Status journal: `batch-2026-11-17-status.md`; the retirement is recorded in
+`vendor-update-2.1.0-14.md`.
 
 ---
 

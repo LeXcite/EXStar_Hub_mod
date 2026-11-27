@@ -27,8 +27,6 @@ Mods (each has its own switch)
   Wallpaper        - your own picture as the application background
   Laser 25+25      - all 25+25 laser lines reach the cloud, the button
                      reads <50 lines> (the stock 7-line mode is kept)
-  Zoom to Fit Fill - <Zoom to Fit> (Ctrl+D) frames the model into the
-                     whole viewport, not just its center
   GPU Gate         - a computer with an integrated GPU (e.g. Radeon
                      780M) passes the startup GPU check instead of
                      refusing to start the scan software
@@ -87,7 +85,7 @@ Command line (same as the GUI, no UI)
   ExStarModManager_<version>.exe --remove  --modules id1,id2
   ExStarModManager_<version>.exe --restore
 Module ids: marker_quality, marker_inframe, popup_dim, wallpaper,
-laser50, fitfill, gpu_gate, selective_mesh.
+laser50, gpu_gate, selective_mesh.
 
 How to see that a module did something
 --------------------------------------

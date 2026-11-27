@@ -50,7 +50,7 @@
 
 #define APP_EXE_NAME     L"EXStar Hub.exe"
 #define APP_EXE_A        "EXStar Hub.exe"
-#define MANAGER_VERSION  L"1.7.1"   /* keep in sync with $version in build.ps1 */
+#define MANAGER_VERSION  L"1.7.2"   /* keep in sync with $version in build.ps1 */
 #define PROXY_MARKER     L"ExStarMod.winmm.dll"   /* OriginalFilename of our proxy */
 #define DEFAULT_APP_DIR  "C:\\Program Files\\Shining3d\\EXStar Hub"
 /* The vendor freezes the exe ProductVersion (the "file stamp", still
@@ -158,10 +158,6 @@ static const ModDef g_mods[MAX_MODS] = {
       L"all 25+25 laser lines (plane range (3,21) \u2192 (0,24)); the button shows \u00AB50 lines\u00BB right away",
       L"MOD_LASER50", L"MOD_LASER50_INI",
       NULL, 0, NULL, 0, NULL, TRUE },
-    { "fitfill", L"Zoom to Fit Fill", "1.1.0",
-      L"\u00ABZoom to Fit\u00BB (Ctrl+D) fits the model into the whole frame, not a third of the window",
-      L"MOD_FITFILL", L"MOD_FITFILL_INI",
-      NULL, 0, NULL, 0, NULL, TRUE },
     { "gpu_gate", L"GPU Gate", "1.0.0",
       L"integrated GPUs (e.g. Radeon 780M) pass the startup GPU check - one memory byte, files untouched",
       L"MOD_GPU_GATE", L"MOD_GPU_GATE_INI",
@@ -172,7 +168,7 @@ static const ModDef g_mods[MAX_MODS] = {
       L"MOD_SELECTIVE_MESH", L"MOD_SELECTIVE_MESH_INI",
       NULL, 0, NULL, 0, NULL, TRUE, FALSE, 0 },
 };
-static const int g_modCount = 8;
+static const int g_modCount = 7;
 
 /* modules shipped by older manager builds and no longer bundled; their
  * files and modules.ini sections are removed on the next install so a
@@ -183,9 +179,12 @@ static const int g_modCount = 8;
  * would hook the same gate a second time in the same process.
  * fps is here because 2.1.0-14 retired it: the host would load a left
  * behind fps.dll and enable it by default, and that QML insert makes
- * the 2.1.0-14 hub close itself a few seconds into the scan page. */
+ * the 2.1.0-14 hub close itself a few seconds into the scan page.
+ * fitfill is here because the owner dropped the feature on 2026-11-27:
+ * the same reason as above applies - a leftover fitfill.dll would keep
+ * forcing the manipulator flag and the scan-scale call site. */
 static const char *const g_legacy[] = { "marker_recolor", "merge_select",
-                                        "fps", NULL };
+                                        "fps", "fitfill", NULL };
 
 /* ------------------------------------------------------------------ */
 /* small helpers                                                       */

@@ -94,7 +94,7 @@ Reusable pieces (header-only, `include\`, one static copy per module DLL):
 | Header | For modules that… | Used by |
 |---|---|---|
 | `exstar_qrc.h` | rewrite compressed QML resources (`[u32 BE rawSize][zlib]` records) in a mapped vendor DLL: zlib framing, the one safe write path (fits-in-record, rawSize update, verify-by-reinflate, byte-exact restore), section scan, DLL map notification | laser50 `[caption]` (retired fps was its first user) |
-| `exstar_export.h` | detour an exported function by **unique name** (never RVA/ordinal; ambiguous needle = stay idle) | laser50 `[lines]`, fitfill |
+| `exstar_export.h` | detour an exported function by **unique name** (never RVA/ordinal; ambiguous needle = stay idle) | laser50 `[lines]` (the retired fitfill was its other user) |
 
 (`popup_dim` predates `exstar_qrc.h` and keeps its own equal-length
 variant - deliberately not refactored: it is live-verified, and style

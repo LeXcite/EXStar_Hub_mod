@@ -32,16 +32,24 @@ not included in git).
 | marker_inframe | 1.1.0 | in-frame marker grows instead of a red flash |
 | wallpaper | 1.0.0 | custom app background (in-memory image swap) |
 | laser50 | 1.1.0 | 25+25 laser lines (plane-id remap) + `50 lines` caption |
-| fitfill | 1.1.0 | Zoom to Fit frames the whole model (zoom-optimization off; on 2.1.0-10 forces scan scale on at its call site) |
 | gpu_gate | 1.0.0 | integrated GPUs pass the startup GPU check (one memory byte) |
 | selective_mesh | 1.8.0 | eye-icon driven common-mesh selection (session ini keyed by scan uuid and shared across processes, meta-object eye watch, hook allowlists); 1.5.1+ reads command arguments as pure memory (no Qt calls in the hook), 1.5.2-1.5.5 use the `QStringList` layout measured against the shipped Qt (`tools/qlist_lab.c`); 1.5.6 reads nested command values and proved the viewport half has nothing to intercept (see 2026-11-25 below); 1.5.8 kept a hidden scan hidden on screen across the environment switch - that re-apply hangs the hub, so it is off by default since 1.6.1; 1.6.0 = renamed Selective Mesh; 1.6.2 = the map walk of a watched scene command is hard-bounded (it could spin forever on a non-map argument and hang the hub) - live-verified 2026-11-26; 1.7.0 = a merge this module would leave empty runs as if all eyes were open, reading the merge's own scan list out of the caller's registers (`merge_list.h`, proven by `tools/merge_list_lab.c`); 1.7.1 = that guard accepts the register block on its content, not on an assumed register name (the first live run falsified `rcx == self`); 1.7.2 = `RegCtx` field names match the measured block order - live-verified 2026-11-26 (all eyes hidden -> full mesh, one eye shown -> only visible scans); 1.8.0 = the eye is the only interface: folder/name identity, the `.map.txt` roster, the `merge-select.ini` migration and the vendor `QString` getters are gone, exclusions are dropped when the hub starts (a fresh session shows every scan, like the vendor itself) |
-| ExStarModManager | 1.7.1 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist (one exception: 1.6.9 renames the `merge_select` token of a hand-made list, never adds one); 1.6.9 removes the legacy `merge_select` files and carries its settings to `selective_mesh`; 1.7.0 drops the Selective Mesh "Scan roster" / "Open folder" buttons and the roster window (the eye in the hub is the module's only interface); 1.7.1 retires fps and deletes a leftover `modules\fps.dll` + its `modules.ini` section through the legacy list |
+| ExStarModManager | 1.7.2 | manager: enabling modules, installing/updating payload, resizable window; 1.4.0 = redesigned owner-drawn dark UI (Interface/Scanner/Settings pages, custom dark scrollbar, no native chrome); 1.6.4+ never rewrites the sibling whitelist (one exception: 1.6.9 renames the `merge_select` token of a hand-made list, never adds one); 1.6.9 removes the legacy `merge_select` files and carries its settings to `selective_mesh`; 1.7.0 drops the Selective Mesh "Scan roster" / "Open folder" buttons and the roster window (the eye in the hub is the module's only interface); 1.7.1 retires fps and deletes a leftover `modules\fps.dll` + its `modules.ini` section through the legacy list; 1.7.2 does the same for fitfill |
 
 Retired: **fps 1.0.0** (2026-11-27, with manager 1.7.1). Live-verified on
 2.0.0-45 and 2.1.0-10, it closes the 2.1.0-14 hub a few seconds into the scan
 page; the bisect and the reason it could not be predicted offline are in
 [vendor-update-2.1.0-14.md](research/vendor-update-2.1.0-14.md). Sources and
 README are in the git history (manager ≤ 1.7.0).
+
+**fitfill 1.1.0** (2026-11-27, with manager 1.7.2), at the owner's request. The
+feature worked on 2.0.0-45, went half-dead on 2.1.0-10 when the vendor moved
+*Zoom to Fit* onto a new pipeline, and 1.1.0's replacement anchor fired on
+2.1.0-14 without a confirmed visible effect - so the module was dropped rather
+than kept as a maybe. The research (the vendor's fit pipeline, the dead flag, the
+call site that replaced it) stays in
+[zoom-fit-optimization.md](research/zoom-fit-optimization.md); sources and README
+are in the git history (manager up to 1.7.1).
 
 ## Batch "porting borrowed features" (2026-11-14) — CLOSED
 
@@ -185,7 +193,7 @@ The knowledge and lessons were moved into `modules/laser50/README.md`:
 
 Status: ✅ verified live inside laser50 v1.1.0 (2026-11-17).
 
-### 5. fitfill — Zoom to Fit filling the whole frame
+### 5. fitfill (retired 2026-11-27) — Zoom to Fit filling the whole frame
 
 **Goal.** Ctrl+D / "Zoom to Fit" fills the frame by width/height,
 a repeat press correctly re-fits.
@@ -224,6 +232,13 @@ confirmed: Ctrl+D fits the model into the frame.
 
 Status: ✅ verified live (v1.0.0, 2026-11-17). Into git — upon "put it in
 git".
+
+**Retired 2026-11-27 (manager 1.7.2), owner's request.** Not by necessity: the
+hook mechanism still worked end to end on 2.1.0-14 (both `setIsZoomOptimization`
+and the `setEnableScanScale` call site patched and firing), but after the vendor
+moved the fit pipeline on 2.1.0-10 nobody ever confirmed the visible re-fill, and
+a module whose effect cannot be seen is not worth its hook. Everything learned
+here stays in [zoom-fit-optimization.md](research/zoom-fit-optimization.md).
 
 ## Batch "GPU independence" (2026-11-18)
 
@@ -743,12 +758,16 @@ stays hidden on screen. Evidence:
    (`self+0x18`, `item+0x28`, `item+0x38`) survived its recompilation and
    `merge_list.h` needs no fresh dump. That was also selective_mesh 1.8.0's
    first live run (eye click → shared ini → the merge caller's answer).
+   Two modules left the set that same day: **fps**, forced by the vendor build,
+   and **fitfill**, at the owner's request (its two hooks fired, but its visible
+   effect had never been confirmed since 2.1.0-10 moved the fit pipeline) -
+   manager 1.7.2 carries both in the legacy list, seven modules remain.
 
 ## Open regressions
 
 | Item | Since | Status |
 |---|---|---|
-| fitfill has no effect on 2.1.0-10 | vendor update 2.1.0-10 | diagnosed 2026-11-19: the flag it forces is dead code on the new fit pipeline (analysis: [zoom-fit-optimization.md §6](research/zoom-fit-optimization.md)); replacement anchor found the same day - the `setEnableScanScale(false)` call site in `sn3d.digit.scenecontrol.dll` ([§7](research/zoom-fit-optimization.md)), implemented in fitfill 1.1.0 (import-name-anchored in-memory byte patch). TODO: live confirmation on the hub (log line `scan scale forced to 1 at sn3d.digit.scenecontrol.dll+0x...` + Ctrl+D re-fills the frame). **Log half paid on 2.1.0-14 (2026-11-27)**: `scan scale forced to 1 at sn3d.digit.scenecontrol.dll+0xC4865` and `setIsZoomOptimization(1) -> forwarding 0` both appear in a real session; the Ctrl+D re-fill is still for the user to confirm. |
+| fitfill had no effect on 2.1.0-10 → **CLOSED by retirement** | vendor update 2.1.0-10 | diagnosed 2026-11-19: the flag it forces is dead code on the new fit pipeline (analysis: [zoom-fit-optimization.md §6](research/zoom-fit-optimization.md)); replacement anchor found the same day - the `setEnableScanScale(false)` call site in `sn3d.digit.scenecontrol.dll` ([§7](research/zoom-fit-optimization.md)), implemented in fitfill 1.1.0 (import-name-anchored in-memory byte patch). The module then retired with manager 1.7.2 (owner's request, 2026-11-27), so this row closes here: what was proven and what never was are both written up in [zoom-fit-optimization.md](research/zoom-fit-optimization.md). |
 | selective_mesh labels a kept scan "scan id unreadable (fail-open)" | since the 1.4.x reason table | found while reading the 2.1.0-14 merge log (2026-11-27): `decideCloud()` starts `why` at `WHY_NOID` and only overwrites it when a scan is hidden, so a scan nobody ever hid is reported with the fail-open label - while the same line prints its uuid (`gate uuid=6D894BEF-…`). The verdict (`-> include`) is correct; only the word lies, and it makes a healthy log look like a degraded one. Fix is a fifth label ("no eye state") plus a module rebuild and redeploy - not worth a version bump on its own, take it with the next real change |
 | manager window was fixed-size | before 1.3.10 | fixed in manager 1.3.10: `WS_OVERLAPPEDWINDOW` (resizable, minimize, maximize), `WM_SIZE` re-layout of width-dependent controls, `WM_GETMINMAXINFO` floor. Visually confirmed 2026-11-22 during the 1.4.0 UI redesign (any height re-flows the grid; the stock white scrollbar that surfaced at short heights is gone - the only scroll thumb is the custom dark overlay). |
 
