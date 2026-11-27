@@ -9,6 +9,7 @@
  * run:
  *   build\wp_dryrun.exe "<app dir>\AppUi.dll" [min_slot]
  */
+#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,9 +93,14 @@ int main(int argc, char **argv)
     }
     printf("best: SOI @0x%zX  size %u  candidates %d\n", bestOff,
            bestSize, nCand);
-    /* known-good on EXStar Hub 2.x (file stamp 3.1.x) AppUi.dll (2026-11-14) */
-    if (bestOff == 0x643F95 && bestSize == 837517)
-        printf("MATCH known-good (0x643F95 / 837517)\n");
+    /* known-good on EXStar Hub 2.1.0-10 and 2.1.0-14 (file stamp 3.1.49),
+     * AppUi.dll; the location moved with the 2.1.0-10 rebuild (it was
+     * 0x643F95 before), the size did not.  Verified offline 2026-11-27 over
+     * both installer payloads: docs/research/vendor-update-2.1.0-14.md */
+    if (bestOff == 0x9974F3 && bestSize == 837517)
+        printf("MATCH known-good (0x9974F3 / 837517)\n");
+    else
+        printf("no match against the known-good slot - re-measure AppUi.dll\n");
     free(b);
     return 0;
 }

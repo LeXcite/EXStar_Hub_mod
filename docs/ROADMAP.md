@@ -664,6 +664,35 @@ stays hidden on screen. Evidence:
    only the two C4057 annotation notices around `CreateThread` that every
    module here carries. Docs now name the borrowed source one way
    everywhere: community patchset, never a person, never a private base.
+ * **2026-11-27, vendor 2.1.0-14 analysed offline: nothing has to change.**
+   The new installer was read without running it, and the reader that made that
+   possible is now in the tree: `tools\nsis_payload.py` (the setup is a forked
+   NSIS build whose payload no archiver opens - records with a `u64` length
+   whose bit 63 means deflated, `[u24 length][raw-deflate]` blocks, one record
+   per file, so any single file is inflatable on its own). The reader is gated
+   on ground truth, not on inference: `verify` against the installed 2.1.0-10
+   tree reproduces **2992 of its 3020 files (2594 MB) by size and sha256**, the
+   rest being our own injected files. Compare both payloads: 1779 named files,
+   1073 identical, 703 of 710 binaries rebuilt, one new `cryptopp.dll`, nothing
+   removed; of the 25 binaries the mods touch, 10 differ only in header and
+   signature, 10 only in the guarded-call table plus the version resource
+   (`.text` byte-identical), and 5 were really recompiled. Every compressed UI
+   resource the mods read is identical at the same file offsets; the single qrc
+   content change anywhere is two GLSL records in `librenderkit.dll` that are
+   byte-identical after normalizing line endings. 73 anchor checks over the two
+   builds: 73 equal, 0 differing. `EXStar Hub.exe` still reports the file stamp
+   `3, 1, 49`, so the manager's compatibility gate is untouched, `Qt5Core.dll`
+   is content-identical and still imports `WINMM.dll`, and the scanner OTA image
+   `tx2_1.71_...img` is byte-identical, so the fan profile gate still describes
+   the live device. Full report with the per-module table and the live
+   checklist: [vendor-update-2.1.0-14.md](research/vendor-update-2.1.0-14.md).
+   One residual risk is recorded honestly: the merge item layout (`self+0x18`,
+   `item+0x28`, `item+0x38`) belongs to `Sn3DMultiProjects.dll`, which was
+   recompiled, and an object layout is only provable against a live dump - that
+   path is bounded, read-only and fails open to stock behaviour. Two dev tools
+   were repaired on the way: `tools\wp_dryrun.c` (missing `windows.h`, and its
+   known-good constant still pointed at the pre-2.1.0-10 JPEG slot) now reports
+   `SOI @0x9974F3 slot=837517  MATCH known-good` on both payloads.
 
 ## Open regressions
 
@@ -689,8 +718,26 @@ stays hidden on screen. Evidence:
 
 ## External circumstances
 
-- **A vendor update is available, installation postponed** (decision
-  2026-11-14). Before installing: unpack the update, run
-  `zrc_lab`/`dim_dryrun` over the new DLLs, fix the anchors offline.
+- **Vendor 2.1.0-14 is out and has been analysed offline (2026-11-27); installing
+  it is the user's call.** Nothing in this repository has to change for it:
+  73 anchor checks over both installer payloads came out equal, the file stamp
+  the manager gates on is unchanged at `3, 1, 49`, and the injection anchor
+  (`Qt5Core.dll` importing `winmm`) is a byte-identical file. Report, evidence
+  commands and the live checklist:
+  [research/vendor-update-2.1.0-14.md](research/vendor-update-2.1.0-14.md).
+- **How to inspect a vendor update before installing it** (the step that used to
+  read "unpack the update", which no archiver can actually do):
+
+      python tools\nsis_payload.py index  "EXStar Hub_v<new>.exe" new.json
+      python tools\nsis_payload.py verify old.json "<app dir>"   # gate the reader
+      python tools\nsis_payload.py extract new.json AppUi.dll    out\
+
+  `verify` against the installed tree is what makes the rest trustworthy; then
+  run `tools\dim_dryrun.exe`, `tools\zrc_lab.exe` and `tools\wp_dryrun.exe` over
+  the extracted DLLs (each takes the DLL file plus, where needed, the shipped
+  `zlib1.dll`) and fix anchors offline before anything is installed.
 - All batch anchors are pattern/name-based; breakage on update is ruled out
-  by the architecture, only a silent patch skip is possible.
+  by the architecture, only a silent patch skip is possible. The one class of
+  assumption a file cannot prove is an object layout in a recompiled vendor
+  binary - currently the merge item of `Sn3DMultiProjects.dll`
+  (`selective_mesh`), which fails open to stock behaviour.
